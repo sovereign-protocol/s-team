@@ -14,7 +14,11 @@
   </header>
   <main>
     <aside id="organization" aria-label="Organization">
-      <h2>Organization</h2>
+      <div class="organization-header">
+        <h2>Organization</h2>
+        <button type="button" id="newTeamBtn"
+                class="ui-button ui-button-small">+ Add team</button>
+      </div>
       <div id="organizationTree"></div>
       <p class="consent-note">
         Joining a parent does not join its subteams; it makes them
@@ -24,7 +28,6 @@
     <div class="document-pane">
       <div id="empty">
         <p>Create a team to begin, or accept an invitation to one.</p>
-        <div id="emptyCreate"></div>
       </div>
       <article id="document"></article>
     </div>
@@ -38,6 +41,17 @@
       <menu>
         <button type="button" id="confirmModalCancelBtn">Cancel</button>
         <button type="button" id="confirmModalConfirmBtn" class="danger">Delete</button>
+      </menu>
+    </form>
+  </dialog>
+  <dialog id="newTeamModal">
+    <form method="dialog" id="newTeamForm">
+      <h2>New Team</h2>
+      <label>Name<input id="newTeamName" value="Untitled team"></label>
+      <label>Copy from (optional)<select id="newTeamTemplate"></select></label>
+      <menu>
+        <button type="button" id="cancelNewTeamBtn">Cancel</button>
+        <button type="submit" class="primary">Create</button>
       </menu>
     </form>
   </dialog>
@@ -306,35 +320,58 @@
         .map(pair => pair[0]);
     };
 
-    const selectTeam = async (agreementUuid) => {
-      await api('/api/team/teams/select',
-        {team_uuid: agreementUuid});
+    const selectTeam = async (teamUuid) => {
+      await api('/api/team/teams/select', {team_uuid: teamUuid});
       await load();
     };
 
-    // A team has to be creatable from the page that shows teams. Without
-    // this the empty state named the two ways in - create one, or accept an
-    // invitation - and offered neither, so a client with no team had no way
-    // to get one.
+    // A team has to be creatable from the page that shows teams. The empty
+    // state named the two ways in - create one, or accept an invitation -
+    // and offered neither, so a client with no team had no way to get one.
     //
-    // Creating selects, so you land in the new team's own (empty) team
-    // rather than back on the same empty state you just left.
-    const newTeamControl = () => SovereignUI.addComposer({
-      noun: 'team',
-      placeholder: 'Team name',
-      onSubmit: async title => {
-        const created = await api('/api/team/teams/create', {title});
+    // It lives with the Organization, because that is the list it adds to,
+    // and it is the same modal the Cockpit uses, because it is the same
+    // act: a name, and optionally a team to copy - which is how a template
+    // gets used (2.8). Being a dialog rather than an inline field also puts
+    // it outside the polled rebuild entirely.
+    const openNewTeamModal = () => {
+      document.querySelector('#newTeamName').value = 'Untitled team';
+      const template = document.querySelector('#newTeamTemplate');
+      template.replaceChildren();
+      const blank = document.createElement('option');
+      blank.value = '';
+      blank.textContent = 'Start empty';
+      template.append(blank);
+      for (const item of payloadState.teams || []) {
+        const option = document.createElement('option');
+        option.value = item.uuid;
+        option.textContent = item.data.title || 'Untitled team';
+        template.append(option);
+      }
+      document.querySelector('#newTeamModal').showModal();
+    };
+
+    document.querySelector('#newTeamBtn').onclick = openNewTeamModal;
+    document.querySelector('#cancelNewTeamBtn').onclick =
+      () => document.querySelector('#newTeamModal').close();
+    document.querySelector('#newTeamForm').onsubmit = async event => {
+      event.preventDefault();
+      const title =
+        document.querySelector('#newTeamName').value.trim() || 'Untitled team';
+      const template = document.querySelector('#newTeamTemplate').value;
+      document.querySelector('#newTeamModal').close();
+      try {
+        // One request either way: clone takes the title, so unlike a board
+        // copy there is nothing to rename afterwards. Creating selects, so
+        // you land in the new team rather than back where you started.
+        const created = await api(
+          template ? '/api/team/teams/clone' : '/api/team/teams/create',
+          template ? {team_uuid: template, title} : {title},
+        );
         if (created?.value) await selectTeam(created.value);
         else await load();
-      },
-      onError: error => showToast(error.message, true),
-    });
-
-    // Built once, not per render. The document rebuild is guarded against
-    // destroying a field being typed into, but these two sit outside it -
-    // rebuilding them on the poll would empty the box mid-word.
-    const headerNewTeam = newTeamControl();
-    const emptyNewTeam = newTeamControl();
+      } catch (error) { showToast(error.message, true); }
+    };
 
     const renderOrganization = (organization) => {
       const tree = document.querySelector('#organizationTree');
@@ -858,7 +895,6 @@
       accepted: 'accepted',
       pending: 'offered, not yet decided',
       requested: 'asked to take this',
-      revoked: 'offer withdrawn',
       refused: 'refused',
       expired: 'lapsed',
       outdated: 'accepted an earlier version',
@@ -1109,7 +1145,7 @@
             } catch (error) { showToast(error.message, true); }
           };
           badge.append(confirm);
-        } else if (mine && holder.status !== 'revoked') {
+        } else if (mine) {
           const revoke = document.createElement('button');
           revoke.type = 'button';
           revoke.className = 'holder-action ui-entity-action';
@@ -1145,9 +1181,7 @@
         // request is left out too, because Confirm on their row is how that
         // one is answered.
         const spoken = new Set(
-          holders
-            .filter(holder => holder.status !== 'revoked')
-            .map(holder => holder.actor_uuid),
+          holders.map(holder => holder.actor_uuid),
         );
         const candidates = (payloadState.offerable_actors || [])
           .filter(actor => !spoken.has(actor.uuid));
@@ -1182,6 +1216,12 @@
             if (!picker.value) return;
             const chosen = picker.value;
             picker.value = '';
+            // The picker is a <select> inside #document, and the guard in
+            // render() skips the rebuild while anything of that shape has
+            // focus - so choosing somebody left the offer invisible until
+            // the reader happened to click elsewhere. Nothing is being
+            // typed here: the choice is already made.
+            picker.blur();
             try {
               await api('/api/team/roles/offer',
                 {role_uuid: role.uuid, actor_uuid: chosen});
@@ -1382,11 +1422,6 @@
       document.querySelector('#empty').hidden = Boolean(current);
       // Beside the topic name when a team is open, and in the empty state
       // when none is - the same act, wherever you are when you want it.
-      SovereignShell.setTopicActions(headerNewTeam);
-      const emptyCreate = document.querySelector('#emptyCreate');
-      if (!current && !emptyCreate.contains(emptyNewTeam)) {
-        emptyCreate.append(emptyNewTeam);
-      }
 
       const article = document.querySelector('#document');
       // Never rebuild the document while it is being edited, or the caret
