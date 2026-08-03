@@ -1003,6 +1003,7 @@
           className: 'holder-badge',
         });
         badge.dataset.actorKind = holder.actor_kind;
+        if (holder.outside_parent) badge.dataset.outsideParent = 'true';
         badge.querySelector('.ui-entity-label').classList.add('holder-name');
 
         const detail = [HOLDER_STATUS[holder.status] || holder.status];
@@ -1020,6 +1021,11 @@
         // it is worth saying where it stands - answering it takes it up.
         if (holder.offered_elsewhere) {
           detail.push('Offered to you; answering it accepts the offer');
+        }
+        // Being on a team below is being on the team above, so their answer
+        // here is not the whole of where they stand.
+        if (holder.outside_parent) {
+          detail.push('Holds no role on a team above, so is out of this one');
         }
         if (holder.offered_at) {
           detail.push(

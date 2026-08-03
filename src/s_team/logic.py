@@ -1202,6 +1202,17 @@ class TeamLogic:
                 "error",
                 reason="that would make the organisation circular",
             )
+        outside = self._members_outside(seated, parent)
+        if outside:
+            return SessionResult(
+                "error",
+                reason=(
+                    "Everybody on this team has to hold a role in "
+                    f"{parent.data.get('title') or 'the parent agreement'} "
+                    "before it can take a seat there. Not yet holding one: "
+                    + ", ".join(sorted(outside))
+                ),
+            )
         answered = self._record_role_decision(
             parent, role, "accepted", None,
             actor_uuid=seated.uuid, decided_by=self._identity_uuid,
@@ -1240,6 +1251,66 @@ class TeamLogic:
             value=held.value.uuid,
             effects=[*answered.effects, *held.effects],
         )
+
+    def actors_admitted_above(self, agreement: ProtocolNode) -> set[str] | None:
+        """Who holds a role on every team above this one, or None for a root.
+
+        Only ever reads *upward*. Asking this agreement who is on it would
+        be circular - its roster is what the answer is for - so the question
+        is put to the parents alone, and each of them answers it of its own
+        parents in turn. That walk terminates at a root, and it is what
+        makes the containment transitive: somebody dropped one level up is
+        already missing from the answer given here.
+
+        Derived, never recorded, exactly as the read-only guard is - it
+        reverses itself the moment the role above is taken up again.
+        """
+        holdings = self.parent_holdings(agreement)
+        if not holdings:
+            return None
+        admitted: set[str] | None = None
+        for holding in holdings:
+            parent = self._node(
+                str(holding.data.get("parent_agreement_uuid") or "").strip(),
+                "agreement",
+            )
+            if not parent:
+                continue
+            above = self.actor_uuids(parent)
+            # Every parent, not any: a second parent is a second commitment.
+            admitted = above if admitted is None else (admitted & above)
+        return admitted if admitted is not None else set()
+
+    def _members_outside(
+        self, seated: ProtocolNode, parent: ProtocolNode,
+    ) -> set[str]:
+        """Who is on this team without also being on the one above it.
+
+        Taking a seat commits everybody already on this team to the parent,
+        because being on a team below is being on the team above. Somebody
+        who has not taken a role up there would be carried into an agreement
+        they never accepted - and would then find this team read-only,
+        including the trustee who accepted the seat on its behalf.
+
+        A team seated *here* is not checked: its own members were contained
+        when it took its seat, so containment holds up the chain by
+        induction. Only individuals are counted.
+
+        This can only report what it can see. A role held on a replica this
+        session does not reach reads as unheld, so the answer is the
+        cautious one - refuse and name them - rather than a guess.
+        """
+        above = self.actor_uuids(parent) | {seated.uuid}
+        outside = set()
+        for actor_uuid in self.actor_uuids(seated):
+            if actor_uuid in above or self._node(actor_uuid, "agreement"):
+                continue
+            known = self._known_people().get(actor_uuid) or {}
+            outside.add(
+                known.get("name") or known.get("address")
+                or "somebody you have not met",
+            )
+        return outside
 
     def seat_offers(self, agreement: ProtocolNode) -> list[dict]:
         """Seats offered to this agreement that it does not yet hold.
@@ -1553,6 +1624,7 @@ class TeamLogic:
             for offer in self._all_role_offers(role)
         }
         decisions = self._observed_decisions(agreement, role)
+        admitted = self.actors_admitted_above(agreement)
         mine = self._identity_uuid
         # An offer authored by the Identity holder arrives here as a proposal
         # rather than as content, because nothing merges without somebody's
@@ -1642,6 +1714,15 @@ class TeamLogic:
                 # Nothing else about it differs, so it is a note on the
                 # record rather than a status of its own.
                 "offered_elsewhere": unmerged_offer,
+                # Accepted here, but not on a team above - so not on this
+                # one either, whatever their answer here says. A team seated
+                # here is exempt: its own members were contained when it
+                # took its seat.
+                "outside_parent": bool(
+                    admitted is not None
+                    and actor_uuid not in admitted
+                    and not is_team
+                ),
                 "name": (
                     (seated.data.get("title") or "Untitled agreement")
                     if seated
@@ -2582,6 +2663,12 @@ class TeamLogic:
         Identity counts, because holding Identity is holding a role. A
         request does not: an answer with no offer behind it is somebody
         asking to be in, which is not the same as being in.
+
+        Nor does somebody who has dropped out of a team above this one.
+        Their answer here stands and is untouched, but being on a team below
+        is being on the team above, so it is no longer a holding - and
+        counting it here would let the containment be satisfied one level
+        down by somebody the level above had already lost.
         """
         actors = set()
         if holder := self.identity_holder(agreement):
@@ -2591,6 +2678,7 @@ class TeamLogic:
                 holder["actor_uuid"]
                 for holder in self.role_holders(agreement, role)
                 if holder["status"] == "accepted"
+                and not holder["outside_parent"]
             )
         return actors
 
@@ -2674,12 +2762,15 @@ class TeamLogic:
     ) -> tuple[str, str] | None:
         """The first thing standing between this agreement and a root.
 
-        An agreement is reachable when *any* of its holdings leads to a root
-        with every step of that path live. Holding a role in two agreements
-        means either can carry it, so one parent going invalid suspends that
-        relationship rather than paralysing a body the other still depends
-        on. Returns None when reachable, otherwise the problem on the first
-        holding in order - the one that would be home if it worked.
+        You are on a team only by holding a role on it, and that goes for
+        every team above it: a body sits inside each of its parents, so
+        taking part in it is taking part in all of them. Every holding must
+        therefore lead to a root with each step of that path live - not
+        merely one of them. A second parent is a second commitment, not a
+        spare route around the first.
+
+        Returns None when every path is clear, otherwise the problem on the
+        first holding in order.
 
         Roots have no holdings and are always reachable.
         """
@@ -2688,16 +2779,11 @@ class TeamLogic:
     def _path_problem(
         self, agreement: ProtocolNode, visiting: set[str],
     ) -> tuple[str, str] | None:
-        holdings = self.parent_holdings(agreement)
-        if not holdings:
-            return None
-        first: tuple[str, str] | None = None
-        for holding in holdings:
+        for holding in self.parent_holdings(agreement):
             problem = self._holding_problem(agreement, holding, visiting)
-            if problem is None:
-                return None
-            first = first or problem
-        return first
+            if problem is not None:
+                return problem
+        return None
 
     def _holding_problem(
         self, holder: ProtocolNode, holding: ProtocolNode, visiting: set[str],
@@ -2721,8 +2807,9 @@ class TeamLogic:
 
         Derived, never stored, so it reverses itself when a parent recovers
         and there is no home field to keep in step. Display and navigation
-        only - it must never enter the guard, or "reachable by any path"
-        quietly becomes "reachable through home".
+        only - a second parent is a second commitment rather than a spare
+        route, so which one an agreement is *drawn* under decides nothing
+        about whether it may be worked in.
         """
         for holding in self.parent_holdings(agreement):
             if self._holding_problem(
