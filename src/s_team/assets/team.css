@@ -353,6 +353,11 @@ h2.element-label { margin: 0 0 4px; }
    they are still part of what is being accepted, not an admin panel bolted
    to the side. --hover is a translucent overlay, so one card style lifts off
    --panel in both themes. */
+/* The way in, when there is no team yet. It is the only thing on the pane,
+   so it is given room rather than tucked against the edge. */
+#empty { margin: 18px 4px; color: var(--text-muted); }
+#empty p { margin: 0 0 10px; }
+
 .roles { margin: 0 0 10px; padding: 3px 4px 8px; }
 .roles-empty {
   margin: 6px 4px 8px 22px;

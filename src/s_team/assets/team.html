@@ -22,7 +22,10 @@
       </p>
     </aside>
     <div class="document-pane">
-      <p id="empty">Create or accept an agreement to begin.</p>
+      <div id="empty">
+        <p>Create a team to begin, or accept an invitation to one.</p>
+        <div id="emptyCreate"></div>
+      </div>
       <article id="document"></article>
     </div>
   </main>
@@ -308,6 +311,30 @@
         {agreement_uuid: agreementUuid});
       await load();
     };
+
+    // A team has to be creatable from the page that shows teams. Without
+    // this the empty state named the two ways in - create one, or accept an
+    // invitation - and offered neither, so a client with no team had no way
+    // to get one.
+    //
+    // Creating selects, so you land in the new team's own (empty) agreement
+    // rather than back on the same empty state you just left.
+    const newTeamControl = () => SovereignUI.addComposer({
+      noun: 'team',
+      placeholder: 'Team name',
+      onSubmit: async title => {
+        const created = await api('/api/team/agreements/create', {title});
+        if (created?.value) await selectAgreement(created.value);
+        else await load();
+      },
+      onError: error => showToast(error.message, true),
+    });
+
+    // Built once, not per render. The document rebuild is guarded against
+    // destroying a field being typed into, but these two sit outside it -
+    // rebuilding them on the poll would empty the box mid-word.
+    const headerNewTeam = newTeamControl();
+    const emptyNewTeam = newTeamControl();
 
     const renderOrganization = (organization) => {
       const tree = document.querySelector('#organizationTree');
@@ -1133,10 +1160,10 @@
           picker.append(blank);
           const groups = {
             individual: document.createElement('optgroup'),
-            agreement: document.createElement('optgroup'),
+            team: document.createElement('optgroup'),
           };
           groups.individual.label = 'Individuals';
-          groups.agreement.label = 'Teams';
+          groups.team.label = 'Teams';
           for (const actor of candidates) {
             const option = document.createElement('option');
             option.value = actor.uuid;
@@ -1353,6 +1380,13 @@
         } : null,
       });
       document.querySelector('#empty').hidden = Boolean(current);
+      // Beside the topic name when a team is open, and in the empty state
+      // when none is - the same act, wherever you are when you want it.
+      SovereignShell.setTopicActions(headerNewTeam);
+      const emptyCreate = document.querySelector('#emptyCreate');
+      if (!current && !emptyCreate.contains(emptyNewTeam)) {
+        emptyCreate.append(emptyNewTeam);
+      }
 
       const article = document.querySelector('#document');
       // Never rebuild the document while it is being edited, or the caret

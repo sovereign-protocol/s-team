@@ -2002,7 +2002,7 @@ class TeamLogic:
     # falls through to the bare "Missing in <peer>" - which tells the reader
     # that something differs while withholding what.
     NODE_LABELS = {
-        "team": "Agreement",
+        "team": "Team",
         "team_section": "Section",
         "team_clause": "Clause",
         "team_role": "Role",
@@ -2345,7 +2345,10 @@ class TeamLogic:
         )
         return {
             "address": self.session.address,
-            "team": (
+            # Payload key, not a node type. The page reads it as
+            # payload.agreement, and the wire vocabulary is deliberately not
+            # moving with the stored types.
+            "agreement": (
                 self._document_node_dict(selected) if selected else None
             ),
             "agreements": [
@@ -2463,7 +2466,7 @@ class TeamLogic:
             view = self.transition_by_node([event]).get(node_uuid)
             if view:
                 decorated.append((event, view))
-        agreement = payload.get("team") or {}
+        agreement = payload.get("agreement") or {}
         return {
             "payload": payload,
             "topic_uuid": agreement.get("uuid"),
