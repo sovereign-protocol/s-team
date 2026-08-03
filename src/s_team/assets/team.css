@@ -370,6 +370,16 @@ h2.element-label { margin: 0 0 4px; }
   border: 1px dashed rgba(37, 99, 235, 0.55);
   background: rgba(37, 99, 235, 0.12);
 }
+/* Identity is a role and reads as one. The key is the only thing marking it
+   apart, because the difference is cardinality, not privilege. */
+.role-card.is-identity .element-label::before {
+  content: '\1F511';
+  margin-right: 6px;
+}
+.identity-claim {
+  font-size: 12px;
+  padding: 3px 8px;
+}
 .role-card .element-label { margin: 2px 0; font-size: 14px; }
 .role-purpose {
   margin: 2px 0 10px 22px;

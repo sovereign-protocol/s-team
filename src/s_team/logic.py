@@ -13,6 +13,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
@@ -88,6 +89,49 @@ class TeamLogic:
         return sorted(found, key=lambda node: (
             str(node.data.get("title", "")), node.created_at,
         ))
+
+    # A name is the whole of how a role or an agreement is referred to: a
+    # badge, an offer, a seat in a parent, a line in the organization tree.
+    # Two of them called the same thing are two different things that read
+    # as one. Refusing the write would throw away what somebody typed, so
+    # the name is kept and numbered instead.
+    _NUMBERED = re.compile(r"\s*\(\d+\)$")
+
+    @classmethod
+    def _distinct_name(cls, name: str, taken) -> str:
+        existing = {
+            str(entry or "").strip().casefold()
+            for entry in taken
+        }
+        if name.casefold() not in existing:
+            return name
+        # A second "Lead (2)" becomes "Lead (3)", not "Lead (2) (2)".
+        base = cls._NUMBERED.sub("", name) or name
+        index = 2
+        while f"{base} ({index})".casefold() in existing:
+            index += 1
+        return f"{base} ({index})"
+
+    def _sibling_names(
+        self, node: ProtocolNode, node_type: str, field: str,
+    ) -> list[str]:
+        """What the things beside this one are already called.
+
+        An agreement is a topic root rather than a child of its neighbours,
+        so its family is the agreement list rather than a parent's children.
+        """
+        if node_type == "agreement":
+            family = self.agreements()
+        else:
+            parent = self.session.protocol.index.get(node.parent_uuid)
+            family = self._ordered(parent, node_type) if parent else []
+        return [
+            sibling.data.get(field) for sibling in family
+            if sibling.uuid != node.uuid
+        ]
+
+    def _agreement_titles(self) -> list[str]:
+        return [node.data.get("title") for node in self.agreements()]
 
     def sections(self, agreement: ProtocolNode) -> list[ProtocolNode]:
         return self._ordered(agreement, "agreement_section")
@@ -188,6 +232,7 @@ class TeamLogic:
         normalized = str(title or "").strip()
         if not normalized:
             return SessionResult("error", reason="agreement title is required")
+        normalized = self._distinct_name(normalized, self._agreement_titles())
         result = self.session.create_child(
             self._agreement_container().uuid,
             {"type": "agreement", "title": normalized},
@@ -250,6 +295,7 @@ class TeamLogic:
         normalized = str(title or "").strip()
         if not normalized:
             return SessionResult("error", reason="agreement title is required")
+        normalized = self._distinct_name(normalized, self._agreement_titles())
 
         created = self.session.create_child(
             self._agreement_container().uuid,
@@ -307,8 +353,11 @@ class TeamLogic:
         source = self._node(agreement_uuid, "agreement")
         if not source:
             return SessionResult("error", reason="agreement not found")
-        normalized = str(title or "").strip() or (
-            f"{source.data.get('title') or 'Untitled agreement'} (template)"
+        normalized = self._distinct_name(
+            str(title or "").strip() or (
+                f"{source.data.get('title') or 'Untitled agreement'} (template)"
+            ),
+            self._agreement_titles(),
         )
         created = self.session.create_child(
             self._agreement_container().uuid,
@@ -428,13 +477,15 @@ class TeamLogic:
         # The seat in the parent keeps its own name. It is what the parent
         # expects of this body, which is not the same thing as what the
         # body calls itself.
-        return self._retitle(agreement_uuid, "agreement", "title", title)
+        return self._retitle(
+            agreement_uuid, "agreement", "title", title, distinct=True,
+        )
 
     def rename_section(self, section_uuid: str, title: str) -> SessionResult:
         return self._retitle(section_uuid, "agreement_section", "title", title)
 
     def _retitle(self, node_uuid: str, node_type: str, field: str,
-                 value: str) -> SessionResult:
+                 value: str, distinct: bool = False) -> SessionResult:
         node = self._node(node_uuid, node_type)
         if not node:
             return SessionResult("error", reason=f"{node_type} not found")
@@ -444,6 +495,10 @@ class TeamLogic:
         normalized = str(value or "").strip()
         if not normalized:
             return SessionResult("error", reason=f"{field} is required")
+        if distinct:
+            normalized = self._distinct_name(
+                normalized, self._sibling_names(node, node_type, field),
+            )
         data = dict(node.data)
         data[field] = normalized
         return self.session.modify(node.uuid, data, node.weights)
@@ -587,6 +642,23 @@ class TeamLogic:
             return SessionResult("error", reason="Identity is already yours")
         return self._write_identity(agreement_uuid, normalized)
 
+    def resign_identity(self, agreement_uuid: str) -> SessionResult:
+        """Step out of Identity, leaving the seat vacant.
+
+        The one way Identity becomes vacant outside a template (2.2). The
+        record stays and is emptied rather than deleted: it is the node both
+        sides compare, so removing it would make "nobody holds this" and "I
+        have not been told who holds this" the same observation.
+        """
+        agreement = self._node(agreement_uuid, "agreement")
+        if not agreement:
+            return SessionResult("error", reason="agreement not found")
+        if not self.holds_identity(agreement):
+            return SessionResult(
+                "error", reason="only the Identity holder can step out of it",
+            )
+        return self._write_identity(agreement_uuid, "")
+
     def _write_identity(
         self, agreement_uuid: str, actor_uuid: str,
     ) -> SessionResult:
@@ -713,6 +785,12 @@ class TeamLogic:
 
         node = nodes[0]
         holder = str(node.data.get("holder_actor_uuid") or "").strip()
+        # An emptied record is the seat standing open, not a holder this
+        # session cannot name: somebody stepped out of it (resign_identity).
+        # The node uuid still travels, because that record is what a peer
+        # taking the seat diverges against.
+        if not holder:
+            return {**blank, "state": "vacant", "node_uuid": node.uuid}
         # What each peer's own copy of this node says. The view needs it to
         # tell a handover - where the peer naming a new holder *is* that new
         # holder - from a claim staked over somebody still in the seat.
@@ -735,19 +813,25 @@ class TeamLogic:
             peer_holder = str(
                 peer_node.data.get("holder_actor_uuid") or "",
             ).strip()
-            if peer_holder and peer_holder != holder:
-                claims.append({
-                    "peer_addr": address,
-                    "holder_actor_uuid": peer_holder,
-                    "holder_name": describe(peer_holder),
-                    # The same divergence means two different things. A peer
-                    # naming *itself* is accepting a handover; a peer naming
-                    # somebody else is staking a claim over whoever is still
-                    # in the seat.
-                    "is_handover": (
-                        uuid_for_address.get(address) == peer_holder
-                    ),
-                })
+            if peer_holder == holder:
+                continue
+            claims.append({
+                "peer_addr": address,
+                "holder_actor_uuid": peer_holder,
+                "holder_name": describe(peer_holder) if peer_holder else "",
+                # The same divergence means three different things. A peer
+                # naming *itself* is accepting a handover; a peer naming
+                # somebody else is staking a claim over whoever is still in
+                # the seat; a peer naming nobody is the holder having
+                # stepped out of it. That last one used to be dropped here
+                # for having no name to report, which left the one side that
+                # had to answer it with nothing on screen to answer.
+                "is_vacancy": not peer_holder,
+                "is_handover": (
+                    bool(peer_holder)
+                    and uuid_for_address.get(address) == peer_holder
+                ),
+            })
         return {
             "node_uuid": node.uuid,
             "state": "held",
@@ -790,6 +874,10 @@ class TeamLogic:
         normalized = str(name or "").strip()
         if not normalized:
             return SessionResult("error", reason="role name is required")
+        normalized = self._distinct_name(
+            normalized,
+            [role.data.get("name") for role in self.roles(agreement)],
+        )
         result = self.session.create_child(
             agreement.uuid,
             {
@@ -809,7 +897,9 @@ class TeamLogic:
         return result
 
     def rename_role(self, role_uuid: str, name: str) -> SessionResult:
-        return self._retitle(role_uuid, "agreement_role", "name", name)
+        return self._retitle(
+            role_uuid, "agreement_role", "name", name, distinct=True,
+        )
 
     def set_role_purpose(self, role_uuid: str, purpose: str) -> SessionResult:
         # A purpose may be cleared. Unlike the name it does not identify the
@@ -1463,11 +1553,26 @@ class TeamLogic:
             for offer in self._all_role_offers(role)
         }
         decisions = self._observed_decisions(agreement, role)
+        mine = self._identity_uuid
+        # An offer authored by the Identity holder arrives here as a proposal
+        # rather than as content, because nothing merges without somebody's
+        # act. Left out of this list it is invisible, so the one person who
+        # can answer it is never shown that there is anything to answer -
+        # which is how an offer looks, from the far end, like nothing was
+        # ever sent. Answering adopts it (see decide_role).
+        proposed_to_me = (
+            mine not in offers
+            and mine not in decisions
+            and self._offer_proposed_to(agreement, role, mine)
+        )
         holders = []
-        for actor_uuid in offers.keys() | decisions.keys():
+        for actor_uuid in (
+            offers.keys() | decisions.keys() | ({mine} if proposed_to_me else set())
+        ):
             offer = offers.get(actor_uuid)
             record = decisions.get(actor_uuid)
             member = people.get(actor_uuid)
+            unmerged_offer = proposed_to_me and actor_uuid == mine
             # Somebody this session knows but who is not on this topic is
             # a different case from somebody it cannot place at all: the
             # first has simply not been invited here, which is actionable
@@ -1487,6 +1592,11 @@ class TeamLogic:
             )
             if revoked:
                 status = "revoked"
+            elif unmerged_offer:
+                # Offered, and not answered - the same standing as an offer
+                # that had already merged, because from the reader's side it
+                # is the same fact and calls for the same act.
+                status = "pending"
             elif not offer:
                 # An answer nobody offered: somebody asking to take this.
                 status = "requested"
@@ -1528,6 +1638,10 @@ class TeamLogic:
                     and actor_uuid == self._identity_uuid
                     and self._offer_proposed_to(agreement, role, actor_uuid)
                 ),
+                # The offer for this one exists only on the author's replica.
+                # Nothing else about it differs, so it is a note on the
+                # record rather than a status of its own.
+                "offered_elsewhere": unmerged_offer,
                 "name": (
                     (seated.data.get("title") or "Untitled agreement")
                     if seated
@@ -1765,17 +1879,352 @@ class TeamLogic:
                     if resolver else {"state": "unknown"}
                 )
             liveness = liveness or {"state": "unknown"}
-            events.extend(
-                event
-                for event in self.session.analyze_peer_transitions(
-                    address, agreement_uuid,
-                )
-                if not (
+            for event in self.session.analyze_peer_transitions(
+                address, agreement_uuid,
+            ):
+                if (
                     event["stage"] == "in_flight"
                     and liveness.get("state") == "stale"
+                ):
+                    continue
+                event["changes"] = (
+                    [] if event["type"] == "in_agreement"
+                    else self.describe_peer_changes(
+                        address, event.get("node_uuid"),
+                        authored_locally=event["type"] in (
+                            "local_made_changes", "peer_missing_node",
+                        ),
+                    )
                 )
-            )
+                events.append(event)
         return events
+
+    # What the divergence list reads from. Core's shared.js composes one
+    # sentence per difference out of node_label / authored_act /
+    # authored_detail, so an application that publishes no change records
+    # falls through to the bare "Missing in <peer>" - which tells the reader
+    # that something differs while withholding what.
+    NODE_LABELS = {
+        "agreement": "Agreement",
+        "agreement_section": "Section",
+        "agreement_clause": "Clause",
+        "agreement_role": "Role",
+        "agreement_accountability": "Accountability",
+        "agreement_domain": "Domain",
+        "agreement_identity": "Identity",
+        "agreement_role_offer": "Role offer",
+        "agreement_role_decision": "Role answer",
+        "agreement_role_holding": "Seat",
+        "agenda_item": "Discussion topic",
+    }
+    # Text-bearing fields, by the name they are read under.
+    TEXT_FIELDS = {
+        "title": "Title",
+        "name": "Name",
+        "text": "Text",
+        "purpose": "Purpose",
+    }
+
+    def describe_peer_changes(
+        self, peer_addr: str, node_uuid: str | None,
+        authored_locally: bool = False,
+    ) -> list[dict]:
+        """Describe the peer's current version of a node against this one.
+
+        Semantic current-version differences, not an audit log: in a genuine
+        two-sided divergence they say what the peer's version holds relative
+        to mine without claiming which operation produced it.
+        """
+        if not node_uuid:
+            return []
+        local = self.session.protocol.index.get(node_uuid)
+        peer = self.session.get_cached_peer_subtree(peer_addr, node_uuid)
+        if not local and not peer:
+            return []
+        node = peer or local
+        node_type = node.data.get("type") or "node"
+        label = self.NODE_LABELS.get(node_type, "Item")
+        if not local:
+            return self._annotate_authorship([{
+                "kind": "presence",
+                "field": "node",
+                "label": label,
+                "summary": f"{label} exists only in the peer version",
+                "local_summary": f"Keep {label.lower()} absent",
+            }], label, authored_locally)
+        if not peer:
+            return self._annotate_authorship([{
+                "kind": "presence",
+                "field": "node",
+                "label": label,
+                "summary": f"{label} exists only in your version",
+                "local_summary": f"Keep your {label.lower()}",
+            }], label, authored_locally)
+        if (
+            local.state_hash == peer.state_hash
+            and local.parent_uuid == peer.parent_uuid
+        ):
+            return []
+        return self._annotate_authorship(
+            self._field_changes(peer_addr, local, peer, node_type, label),
+            label,
+            authored_locally,
+        )
+
+    def _field_changes(
+        self, peer_addr: str, local: ProtocolNode, peer: ProtocolNode,
+        node_type: str, label: str,
+    ) -> list[dict]:
+        changes: list[dict] = []
+        if local.deleted != peer.deleted:
+            changes.append({
+                "kind": "deletion",
+                "field": "deleted",
+                "label": label,
+                "local_value": local.deleted,
+                "peer_value": peer.deleted,
+                "summary": (
+                    f"{label} is deleted in the peer version"
+                    if peer.deleted else
+                    f"{label} is present in the peer version"
+                ),
+                "local_summary": (
+                    f"Keep your {label.lower()} present"
+                    if peer.deleted else
+                    f"Keep your {label.lower()} deleted"
+                ),
+            })
+        for field, field_label in self.TEXT_FIELDS.items():
+            if local.data.get(field) == peer.data.get(field):
+                continue
+            changes.append({
+                "kind": "field",
+                "field": field,
+                "label": field_label,
+                "local_value": local.data.get(field),
+                "peer_value": peer.data.get(field),
+                "summary": (
+                    f"{field_label}: \"{local.data.get(field) or ''}\""
+                    f" → \"{peer.data.get(field) or ''}\""
+                ),
+                "local_summary": f"Keep your {field_label.lower()}",
+            })
+        changes.extend(self._holding_changes(local, peer, node_type))
+        if local.data.get("order") != peer.data.get("order"):
+            changes.append({
+                "kind": "position",
+                "field": "order",
+                "label": "Position",
+                "local_value": local.data.get("order"),
+                "peer_value": peer.data.get("order"),
+                "summary": f"{label} sits elsewhere in the peer version",
+                "local_summary": f"Keep your {label.lower()} where it is",
+            })
+        # An agreement is a topic root, and every peer grafts a topic under
+        # its own container - so the parents always differ and always will.
+        # Session excludes that from classification; the description has to
+        # exclude it too, or every shared agreement reads as "moved".
+        if node_type != "agreement" and local.parent_uuid != peer.parent_uuid:
+            changes.append({
+                "kind": "move",
+                "field": "parent_uuid",
+                "label": "Location",
+                "local_value": local.parent_uuid,
+                "peer_value": peer.parent_uuid,
+                "local_label": self._node_display_name(
+                    self.session.protocol.index.get(local.parent_uuid),
+                ),
+                "peer_label": self._node_display_name(
+                    self.session.get_cached_peer_subtree(
+                        peer_addr, peer.parent_uuid,
+                    ),
+                ),
+                "summary": f"{label} sits under a different parent",
+                "local_summary": f"Keep your {label.lower()} where it is",
+            })
+        return changes
+
+    def _holding_changes(
+        self, local: ProtocolNode, peer: ProtocolNode, node_type: str,
+    ) -> list[dict]:
+        """The three records that say who holds what.
+
+        They carry no text at all, so without this every offer, answer and
+        handover reads as an unnamed "Item changed" - which is exactly the
+        kind of difference somebody most needs told.
+        """
+        if node_type == "agreement_identity":
+            field = "holder_actor_uuid"
+            if local.data.get(field) == peer.data.get(field):
+                return []
+            return [{
+                "kind": "identity",
+                "field": field,
+                "label": "Identity",
+                "local_value": local.data.get(field),
+                "peer_value": peer.data.get(field),
+                "local_label": self._actor_name(local.data.get(field)),
+                "peer_label": self._actor_name(peer.data.get(field)),
+                "summary": (
+                    f"Identity: {self._actor_name(local.data.get(field))}"
+                    f" → {self._actor_name(peer.data.get(field))}"
+                ),
+                "local_summary": (
+                    "Keep "
+                    f"{self._actor_name(local.data.get(field))} as Identity"
+                ),
+            }]
+        if node_type == "agreement_role_offer":
+            if bool(local.data.get("revoked_at")) == bool(
+                peer.data.get("revoked_at"),
+            ):
+                return []
+            who = self._actor_name(peer.data.get("actor_uuid"))
+            withdrawn = bool(peer.data.get("revoked_at"))
+            return [{
+                "kind": "offer",
+                "field": "revoked_at",
+                "label": "Role offer",
+                "local_value": local.data.get("revoked_at"),
+                "peer_value": peer.data.get("revoked_at"),
+                "peer_label": who,
+                "summary": (
+                    f"The offer to {who} is withdrawn in the peer version"
+                    if withdrawn else
+                    f"The offer to {who} stands in the peer version"
+                ),
+                "local_summary": (
+                    f"Keep the offer to {who}" if withdrawn
+                    else f"Keep the offer to {who} withdrawn"
+                ),
+            }]
+        if node_type == "agreement_role_decision":
+            if (
+                local.data.get("decision") == peer.data.get("decision")
+                and local.data.get("expires_at") == peer.data.get("expires_at")
+            ):
+                return []
+            who = self._actor_name(peer.data.get("actor_uuid"))
+            return [{
+                "kind": "answer",
+                "field": "decision",
+                "label": "Role answer",
+                "local_value": local.data.get("decision"),
+                "peer_value": peer.data.get("decision"),
+                "peer_label": who,
+                "summary": (
+                    f"{who} answered {peer.data.get('decision') or 'nothing'}"
+                    " in the peer version"
+                ),
+                "local_summary": (
+                    f"Keep {who} as "
+                    f"{local.data.get('decision') or 'unanswered'}"
+                ),
+            }]
+        return []
+
+    def _actor_name(self, actor_uuid: str | None) -> str:
+        normalized = str(actor_uuid or "").strip()
+        if not normalized:
+            return "nobody"
+        if normalized == self._identity_uuid:
+            return "you"
+        if known := self._known_people().get(normalized):
+            return known.get("name") or known.get("address") or "somebody"
+        if seated := self._node(normalized, "agreement"):
+            return seated.data.get("title") or "an agreement"
+        return "somebody you have not met"
+
+    @staticmethod
+    def _node_display_name(node: ProtocolNode | None) -> str:
+        if not node:
+            return "Unknown"
+        return str(
+            node.data.get("title")
+            or node.data.get("name")
+            or node.data.get("text")
+            or "Untitled",
+        )
+
+    @staticmethod
+    def _annotate_authorship(
+        changes: list[dict], label: str, authored_locally: bool,
+    ) -> list[dict]:
+        """Name what the author did, in words neither side has to invert.
+
+        The rest of a change record is peer-relative ("...in the peer
+        version"), which is right for choosing between versions and wrong
+        for saying what happened: it makes the person who made the change
+        read their own edit described from the far end. These fields state
+        the act, so each side renders "<act> by me" or "<act> by <name>"
+        from one record.
+        """
+        for change in changes:
+            kind = change.get("kind")
+            detail = ""
+            # A suffix belongs to the verb and follows the author directly;
+            # a detail is a list of what changed and sits behind a colon.
+            suffix = ""
+            if kind == "presence":
+                act, noun = "created", "creation"
+            elif kind == "deletion":
+                deleted_by_author = (
+                    bool(change.get("peer_value")) != authored_locally
+                )
+                act = "deleted" if deleted_by_author else "restored"
+                noun = "deletion" if deleted_by_author else "restoration"
+            elif kind == "move":
+                act, noun = "moved", "move"
+                # Name where the author put it - their own side of the
+                # comparison. The other end is where it came from.
+                target = change.get(
+                    "local_label" if authored_locally else "peer_label",
+                )
+                if target:
+                    suffix = f'under "{target}"'
+                counterpart = change.get(
+                    "peer_label" if authored_locally else "local_label",
+                )
+                if counterpart:
+                    change["counter_suffix"] = f'under "{counterpart}"'
+            elif kind == "position":
+                act, noun = "reordered", "reordering"
+            elif kind == "identity":
+                given = change.get(
+                    "local_value" if authored_locally else "peer_value",
+                )
+                if str(given or "").strip():
+                    act, noun = "handed on", "handover"
+                    target = change.get(
+                        "local_label" if authored_locally else "peer_label",
+                    )
+                    if target:
+                        suffix = f"to {target}"
+                else:
+                    # Emptied, not given away. "Handed on to nobody" names a
+                    # recipient who does not exist, and reads as a mistake.
+                    act, noun = "vacated", "resignation"
+            elif kind == "offer":
+                withdrawn = bool(change.get("peer_value")) != authored_locally
+                act = "withdrawn" if withdrawn else "offered"
+                noun = "withdrawal" if withdrawn else "offer"
+                if who := change.get("peer_label"):
+                    suffix = f"to {who}"
+            elif kind == "answer":
+                act, noun = "answered", "answer"
+                given = change.get(
+                    "local_value" if authored_locally else "peer_value",
+                )
+                detail = str(given or "not yet answered")
+            else:
+                act, noun = "modified", "modification"
+                detail = f"{str(change.get('label') or '').lower()} changed"
+            change["node_label"] = label
+            change["authored_act"] = act
+            change["authored_noun"] = noun
+            change["authored_suffix"] = suffix
+            change["authored_detail"] = detail
+        return changes
 
     def document_payload(
         self, agreement_uuid: str | None = None,

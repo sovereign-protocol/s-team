@@ -2189,6 +2189,158 @@ class TeamLogicTests(unittest.TestCase):
             if holder["is_self"]
         )
 
+    def test_an_offer_still_only_a_proposal_is_shown_to_who_it_is_for(self):
+        # Only Identity may offer, so an offer reaches the person it names
+        # as a proposal on their side - nothing merges without somebody's
+        # act. Reading holders from merged content alone made that offer
+        # invisible to the one person who could answer it, so from their
+        # screen an offer and no offer looked exactly the same.
+        left, right = self.runtime(9601), self.runtime(9602)
+        agreement_uuid = left.logic.create_agreement("Charter").value
+        connect(left, right, agreement_uuid)
+        right.logic.accept_agreement_invitation(
+            right.session.protocol.index[agreement_uuid],
+        )
+        sync(left, right)
+        role_uuid = left.logic.roles(
+            left.session.protocol.index[agreement_uuid],
+        )[0].uuid
+
+        self.assertEqual(
+            left.logic.offer_role(
+                role_uuid, right.session.identity.uuid,
+            ).status,
+            "ok",
+        )
+        sync(left, right)
+
+        agreement = right.session.protocol.index[agreement_uuid]
+        role = right.session.protocol.index[role_uuid]
+        mine = next(
+            holder
+            for holder in right.logic.role_holders(agreement, role)
+            if holder["is_self"]
+        )
+        self.assertEqual(mine["status"], "pending")
+        self.assertTrue(mine["offered_elsewhere"])
+
+        # And answering it takes the offer up rather than reading as a
+        # request nobody made.
+        self.assertEqual(
+            right.logic.decide_role(role_uuid, "accepted").status, "ok",
+        )
+        sync(left, right)
+        theirs = next(
+            holder for holder in left.logic.role_holders(
+                left.session.protocol.index[agreement_uuid],
+                left.session.protocol.index[role_uuid],
+            )
+            if not holder["is_self"]
+        )
+        self.assertEqual(theirs["status"], "accepted")
+
+    def test_a_name_already_taken_beside_it_is_numbered_not_duplicated(self):
+        session = Session("local")
+        logic = TeamLogic(session)
+        first = logic.create_agreement("Cooperative").value
+        second = logic.create_agreement("Cooperative").value
+        self.assertEqual(
+            session.protocol.index[second].data["title"], "Cooperative (2)",
+        )
+
+        role_a = logic.create_role(first, "Lead").value
+        role_b = logic.create_role(first, "Lead").value
+        self.assertEqual(
+            session.protocol.index[role_b].data["name"], "Lead (2)",
+        )
+        # A third takes the next number rather than stacking suffixes.
+        role_c = logic.create_role(first, "Lead (2)").value
+        self.assertEqual(
+            session.protocol.index[role_c].data["name"], "Lead (3)",
+        )
+        # Renaming obeys the same rule, and a rename to its own name is not
+        # a collision with itself.
+        self.assertEqual(logic.rename_role(role_a, "Lead").status, "ok")
+        self.assertEqual(session.protocol.index[role_a].data["name"], "Lead")
+        self.assertEqual(logic.rename_role(role_a, "Lead (2)").status, "ok")
+        self.assertEqual(
+            session.protocol.index[role_a].data["name"], "Lead (4)",
+        )
+
+    def test_identity_can_be_stepped_out_of_and_the_seat_is_then_vacant(self):
+        # The one way Identity becomes vacant outside a template (2.2). The
+        # record is emptied rather than deleted, so "nobody holds this" stays
+        # distinguishable from "I have not been told who holds this".
+        session = Session("local")
+        logic = TeamLogic(session)
+        agreement_uuid = logic.create_agreement("Charter").value
+        agreement = session.protocol.index[agreement_uuid]
+        self.assertTrue(logic.holds_identity(agreement))
+
+        node_uuid = logic.identity_payload(agreement)["node_uuid"]
+        self.assertEqual(logic.resign_identity(agreement_uuid).status, "ok")
+
+        agreement = session.protocol.index[agreement_uuid]
+        payload = logic.identity_payload(agreement)
+        self.assertEqual(payload["state"], "vacant")
+        self.assertEqual(payload["node_uuid"], node_uuid)
+        self.assertFalse(logic.holds_identity(agreement))
+        # Nobody is speaking for it, so nobody may offer its roles.
+        role_uuid = logic.roles(agreement)[0].uuid
+        self.assertEqual(
+            logic.offer_role(role_uuid, "somebody").status, "error",
+        )
+        # And it can be taken back.
+        self.assertEqual(logic.take_identity(agreement_uuid).status, "ok")
+        self.assertTrue(
+            logic.holds_identity(session.protocol.index[agreement_uuid]),
+        )
+        self.assertEqual(
+            logic.resign_identity("not-an-agreement").status, "error",
+        )
+
+    def test_a_divergence_says_what_differs_not_only_that_it_does(self):
+        # Core composes the divergence sentence from these records. Without
+        # them it falls back to "Missing in <peer>", which tells the reader
+        # something differs while withholding what - and names the peer by
+        # its raw relay address for want of anything better.
+        left, right = self.runtime(9603), self.runtime(9604)
+        agreement_uuid = left.logic.create_agreement("Charter").value
+        connect(left, right, agreement_uuid)
+        right.logic.accept_agreement_invitation(
+            right.session.protocol.index[agreement_uuid],
+        )
+        sync(left, right)
+        section_uuid = left.logic.create_section(
+            agreement_uuid, "Purpose",
+        ).value
+        sync(left, right)
+
+        incoming = next(
+            event
+            for event in right.logic.transition_events(agreement_uuid)
+            if event["node_uuid"] == section_uuid
+        )
+        change = incoming["changes"][0]
+        self.assertEqual(change["node_label"], "Section")
+        self.assertEqual(change["authored_act"], "created")
+
+        # A text edit names the field rather than calling it "an item".
+        left.logic.rename_section(section_uuid, "Why we are here")
+        right.logic.accept_peer_node(left.peer_addr, section_uuid)
+        sync(left, right)
+        left.logic.rename_section(section_uuid, "What we are for")
+        sync(left, right)
+        edited = next(
+            event
+            for event in right.logic.transition_events(agreement_uuid)
+            if event["node_uuid"] == section_uuid
+        )
+        self.assertEqual(
+            [change["authored_detail"] for change in edited["changes"]],
+            ["title changed"],
+        )
+
     @staticmethod
     def relay_config(relay_root: str, identity: str, state_dir: str) -> dict:
         return {
