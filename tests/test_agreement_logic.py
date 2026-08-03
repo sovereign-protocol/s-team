@@ -79,7 +79,7 @@ class TeamLogicTests(unittest.TestCase):
 
         payload = runtime.logic.document_payload()
 
-        self.assertEqual(payload["team"]["uuid"], created.value)
+        self.assertEqual(payload["agreement"]["uuid"], created.value)
         with runtime.session.lock:
             self.assertNotIn(
                 "selected_agreement_uuid",
@@ -99,9 +99,9 @@ class TeamLogicTests(unittest.TestCase):
         payload = runtime.logic.document_payload()
 
         self.assertEqual(APPLICATION_MANIFEST.application_id, "team")
-        self.assertEqual(payload["team"]["uuid"], agreement_uuid)
+        self.assertEqual(payload["agreement"]["uuid"], agreement_uuid)
         sections = [
-            child for child in payload["team"]["children"]
+            child for child in payload["agreement"]["children"]
             if child["data"].get("type") == "team_section"
         ]
         self.assertEqual(sections[0]["uuid"], section_uuid)
@@ -131,7 +131,7 @@ class TeamLogicTests(unittest.TestCase):
         # stay out of the document serialization.
         serialized = runtime.logic.document_payload(
             agreement_uuid,
-        )["team"]["children"]
+        )["agreement"]["children"]
         role_view = next(
             child for child in serialized
             if child["data"].get("type") == "team_role"
@@ -303,7 +303,7 @@ class TeamLogicTests(unittest.TestCase):
         payload = runtime.logic.document_payload(child_uuid)
 
         self.assertEqual(selected.status, "ok")
-        self.assertEqual(payload["team"]["uuid"], child_uuid)
+        self.assertEqual(payload["agreement"]["uuid"], child_uuid)
         self.assertFalse(payload["interaction"]["allowed"])
         self.assertIn("Cooperative", payload["interaction"]["reason"])
         for result in (
@@ -621,10 +621,10 @@ class TeamLogicTests(unittest.TestCase):
 
         payload = runtime.logic.document_payload()
         section = next(
-            child for child in payload["team"]["children"]
+            child for child in payload["agreement"]["children"]
             if child["data"].get("type") == "team_section"
         )
-        self.assertEqual(payload["team"]["data"]["title"], "Service terms")
+        self.assertEqual(payload["agreement"]["data"]["title"], "Service terms")
         self.assertEqual(section["data"]["title"], "Scope")
         self.assertEqual(section["children"][0]["data"]["text"], "First draft.")
 
@@ -649,7 +649,7 @@ class TeamLogicTests(unittest.TestCase):
         def section_titles():
             payload = runtime.logic.document_payload(agreement_uuid)
             live = [
-                s for s in payload["team"]["children"]
+                s for s in payload["agreement"]["children"]
                 if not s["deleted"]
                 and s["data"].get("type") == "team_section"
             ]
@@ -669,7 +669,7 @@ class TeamLogicTests(unittest.TestCase):
 
         def clause_texts():
             payload = runtime.logic.document_payload(agreement_uuid)
-            section = next(s for s in payload["team"]["children"] if s["uuid"] == first)
+            section = next(s for s in payload["agreement"]["children"] if s["uuid"] == first)
             live = [c for c in section["children"] if not c["deleted"]]
             ordered = sorted(live, key=lambda c: c["data"].get("order", 0))
             return [c["data"]["text"] for c in ordered]
@@ -716,7 +716,7 @@ class TeamLogicTests(unittest.TestCase):
         self.assertEqual(runtime.logic.delete_section(removed_uuid).status, "ok")
 
         payload = runtime.logic.document_payload()
-        sections = payload["team"]["children"]
+        sections = payload["agreement"]["children"]
         live = [
             item for item in sections
             if not item["deleted"]
@@ -738,7 +738,7 @@ class TeamLogicTests(unittest.TestCase):
 
         payload = runtime.logic.document_payload()
         clauses = next(
-            child for child in payload["team"]["children"]
+            child for child in payload["agreement"]["children"]
             if child["data"].get("type") == "team_section"
         )["children"]
         live = [item["uuid"] for item in clauses if not item["deleted"]]
@@ -898,7 +898,7 @@ class TeamLogicTests(unittest.TestCase):
 
         logic.delete_agreement(agreement_uuid)
 
-        self.assertIsNone(logic.document_payload()["team"])
+        self.assertIsNone(logic.document_payload()["agreement"])
 
     def test_delete_agreement_rejects_a_node_that_is_not_one(self):
         runtime = self.runtime(9453)
@@ -1547,7 +1547,7 @@ class TeamLogicTests(unittest.TestCase):
         self.assertNotIn(
             "team_trustee",
             {child["data"].get("type")
-             for child in payload["team"]["children"]},
+             for child in payload["agreement"]["children"]},
         )
         # A handover changes who holds a role, not what the agreement says,
         # so it must not re-open everybody's acceptance.
@@ -2292,6 +2292,29 @@ class TeamLogicTests(unittest.TestCase):
             for holder in runtime.logic.role_holders(agreement, role)
             if holder["is_self"]
         )
+
+    def test_the_page_is_handed_the_keys_it_reads(self):
+        # Stored node types and payload keys are different vocabularies, and
+        # renaming the first swept up two of the second - which no test
+        # noticed, because every one of them drives the logic directly. The
+        # page then read payload.agreement, got undefined, and drew an empty
+        # document with the rename control switched off, beside a team that
+        # was there the whole time.
+        session = Session("local")
+        logic = TeamLogic(session)
+        agreement_uuid = logic.create_agreement("Cooperative").value
+        payload = logic.document_payload()
+
+        self.assertEqual((payload["agreement"] or {})["uuid"], agreement_uuid)
+        self.assertEqual(
+            [item["uuid"] for item in payload["agreements"]],
+            [agreement_uuid],
+        )
+        # And the snapshot the controller serves has to find the same node,
+        # or the shell is told no topic is open and hides what belongs to it.
+        with session.lock:
+            snapshot = logic.document_snapshot()
+        self.assertEqual(snapshot["topic_uuid"], agreement_uuid)
 
     def test_an_offer_still_only_a_proposal_is_shown_to_who_it_is_for(self):
         # Only Identity may offer, so an offer reaches the person it names
