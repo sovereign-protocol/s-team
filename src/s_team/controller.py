@@ -10,7 +10,7 @@ from starlette.routing import Route
 
 def build_routes(logic, runtime) -> list[Route]:
     async def api_document(request: Request):
-        requested = request.query_params.get("agreement_uuid")
+        requested = request.query_params.get("team_uuid")
         return runtime.composite_response(
             lambda: logic.document_snapshot(requested),
             lambda snapshot: runtime.collaboration.network_info(
@@ -19,36 +19,36 @@ def build_routes(logic, runtime) -> list[Route]:
             logic.merge_document_observation,
         )
 
-    async def api_create_agreement(request: Request):
+    async def api_create_team(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.create_agreement(data.get("title", "")))
+        return await _json_result(runtime, logic.create_team(data.get("title", "")))
 
-    async def api_create_subagreement(request: Request):
+    async def api_create_subteam(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.create_subagreement(
-            data["parent_agreement_uuid"], data.get("title", ""),
+        return await _json_result(runtime, logic.create_subteam(
+            data["parent_team_uuid"], data.get("title", ""),
         ))
 
-    async def api_clone_agreement(request: Request):
+    async def api_clone_team(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.clone_agreement(
-            data["agreement_uuid"], data.get("title"),
+        return await _json_result(runtime, logic.clone_team(
+            data["team_uuid"], data.get("title"),
         ))
 
-    async def api_select_agreement(request: Request):
+    async def api_select_team(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.select_agreement(data["agreement_uuid"]))
+        return await _json_result(runtime, logic.select_team(data["team_uuid"]))
 
-    async def api_delete_agreement(request: Request):
+    async def api_delete_team(request: Request):
         data = await request.json()
         return await _json_result(
-            runtime, logic.delete_agreement(data["agreement_uuid"]),
+            runtime, logic.delete_team(data["team_uuid"]),
         )
 
     async def api_create_section(request: Request):
         data = await request.json()
         return await _json_result(runtime, logic.create_section(
-            data["agreement_uuid"], data.get("title", ""),
+            data["team_uuid"], data.get("title", ""),
         ))
 
     async def api_create_clause(request: Request):
@@ -63,10 +63,10 @@ def build_routes(logic, runtime) -> list[Route]:
             data["clause_uuid"], data.get("text", ""),
         ))
 
-    async def api_rename_agreement(request: Request):
+    async def api_rename_team(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.rename_agreement(
-            data["agreement_uuid"], data.get("title", ""),
+        return await _json_result(runtime, logic.rename_team(
+            data["team_uuid"], data.get("title", ""),
         ))
 
     async def api_rename_section(request: Request):
@@ -98,25 +98,25 @@ def build_routes(logic, runtime) -> list[Route]:
     async def api_take_identity(request: Request):
         data = await request.json()
         return await _json_result(
-            runtime, logic.take_identity(data["agreement_uuid"]),
+            runtime, logic.take_identity(data["team_uuid"]),
         )
 
     async def api_offer_identity(request: Request):
         data = await request.json()
         return await _json_result(runtime, logic.offer_identity(
-            data["agreement_uuid"], data.get("actor_uuid", ""),
+            data["team_uuid"], data.get("actor_uuid", ""),
         ))
 
     async def api_resign_identity(request: Request):
         data = await request.json()
         return await _json_result(
-            runtime, logic.resign_identity(data["agreement_uuid"]),
+            runtime, logic.resign_identity(data["team_uuid"]),
         )
 
     async def api_create_role(request: Request):
         data = await request.json()
         return await _json_result(runtime, logic.create_role(
-            data["agreement_uuid"], data.get("name", ""),
+            data["team_uuid"], data.get("name", ""),
         ))
 
     async def api_rename_role(request: Request):
@@ -167,27 +167,27 @@ def build_routes(logic, runtime) -> list[Route]:
             runtime, logic.resign_role(data["role_uuid"]),
         )
 
-    async def api_seat_agreement(request: Request):
+    async def api_seat_team(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.seat_agreement(
-            data["role_uuid"], data.get("agreement_uuid", ""),
+        return await _json_result(runtime, logic.seat_team(
+            data["role_uuid"], data.get("team_uuid", ""),
         ))
 
     async def api_decline_seat(request: Request):
         data = await request.json()
         return await _json_result(runtime, logic.decline_seat(
-            data["role_uuid"], data.get("agreement_uuid", ""),
+            data["role_uuid"], data.get("team_uuid", ""),
         ))
 
-    async def api_unseat_agreement(request: Request):
+    async def api_unseat_team(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.unseat_agreement(
-            data["role_uuid"], data.get("agreement_uuid", ""),
+        return await _json_result(runtime, logic.unseat_team(
+            data["role_uuid"], data.get("team_uuid", ""),
         ))
 
-    async def api_create_seated_agreement(request: Request):
+    async def api_create_seated_team(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.create_seated_agreement(
+        return await _json_result(runtime, logic.create_seated_team(
             data["role_uuid"], data.get("title", ""),
         ))
 
@@ -224,7 +224,7 @@ def build_routes(logic, runtime) -> list[Route]:
     async def api_agenda_create(request: Request):
         data = await request.json()
         return await _json_result(runtime, logic.create_agenda_item(
-            data["agreement_uuid"], data.get("text", ""), data.get("priority"),
+            data["team_uuid"], data.get("text", ""), data.get("priority"),
         ))
 
     async def api_agenda_delete(request: Request):
@@ -260,25 +260,25 @@ def build_routes(logic, runtime) -> list[Route]:
     async def api_adopt(request: Request):
         data = await request.json()
         return await _json_result(runtime, logic.adopt_peer_changes(
-            data["source_addr"], data["agreement_uuid"],
+            data["source_addr"], data["team_uuid"],
         ))
 
     return [
         Route("/api/team/document", api_document),
-        Route("/api/team/agreements/create", api_create_agreement, methods=["POST"]),
+        Route("/api/team/teams/create", api_create_team, methods=["POST"]),
         Route(
-            "/api/team/agreements/create_subagreement",
-            api_create_subagreement,
+            "/api/team/teams/create_subteam",
+            api_create_subteam,
             methods=["POST"],
         ),
         Route(
-            "/api/team/agreements/clone",
-            api_clone_agreement,
+            "/api/team/teams/clone",
+            api_clone_team,
             methods=["POST"],
         ),
-        Route("/api/team/agreements/select", api_select_agreement, methods=["POST"]),
-        Route("/api/team/agreements/rename", api_rename_agreement, methods=["POST"]),
-        Route("/api/team/agreements/delete", api_delete_agreement, methods=["POST"]),
+        Route("/api/team/teams/select", api_select_team, methods=["POST"]),
+        Route("/api/team/teams/rename", api_rename_team, methods=["POST"]),
+        Route("/api/team/teams/delete", api_delete_team, methods=["POST"]),
         Route("/api/team/sections/create", api_create_section, methods=["POST"]),
         Route("/api/team/sections/rename", api_rename_section, methods=["POST"]),
         Route("/api/team/sections/delete", api_delete_section, methods=["POST"]),
@@ -310,7 +310,7 @@ def build_routes(logic, runtime) -> list[Route]:
         Route("/api/team/roles/delete", api_delete_role, methods=["POST"]),
         Route("/api/team/roles/move", api_move_role, methods=["POST"]),
         Route("/api/team/roles/offer", api_offer_role, methods=["POST"]),
-        Route("/api/team/roles/seat", api_seat_agreement, methods=["POST"]),
+        Route("/api/team/roles/seat", api_seat_team, methods=["POST"]),
         Route(
             "/api/team/roles/decline_seat",
             api_decline_seat,
@@ -318,12 +318,12 @@ def build_routes(logic, runtime) -> list[Route]:
         ),
         Route(
             "/api/team/roles/unseat",
-            api_unseat_agreement,
+            api_unseat_team,
             methods=["POST"],
         ),
         Route(
             "/api/team/roles/seat_new",
-            api_create_seated_agreement,
+            api_create_seated_team,
             methods=["POST"],
         ),
         Route("/api/team/parents/move", api_move_parent, methods=["POST"]),

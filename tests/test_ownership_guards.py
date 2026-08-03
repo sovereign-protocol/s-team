@@ -40,14 +40,14 @@ class AgreementOwnershipControllerTests(unittest.TestCase):
     def setUp(self):
         self.session = Session("local")
         self.logic = TeamLogic(self.session)
-        self.logic.create_agreement("Local agreement")
+        self.logic.create_team("Local team")
         self.routes = build_routes(self.logic, _Runtime())
 
     def _post(self, path: str, payload: dict):
         endpoint = next(route.endpoint for route in self.routes if route.path == path)
         return asyncio.run(endpoint(_post_request(path, payload)))
 
-    def test_clause_mutation_rejects_an_agreement_typed_node_outside_an_agreement(self):
+    def test_clause_mutation_rejects_an_team_typed_node_outside_an_team(self):
         foreign = self.session.create_child(
             self.session.root_uuid(),
             {"type": "team_clause", "text": "foreign"},
@@ -64,7 +64,7 @@ class AgreementOwnershipControllerTests(unittest.TestCase):
             self.session.protocol.index[foreign.uuid].data["text"], "foreign",
         )
 
-    def test_react_rejects_a_peer_only_agreement_node_under_a_foreign_topic(self):
+    def test_react_rejects_a_peer_only_team_node_under_a_foreign_topic(self):
         peer = Session("peer")
         foreign_topic = peer.create_child(
             peer.root_uuid(), {"type": "kanban_board", "name": "foreign"}, {},

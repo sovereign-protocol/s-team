@@ -20,40 +20,40 @@ class TeamFacade:
     def __init__(self, logic: TeamLogic):
         self._logic = logic
 
-    def agreements(self) -> list[ProtocolNode]:
-        return self._logic.agreements()
+    def teams(self) -> list[ProtocolNode]:
+        return self._logic.teams()
 
-    def sections(self, agreement: ProtocolNode) -> list[ProtocolNode]:
-        return self._logic.sections(agreement)
+    def sections(self, team: ProtocolNode) -> list[ProtocolNode]:
+        return self._logic.sections(team)
 
     def clauses(self, section: ProtocolNode) -> list[ProtocolNode]:
         return self._logic.clauses(section)
 
-    def parent_holdings(self, agreement: ProtocolNode) -> list[ProtocolNode]:
-        return self._logic.parent_holdings(agreement)
+    def parent_holdings(self, team: ProtocolNode) -> list[ProtocolNode]:
+        return self._logic.parent_holdings(team)
 
-    def child_agreements(
-        self, agreement: ProtocolNode,
+    def child_teams(
+        self, team: ProtocolNode,
     ) -> list[tuple[str, ProtocolNode]]:
-        return self._logic.child_agreements(agreement)
+        return self._logic.child_teams(team)
 
-    def identity_holder(self, agreement: ProtocolNode) -> str:
-        return self._logic.identity_holder(agreement)
+    def identity_holder(self, team: ProtocolNode) -> str:
+        return self._logic.identity_holder(team)
 
-    def identity(self, agreement: ProtocolNode) -> dict:
-        return self._logic.identity_payload(agreement)
+    def identity(self, team: ProtocolNode) -> dict:
+        return self._logic.identity_payload(team)
 
-    def take_identity(self, agreement_uuid: str):
-        return self._logic.take_identity(agreement_uuid)
+    def take_identity(self, team_uuid: str):
+        return self._logic.take_identity(team_uuid)
 
-    def offer_identity(self, agreement_uuid: str, actor_uuid: str):
-        return self._logic.offer_identity(agreement_uuid, actor_uuid)
+    def offer_identity(self, team_uuid: str, actor_uuid: str):
+        return self._logic.offer_identity(team_uuid, actor_uuid)
 
-    def resign_identity(self, agreement_uuid: str):
-        return self._logic.resign_identity(agreement_uuid)
+    def resign_identity(self, team_uuid: str):
+        return self._logic.resign_identity(team_uuid)
 
-    def roles(self, agreement: ProtocolNode) -> list[ProtocolNode]:
-        return self._logic.roles(agreement)
+    def roles(self, team: ProtocolNode) -> list[ProtocolNode]:
+        return self._logic.roles(team)
 
     def accountabilities(self, role: ProtocolNode) -> list[ProtocolNode]:
         return self._logic.accountabilities(role)
@@ -65,9 +65,9 @@ class TeamFacade:
         return self._logic.role_offers(role)
 
     def role_holders(
-        self, agreement: ProtocolNode, role: ProtocolNode,
+        self, team: ProtocolNode, role: ProtocolNode,
     ) -> list[dict]:
-        return self._logic.role_holders(agreement, role)
+        return self._logic.role_holders(team, role)
 
     def offer_role(self, role_uuid: str, actor_uuid: str):
         return self._logic.offer_role(role_uuid, actor_uuid)
@@ -83,37 +83,37 @@ class TeamFacade:
     def resign_role(self, role_uuid: str):
         return self._logic.resign_role(role_uuid)
 
-    def seat_agreement(self, role_uuid: str, agreement_uuid: str):
-        return self._logic.seat_agreement(role_uuid, agreement_uuid)
+    def seat_team(self, role_uuid: str, team_uuid: str):
+        return self._logic.seat_team(role_uuid, team_uuid)
 
-    def decline_seat(self, role_uuid: str, agreement_uuid: str):
-        return self._logic.decline_seat(role_uuid, agreement_uuid)
+    def decline_seat(self, role_uuid: str, team_uuid: str):
+        return self._logic.decline_seat(role_uuid, team_uuid)
 
-    def unseat_agreement(self, role_uuid: str, agreement_uuid: str):
-        return self._logic.unseat_agreement(role_uuid, agreement_uuid)
+    def unseat_team(self, role_uuid: str, team_uuid: str):
+        return self._logic.unseat_team(role_uuid, team_uuid)
 
-    def seat_offers(self, agreement: ProtocolNode) -> list[dict]:
-        return self._logic.seat_offers(agreement)
+    def seat_offers(self, team: ProtocolNode) -> list[dict]:
+        return self._logic.seat_offers(team)
 
-    def create_seated_agreement(self, role_uuid: str, title: str):
-        return self._logic.create_seated_agreement(role_uuid, title)
+    def create_seated_team(self, role_uuid: str, title: str):
+        return self._logic.create_seated_team(role_uuid, title)
 
-    def parents(self, agreement: ProtocolNode) -> list[dict]:
-        return self._logic.parent_payload(agreement)
+    def parents(self, team: ProtocolNode) -> list[dict]:
+        return self._logic.parent_payload(team)
 
-    def home_parent_uuid(self, agreement: ProtocolNode) -> str:
-        return self._logic.home_parent_uuid(agreement)
+    def home_parent_uuid(self, team: ProtocolNode) -> str:
+        return self._logic.home_parent_uuid(team)
 
     def organization(self) -> dict:
         return self._logic.organization_payload()
 
-    def participants(self, agreement_uuid: str) -> list[dict]:
-        return self._logic.participants(agreement_uuid)
+    def participants(self, team_uuid: str) -> list[dict]:
+        return self._logic.participants(team_uuid)
 
     def transition_events(
-        self, agreement_uuid: str, network: dict | None = None,
+        self, team_uuid: str, network: dict | None = None,
     ) -> list[dict]:
-        return self._logic.transition_events(agreement_uuid, network)
+        return self._logic.transition_events(team_uuid, network)
 
     def transition_by_node(self, events: list[dict]) -> dict:
         return self._logic.transition_by_node(events)
@@ -123,29 +123,29 @@ class TeamFacade:
     ) -> dict:
         return self._logic.collaboration_context(topic_uuid, network)
 
-    def create_agreement(self, title: str):
-        return self._logic.create_agreement(title)
+    def create_team(self, title: str):
+        return self._logic.create_team(title)
 
-    def create_subagreement(self, parent_agreement_uuid: str, title: str):
-        return self._logic.create_subagreement(parent_agreement_uuid, title)
+    def create_subteam(self, parent_team_uuid: str, title: str):
+        return self._logic.create_subteam(parent_team_uuid, title)
 
-    def clone_agreement(self, agreement_uuid: str, title: str | None = None):
-        return self._logic.clone_agreement(agreement_uuid, title)
+    def clone_team(self, team_uuid: str, title: str | None = None):
+        return self._logic.clone_team(team_uuid, title)
 
-    def actor_uuids(self, agreement: ProtocolNode) -> set[str]:
-        return self._logic.actor_uuids(agreement)
+    def actor_uuids(self, team: ProtocolNode) -> set[str]:
+        return self._logic.actor_uuids(team)
 
-    def agreement_state(self, agreement: ProtocolNode) -> str:
-        return self._logic.agreement_state(agreement)
+    def team_state(self, team: ProtocolNode) -> str:
+        return self._logic.team_state(team)
 
-    def delete_agreement(self, agreement_uuid: str):
-        return self._logic.delete_agreement(agreement_uuid)
+    def delete_team(self, team_uuid: str):
+        return self._logic.delete_team(team_uuid)
 
     def create_agenda_item(
-        self, agreement_uuid: str, text: str, priority: str | None = None,
+        self, team_uuid: str, text: str, priority: str | None = None,
     ):
         return self._logic.create_agenda_item(
-            agreement_uuid, text, priority,
+            team_uuid, text, priority,
         )
 
     def delete_agenda_item(self, item_uuid: str):
