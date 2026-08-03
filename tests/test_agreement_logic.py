@@ -79,7 +79,7 @@ class TeamLogicTests(unittest.TestCase):
 
         payload = runtime.logic.document_payload()
 
-        self.assertEqual(payload["agreement"]["uuid"], created.value)
+        self.assertEqual(payload["team"]["uuid"], created.value)
         with runtime.session.lock:
             self.assertNotIn(
                 "selected_agreement_uuid",
@@ -99,10 +99,10 @@ class TeamLogicTests(unittest.TestCase):
         payload = runtime.logic.document_payload()
 
         self.assertEqual(APPLICATION_MANIFEST.application_id, "team")
-        self.assertEqual(payload["agreement"]["uuid"], agreement_uuid)
+        self.assertEqual(payload["team"]["uuid"], agreement_uuid)
         sections = [
-            child for child in payload["agreement"]["children"]
-            if child["data"].get("type") == "agreement_section"
+            child for child in payload["team"]["children"]
+            if child["data"].get("type") == "team_section"
         ]
         self.assertEqual(sections[0]["uuid"], section_uuid)
         self.assertEqual(sections[0]["children"][0]["uuid"], clause_uuid)
@@ -114,7 +114,7 @@ class TeamLogicTests(unittest.TestCase):
         role = runtime.logic.roles(agreement)[0]
         decisions = [
             child for child in role.live_children()
-            if child.data.get("type") == "agreement_role_decision"
+            if child.data.get("type") == "team_role_decision"
         ]
 
         self.assertEqual(len(decisions), 1)
@@ -131,10 +131,10 @@ class TeamLogicTests(unittest.TestCase):
         # stay out of the document serialization.
         serialized = runtime.logic.document_payload(
             agreement_uuid,
-        )["agreement"]["children"]
+        )["team"]["children"]
         role_view = next(
             child for child in serialized
-            if child["data"].get("type") == "agreement_role"
+            if child["data"].get("type") == "team_role"
         )
         self.assertEqual(
             {child["data"].get("type") for child in role_view["children"]},
@@ -148,7 +148,7 @@ class TeamLogicTests(unittest.TestCase):
         role = runtime.logic.roles(agreement)[0]
         original = next(
             child for child in role.live_children()
-            if child.data.get("type") == "agreement_role_decision"
+            if child.data.get("type") == "team_role_decision"
         )
 
         result = runtime.logic.decide_role(
@@ -159,7 +159,7 @@ class TeamLogicTests(unittest.TestCase):
         role = runtime.session.protocol.index[role.uuid]
         decisions = [
             child for child in role.live_children()
-            if child.data.get("type") == "agreement_role_decision"
+            if child.data.get("type") == "team_role_decision"
         ]
         # Answering again rewrites the one record rather than stacking.
         self.assertEqual([item.uuid for item in decisions], [original.uuid])
@@ -303,7 +303,7 @@ class TeamLogicTests(unittest.TestCase):
         payload = runtime.logic.document_payload(child_uuid)
 
         self.assertEqual(selected.status, "ok")
-        self.assertEqual(payload["agreement"]["uuid"], child_uuid)
+        self.assertEqual(payload["team"]["uuid"], child_uuid)
         self.assertFalse(payload["interaction"]["allowed"])
         self.assertIn("Cooperative", payload["interaction"]["reason"])
         for result in (
@@ -431,7 +431,7 @@ class TeamLogicTests(unittest.TestCase):
         # The invitation is still needed, and it mounts only because a role
         # is held in the parent.
         self.assertEqual(connect(left, right, child_uuid)["status"], "ok")
-        right.session.mount_cached_topics("agreement")
+        right.session.mount_cached_topics("team")
         sync(left, right)
         self.assertIn(
             child_uuid, {item.uuid for item in right.logic.agreements()},
@@ -459,7 +459,7 @@ class TeamLogicTests(unittest.TestCase):
 
         # Present in the parent, holding nothing in it.
         self.assertEqual(connect(left, right, child_uuid)["status"], "ok")
-        right.session.mount_cached_topics("agreement")
+        right.session.mount_cached_topics("team")
         self.assertNotIn(
             child_uuid, {item.uuid for item in right.logic.agreements()},
         )
@@ -474,7 +474,7 @@ class TeamLogicTests(unittest.TestCase):
         sync(left, right)
         right.logic.decide_role(participant_uuid, "accepted")
         sync(left, right)
-        right.session.mount_cached_topics("agreement")
+        right.session.mount_cached_topics("team")
         self.assertIn(
             child_uuid, {item.uuid for item in right.logic.agreements()},
         )
@@ -621,10 +621,10 @@ class TeamLogicTests(unittest.TestCase):
 
         payload = runtime.logic.document_payload()
         section = next(
-            child for child in payload["agreement"]["children"]
-            if child["data"].get("type") == "agreement_section"
+            child for child in payload["team"]["children"]
+            if child["data"].get("type") == "team_section"
         )
-        self.assertEqual(payload["agreement"]["data"]["title"], "Service terms")
+        self.assertEqual(payload["team"]["data"]["title"], "Service terms")
         self.assertEqual(section["data"]["title"], "Scope")
         self.assertEqual(section["children"][0]["data"]["text"], "First draft.")
 
@@ -649,9 +649,9 @@ class TeamLogicTests(unittest.TestCase):
         def section_titles():
             payload = runtime.logic.document_payload(agreement_uuid)
             live = [
-                s for s in payload["agreement"]["children"]
+                s for s in payload["team"]["children"]
                 if not s["deleted"]
-                and s["data"].get("type") == "agreement_section"
+                and s["data"].get("type") == "team_section"
             ]
             ordered = sorted(live, key=lambda s: s["data"].get("order", 0))
             return [s["data"]["title"] for s in ordered]
@@ -669,7 +669,7 @@ class TeamLogicTests(unittest.TestCase):
 
         def clause_texts():
             payload = runtime.logic.document_payload(agreement_uuid)
-            section = next(s for s in payload["agreement"]["children"] if s["uuid"] == first)
+            section = next(s for s in payload["team"]["children"] if s["uuid"] == first)
             live = [c for c in section["children"] if not c["deleted"]]
             ordered = sorted(live, key=lambda c: c["data"].get("order", 0))
             return [c["data"]["text"] for c in ordered]
@@ -716,11 +716,11 @@ class TeamLogicTests(unittest.TestCase):
         self.assertEqual(runtime.logic.delete_section(removed_uuid).status, "ok")
 
         payload = runtime.logic.document_payload()
-        sections = payload["agreement"]["children"]
+        sections = payload["team"]["children"]
         live = [
             item for item in sections
             if not item["deleted"]
-            and item["data"].get("type") == "agreement_section"
+            and item["data"].get("type") == "team_section"
         ]
         self.assertEqual([item["uuid"] for item in live], [kept_uuid])
         # Deleting a container prunes its descendants out of the index rather
@@ -738,8 +738,8 @@ class TeamLogicTests(unittest.TestCase):
 
         payload = runtime.logic.document_payload()
         clauses = next(
-            child for child in payload["agreement"]["children"]
-            if child["data"].get("type") == "agreement_section"
+            child for child in payload["team"]["children"]
+            if child["data"].get("type") == "team_section"
         )["children"]
         live = [item["uuid"] for item in clauses if not item["deleted"]]
         self.assertEqual(live, [second_uuid])
@@ -898,7 +898,7 @@ class TeamLogicTests(unittest.TestCase):
 
         logic.delete_agreement(agreement_uuid)
 
-        self.assertIsNone(logic.document_payload()["agreement"])
+        self.assertIsNone(logic.document_payload()["team"])
 
     def test_delete_agreement_rejects_a_node_that_is_not_one(self):
         runtime = self.runtime(9453)
@@ -1139,7 +1139,7 @@ class TeamLogicTests(unittest.TestCase):
         forged = right.session.create_child(
             role_uuid,
             {
-                "type": "agreement_role_offer",
+                "type": "team_role_offer",
                 "actor_uuid": right.session.identity.uuid,
                 "actor_kind": "individual",
                 "offered_by": right.session.identity.uuid,
@@ -1545,9 +1545,9 @@ class TeamLogicTests(unittest.TestCase):
         payload = runtime.logic.document_payload(agreement_uuid)
         # Not document content, so it never renders as a document change.
         self.assertNotIn(
-            "agreement_identity",
+            "team_trustee",
             {child["data"].get("type")
-             for child in payload["agreement"]["children"]},
+             for child in payload["team"]["children"]},
         )
         # A handover changes who holds a role, not what the agreement says,
         # so it must not re-open everybody's acceptance.
@@ -1859,7 +1859,7 @@ class TeamLogicTests(unittest.TestCase):
 
         # Reactable, or a divergence on a role would have no way out.
         for node_type in (
-            "agreement_role", "agreement_accountability", "agreement_domain",
+            "team_role", "team_accountability", "team_domain",
         ):
             self.assertIn(node_type, TeamLogic.REACTABLE)
             self.assertIn(node_type, TeamLogic.OWNED_NODE_TYPES)
@@ -1925,7 +1925,7 @@ class TeamLogicTests(unittest.TestCase):
         role = runtime.session.protocol.index[role_uuid]
         decisions = [
             node for node in role.live_children()
-            if node.data.get("type") == "agreement_role_decision"
+            if node.data.get("type") == "team_role_decision"
             and node.data.get("actor_uuid") == child_uuid
         ]
         self.assertEqual(len(decisions), 1)
@@ -2033,7 +2033,7 @@ class TeamLogicTests(unittest.TestCase):
             if holder["actor_uuid"] == child_uuid
         )
         self.assertEqual(seat["status"], "pending")
-        self.assertEqual(seat["actor_kind"], "agreement")
+        self.assertEqual(seat["actor_kind"], "team")
         self.assertEqual(seat["name"], "Team A")
 
         runtime.logic.seat_agreement(role_uuid, child_uuid)

@@ -50,7 +50,7 @@ class AgreementOwnershipControllerTests(unittest.TestCase):
     def test_clause_mutation_rejects_an_agreement_typed_node_outside_an_agreement(self):
         foreign = self.session.create_child(
             self.session.root_uuid(),
-            {"type": "agreement_clause", "text": "foreign"},
+            {"type": "team_clause", "text": "foreign"},
             {},
         ).value
 
@@ -74,7 +74,7 @@ class AgreementOwnershipControllerTests(unittest.TestCase):
         )
         peer_clause = peer.create_child(
             foreign_topic.uuid,
-            {"type": "agreement_clause", "text": "foreign"},
+            {"type": "team_clause", "text": "foreign"},
             {},
         ).value
         self.session.apply_peer_subtree(

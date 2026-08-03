@@ -71,7 +71,7 @@ class TeamLogic:
     def application_registration(self) -> ApplicationRegistration:
         return ApplicationRegistration(
             TEAM_APPLICATION_ID,
-            frozenset({"agreement"}),
+            frozenset({"team"}),
             self.agreements,
             self.accept_agreement_invitation,
             assignment_scoped=True,
@@ -84,7 +84,7 @@ class TeamLogic:
             return []
         found = [
             child for child in container.live_children()
-            if child.data.get("type") == "agreement"
+            if child.data.get("type") == "team"
         ]
         return sorted(found, key=lambda node: (
             str(node.data.get("title", "")), node.created_at,
@@ -120,7 +120,7 @@ class TeamLogic:
         An agreement is a topic root rather than a child of its neighbours,
         so its family is the agreement list rather than a parent's children.
         """
-        if node_type == "agreement":
+        if node_type == "team":
             family = self.agreements()
         else:
             parent = self.session.protocol.index.get(node.parent_uuid)
@@ -134,10 +134,10 @@ class TeamLogic:
         return [node.data.get("title") for node in self.agreements()]
 
     def sections(self, agreement: ProtocolNode) -> list[ProtocolNode]:
-        return self._ordered(agreement, "agreement_section")
+        return self._ordered(agreement, "team_section")
 
     def clauses(self, section: ProtocolNode) -> list[ProtocolNode]:
-        return self._ordered(section, "agreement_clause")
+        return self._ordered(section, "team_clause")
 
     # A subagreement is not a link any more: it is an Agreement holding a
     # role in its parent, the same shape as a person holding one. The parent
@@ -151,7 +151,7 @@ class TeamLogic:
 
     def parent_holdings(self, agreement: ProtocolNode) -> list[ProtocolNode]:
         """This agreement's roles in other agreements, in declared order."""
-        return self._ordered(agreement, "agreement_role_holding")
+        return self._ordered(agreement, "team_role_holding")
 
     def child_agreements(
         self, agreement: ProtocolNode,
@@ -160,7 +160,7 @@ class TeamLogic:
         found = []
         for role in self.roles(agreement):
             for offer in self.role_offers(role):
-                if offer.data.get("actor_kind") == "agreement":
+                if offer.data.get("actor_kind") == "team":
                     child_uuid = str(offer.data.get("actor_uuid") or "").strip()
                     if child_uuid:
                         found.append((child_uuid, role))
@@ -183,7 +183,7 @@ class TeamLogic:
             (
                 child for child in role.live_children()
                 if (
-                    child.data.get("type") == "agreement_role_decision"
+                    child.data.get("type") == "team_role_decision"
                     and child.data.get("actor_uuid") == actor_uuid
                 )
             ),
@@ -206,10 +206,10 @@ class TeamLogic:
         """
         parent = self._node(
             str(holding.data.get("parent_agreement_uuid") or "").strip(),
-            "agreement",
+            "team",
         )
         role = self._node(
-            str(holding.data.get("role_uuid") or "").strip(), "agreement_role",
+            str(holding.data.get("role_uuid") or "").strip(), "team_role",
         )
         # The role has to be one of that parent's own: a holding naming
         # somebody else's role says nothing about this relationship.
@@ -235,7 +235,7 @@ class TeamLogic:
         normalized = self._distinct_name(normalized, self._agreement_titles())
         result = self.session.create_child(
             self._agreement_container().uuid,
-            {"type": "agreement", "title": normalized},
+            {"type": "team", "title": normalized},
             {},
         )
         if result.status == "ok":
@@ -256,7 +256,7 @@ class TeamLogic:
         self, parent_agreement_uuid: str, title: str,
     ) -> SessionResult:
         """Make a seat in the parent and fill it with a new agreement."""
-        parent = self._node(parent_agreement_uuid, "agreement")
+        parent = self._node(parent_agreement_uuid, "team")
         if not parent:
             return SessionResult("error", reason="parent agreement not found")
         normalized = str(title or "").strip()
@@ -281,7 +281,7 @@ class TeamLogic:
         created to take it. The creator holds the new agreement's Identity,
         which is what lets them answer for it straight away.
         """
-        role = self._node(role_uuid, "agreement_role")
+        role = self._node(role_uuid, "team_role")
         parent = self._local_agreement_topic(role.uuid) if role else None
         if not role or not parent:
             return SessionResult("error", reason="role not found")
@@ -299,7 +299,7 @@ class TeamLogic:
 
         created = self.session.create_child(
             self._agreement_container().uuid,
-            {"type": "agreement", "title": normalized},
+            {"type": "team", "title": normalized},
             {},
         )
         if created.status != "ok":
@@ -330,8 +330,8 @@ class TeamLogic:
     # seats it holds elsewhere - and copying the text is not copying who
     # agreed to it.
     CLONED_TYPES = frozenset({
-        "agreement_section", "agreement_clause",
-        "agreement_role", "agreement_accountability", "agreement_domain",
+        "team_section", "team_clause",
+        "team_role", "team_accountability", "team_domain",
     })
 
     def clone_agreement(
@@ -350,7 +350,7 @@ class TeamLogic:
         agreement and writes only a new one of this session's own, so an
         agreement you can see read-only is one you can fork into a template.
         """
-        source = self._node(agreement_uuid, "agreement")
+        source = self._node(agreement_uuid, "team")
         if not source:
             return SessionResult("error", reason="agreement not found")
         normalized = self._distinct_name(
@@ -361,7 +361,7 @@ class TeamLogic:
         )
         created = self.session.create_child(
             self._agreement_container().uuid,
-            {"type": "agreement", "title": normalized},
+            {"type": "team", "title": normalized},
             {},
         )
         if created.status != "ok":
@@ -399,14 +399,14 @@ class TeamLogic:
         return SessionResult("ok", effects=effects)
 
     def select_agreement(self, agreement_uuid: str) -> SessionResult:
-        agreement = self._node(agreement_uuid, "agreement")
+        agreement = self._node(agreement_uuid, "team")
         if not agreement:
             return SessionResult("error", reason="agreement not found")
         self._remember_agreement(agreement.uuid)
         return SessionResult("ok", value=agreement.uuid)
 
     def create_section(self, agreement_uuid: str, title: str) -> SessionResult:
-        agreement = self._node(agreement_uuid, "agreement")
+        agreement = self._node(agreement_uuid, "team")
         if not agreement:
             return SessionResult("error", reason="agreement not found")
         allowed = self._interaction_guard(agreement)
@@ -418,10 +418,10 @@ class TeamLogic:
         result = self.session.create_child(
             agreement.uuid,
             {
-                "type": "agreement_section",
+                "type": "team_section",
                 "title": normalized,
                 "order": self.session.next_child_order(
-                    agreement.uuid, "agreement_section",
+                    agreement.uuid, "team_section",
                 ),
             },
             {},
@@ -433,7 +433,7 @@ class TeamLogic:
         return result
 
     def create_clause(self, section_uuid: str, text: str) -> SessionResult:
-        section = self._node(section_uuid, "agreement_section")
+        section = self._node(section_uuid, "team_section")
         if not section:
             return SessionResult("error", reason="section not found")
         allowed = self._interaction_guard_for_node(section.uuid)
@@ -445,10 +445,10 @@ class TeamLogic:
         result = self.session.create_child(
             section.uuid,
             {
-                "type": "agreement_clause",
+                "type": "team_clause",
                 "text": normalized,
                 "order": self.session.next_child_order(
-                    section.uuid, "agreement_clause",
+                    section.uuid, "team_clause",
                 ),
             },
             {},
@@ -460,7 +460,7 @@ class TeamLogic:
         return result
 
     def update_clause(self, clause_uuid: str, text: str) -> SessionResult:
-        clause = self._node(clause_uuid, "agreement_clause")
+        clause = self._node(clause_uuid, "team_clause")
         if not clause:
             return SessionResult("error", reason="clause not found")
         allowed = self._interaction_guard_for_node(clause.uuid)
@@ -478,11 +478,11 @@ class TeamLogic:
         # expects of this body, which is not the same thing as what the
         # body calls itself.
         return self._retitle(
-            agreement_uuid, "agreement", "title", title, distinct=True,
+            agreement_uuid, "team", "title", title, distinct=True,
         )
 
     def rename_section(self, section_uuid: str, title: str) -> SessionResult:
-        return self._retitle(section_uuid, "agreement_section", "title", title)
+        return self._retitle(section_uuid, "team_section", "title", title)
 
     def _retitle(self, node_uuid: str, node_type: str, field: str,
                  value: str, distinct: bool = False) -> SessionResult:
@@ -508,7 +508,7 @@ class TeamLogic:
         # otherwise peers keep syncing a document this side no longer has.
         # There is no "last agreement" to protect: unlike a board, nothing
         # here creates one on demand, and a host with none is a valid state.
-        agreement = self._node(agreement_uuid, "agreement")
+        agreement = self._node(agreement_uuid, "team")
         if not agreement:
             return SessionResult("error", reason="agreement not found")
         allowed = self._interaction_guard(agreement)
@@ -519,7 +519,7 @@ class TeamLogic:
         # promotes them rather than cascading through the organization:
         # their side of the seat goes, and they become roots.
         for child_uuid, _role in self.child_agreements(agreement):
-            child = self._node(child_uuid, "agreement")
+            child = self._node(child_uuid, "team")
             if not child:
                 continue
             for holding in self.parent_holdings(child):
@@ -548,7 +548,7 @@ class TeamLogic:
         # only because the request is local and explicit; adopting a peer's
         # section deletion is a separate decision this application still
         # leaves to the generic reconciliation path.
-        section = self._node(section_uuid, "agreement_section")
+        section = self._node(section_uuid, "team_section")
         if not section:
             return SessionResult("error", reason="section not found")
         allowed = self._interaction_guard_for_node(section.uuid)
@@ -557,7 +557,7 @@ class TeamLogic:
         return self.session.delete(section.uuid)
 
     def delete_clause(self, clause_uuid: str) -> SessionResult:
-        clause = self._node(clause_uuid, "agreement_clause")
+        clause = self._node(clause_uuid, "team_clause")
         if not clause:
             return SessionResult("error", reason="clause not found")
         allowed = self._interaction_guard_for_node(clause.uuid)
@@ -566,7 +566,7 @@ class TeamLogic:
         return self.session.delete(clause.uuid)
 
     def move_section(self, section_uuid: str, index: int) -> SessionResult:
-        if not self._node(section_uuid, "agreement_section"):
+        if not self._node(section_uuid, "team_section"):
             return SessionResult("error", reason="section not found")
         allowed = self._interaction_guard_for_node(section_uuid)
         if allowed.status != "ok":
@@ -574,7 +574,7 @@ class TeamLogic:
         return self.session.move_child_to_index(section_uuid, index)
 
     def move_clause(self, clause_uuid: str, index: int) -> SessionResult:
-        if not self._node(clause_uuid, "agreement_clause"):
+        if not self._node(clause_uuid, "team_clause"):
             return SessionResult("error", reason="clause not found")
         allowed = self._interaction_guard_for_node(clause_uuid)
         if allowed.status != "ok":
@@ -609,7 +609,7 @@ class TeamLogic:
     def _holds_identity_of(self, agreement_uuid: str) -> bool:
         """Same question about an agreement named only by uuid, which may be
         one this session has not joined and so cannot answer for."""
-        agreement = self._node(agreement_uuid, "agreement")
+        agreement = self._node(agreement_uuid, "team")
         return bool(agreement and self.holds_identity(agreement))
 
     def take_identity(self, agreement_uuid: str) -> SessionResult:
@@ -628,7 +628,7 @@ class TeamLogic:
         self, agreement_uuid: str, actor_uuid: str,
     ) -> SessionResult:
         """Hand Identity on. It is theirs once they adopt the node."""
-        agreement = self._node(agreement_uuid, "agreement")
+        agreement = self._node(agreement_uuid, "team")
         if not agreement:
             return SessionResult("error", reason="agreement not found")
         if not self.holds_identity(agreement):
@@ -650,7 +650,7 @@ class TeamLogic:
         sides compare, so removing it would make "nobody holds this" and "I
         have not been told who holds this" the same observation.
         """
-        agreement = self._node(agreement_uuid, "agreement")
+        agreement = self._node(agreement_uuid, "team")
         if not agreement:
             return SessionResult("error", reason="agreement not found")
         if not self.holds_identity(agreement):
@@ -662,7 +662,7 @@ class TeamLogic:
     def _write_identity(
         self, agreement_uuid: str, actor_uuid: str,
     ) -> SessionResult:
-        agreement = self._node(agreement_uuid, "agreement")
+        agreement = self._node(agreement_uuid, "team")
         if not agreement:
             return SessionResult("error", reason="agreement not found")
         allowed = self._interaction_guard(agreement)
@@ -702,7 +702,7 @@ class TeamLogic:
         created = self.session.create_child(
             agreement.uuid,
             {
-                "type": "agreement_role",
+                "type": "team_role",
                 "name": "Participant",
                 "purpose": "Take part in this agreement",
                 "order": 0.0,
@@ -715,7 +715,7 @@ class TeamLogic:
         offered = self.session.create_child(
             role.uuid,
             {
-                "type": "agreement_role_offer",
+                "type": "team_role_offer",
                 "actor_uuid": self._identity_uuid,
                 "actor_kind": "individual",
                 "offered_by": self._identity_uuid,
@@ -732,25 +732,41 @@ class TeamLogic:
             effects=[*created.effects, *offered.effects, *decided.effects],
         )
 
+    # A trusteeship is a role held on behalf of the team rather than for the
+    # holder's own part in it: one holder, carrying an authority *for* the
+    # body. Identity is the first of them, and one node type carries them
+    # all - `trust` names which. A second trusteeship then inherits the
+    # encoding, the resolution mechanism and the authority guard rather than
+    # arriving as a second node type with its own copy of each.
+    IDENTITY_TRUST = "identity"
+
     def _create_identity(
         self, agreement: ProtocolNode, actor_uuid: str | None = None,
     ) -> SessionResult:
         return self.session.create_child(
             agreement.uuid,
             {
-                "type": "agreement_identity",
+                "type": "team_trustee",
+                "trust": self.IDENTITY_TRUST,
                 "holder_actor_uuid": actor_uuid or self._identity_uuid,
                 "held_since": self._now(),
             },
             {},
         )
 
-    @staticmethod
-    def _identity_nodes(agreement: ProtocolNode) -> list[ProtocolNode]:
+    @classmethod
+    def _trustee_nodes(
+        cls, team: ProtocolNode, trust: str,
+    ) -> list[ProtocolNode]:
         return [
-            child for child in agreement.live_children()
-            if child.data.get("type") == "agreement_identity"
+            child for child in team.live_children()
+            if child.data.get("type") == "team_trustee"
+            and child.data.get("trust") == trust
         ]
+
+    @classmethod
+    def _identity_nodes(cls, agreement: ProtocolNode) -> list[ProtocolNode]:
+        return cls._trustee_nodes(agreement, cls.IDENTITY_TRUST)
 
     def identity_payload(self, agreement: ProtocolNode) -> dict:
         """Who holds Identity here, and what any peer says instead."""
@@ -851,21 +867,21 @@ class TeamLogic:
     # as two clauses do. A list would collapse both edits into one
     # undiffable conflict.
     ROLE_ITEM_TYPES = {
-        "accountability": "agreement_accountability",
-        "domain": "agreement_domain",
+        "accountability": "team_accountability",
+        "domain": "team_domain",
     }
 
     def roles(self, agreement: ProtocolNode) -> list[ProtocolNode]:
-        return self._ordered(agreement, "agreement_role")
+        return self._ordered(agreement, "team_role")
 
     def accountabilities(self, role: ProtocolNode) -> list[ProtocolNode]:
-        return self._ordered(role, "agreement_accountability")
+        return self._ordered(role, "team_accountability")
 
     def domains(self, role: ProtocolNode) -> list[ProtocolNode]:
-        return self._ordered(role, "agreement_domain")
+        return self._ordered(role, "team_domain")
 
     def create_role(self, agreement_uuid: str, name: str) -> SessionResult:
-        agreement = self._node(agreement_uuid, "agreement")
+        agreement = self._node(agreement_uuid, "team")
         if not agreement:
             return SessionResult("error", reason="agreement not found")
         allowed = self._interaction_guard(agreement)
@@ -881,11 +897,11 @@ class TeamLogic:
         result = self.session.create_child(
             agreement.uuid,
             {
-                "type": "agreement_role",
+                "type": "team_role",
                 "name": normalized,
                 "purpose": "",
                 "order": self.session.next_child_order(
-                    agreement.uuid, "agreement_role",
+                    agreement.uuid, "team_role",
                 ),
             },
             {},
@@ -898,13 +914,13 @@ class TeamLogic:
 
     def rename_role(self, role_uuid: str, name: str) -> SessionResult:
         return self._retitle(
-            role_uuid, "agreement_role", "name", name, distinct=True,
+            role_uuid, "team_role", "name", name, distinct=True,
         )
 
     def set_role_purpose(self, role_uuid: str, purpose: str) -> SessionResult:
         # A purpose may be cleared. Unlike the name it does not identify the
         # role, so _retitle's "required" rule would be wrong here.
-        role = self._node(role_uuid, "agreement_role")
+        role = self._node(role_uuid, "team_role")
         if not role:
             return SessionResult("error", reason="role not found")
         allowed = self._interaction_guard_for_node(role.uuid)
@@ -915,7 +931,7 @@ class TeamLogic:
         return self.session.modify(role.uuid, data, role.weights)
 
     def delete_role(self, role_uuid: str) -> SessionResult:
-        role = self._node(role_uuid, "agreement_role")
+        role = self._node(role_uuid, "team_role")
         if not role:
             return SessionResult("error", reason="role not found")
         allowed = self._interaction_guard_for_node(role.uuid)
@@ -924,7 +940,7 @@ class TeamLogic:
         return self.session.delete(role.uuid)
 
     def move_role(self, role_uuid: str, index: int) -> SessionResult:
-        if not self._node(role_uuid, "agreement_role"):
+        if not self._node(role_uuid, "team_role"):
             return SessionResult("error", reason="role not found")
         allowed = self._interaction_guard_for_node(role_uuid)
         if allowed.status != "ok":
@@ -939,7 +955,7 @@ class TeamLogic:
             return SessionResult(
                 "error", reason="kind must be accountability or domain",
             )
-        role = self._node(role_uuid, "agreement_role")
+        role = self._node(role_uuid, "team_role")
         if not role:
             return SessionResult("error", reason="role not found")
         allowed = self._interaction_guard_for_node(role.uuid)
@@ -1018,11 +1034,11 @@ class TeamLogic:
     def _all_role_offers(role: ProtocolNode) -> list[ProtocolNode]:
         return [
             child for child in role.live_children()
-            if child.data.get("type") == "agreement_role_offer"
+            if child.data.get("type") == "team_role_offer"
         ]
 
     def offer_role(self, role_uuid: str, actor_uuid: str) -> SessionResult:
-        role = self._node(role_uuid, "agreement_role")
+        role = self._node(role_uuid, "team_role")
         if not role:
             return SessionResult("error", reason="role not found")
         agreement = self._local_agreement_topic(role.uuid)
@@ -1041,12 +1057,12 @@ class TeamLogic:
                 "error", reason="that actor has already been offered this role",
             )
         data = {
-            "type": "agreement_role_offer",
+            "type": "team_role_offer",
             "actor_uuid": normalized,
             # An agreement can be offered a seat as readily as a person.
             "actor_kind": (
-                "agreement"
-                if self._node(normalized, "agreement") else "individual"
+                "team"
+                if self._node(normalized, "team") else "individual"
             ),
             "offered_by": self._identity_uuid,
             "offered_at": self._now(),
@@ -1072,7 +1088,7 @@ class TeamLogic:
         withdrawal of what Identity itself wrote, so the authorship rule
         holds; it just keeps the fact that there was an offer.
         """
-        role = self._node(role_uuid, "agreement_role")
+        role = self._node(role_uuid, "team_role")
         if not role:
             return SessionResult("error", reason="role not found")
         agreement = self._local_agreement_topic(role.uuid)
@@ -1105,7 +1121,7 @@ class TeamLogic:
         offered anything by anyone but Identity, and asking is the move
         available to them.
         """
-        role = self._node(role_uuid, "agreement_role")
+        role = self._node(role_uuid, "team_role")
         if not role:
             return SessionResult("error", reason="role not found")
         agreement = self._local_agreement_topic(role.uuid)
@@ -1118,7 +1134,7 @@ class TeamLogic:
             # proposal. If there is, answering it should take it up; if there
             # is not, this answer stands on its own as a request.
             self._adopt_offer_proposal(agreement, role, mine)
-            role = self._node(role_uuid, "agreement_role") or role
+            role = self._node(role_uuid, "team_role") or role
         normalized_decision = str(decision or "").strip().lower()
         if normalized_decision not in {"accepted", "refused"}:
             return SessionResult(
@@ -1165,11 +1181,11 @@ class TeamLogic:
     def _answer_seat(
         self, role_uuid: str, agreement_uuid: str, decision: str,
     ) -> SessionResult:
-        role = self._node(role_uuid, "agreement_role")
+        role = self._node(role_uuid, "team_role")
         if not role:
             return SessionResult("error", reason="role not found")
         parent = self._local_agreement_topic(role.uuid)
-        seated = self._node(agreement_uuid, "agreement")
+        seated = self._node(agreement_uuid, "team")
         if not parent or not seated:
             return SessionResult("error", reason="agreement not found")
         if not self.holds_identity(seated):
@@ -1185,8 +1201,8 @@ class TeamLogic:
             # The offer may have reached this session only as a proposal, the
             # same way a person's does. Answering it takes it up first.
             self._adopt_offer_proposal(parent, role, seated.uuid)
-            role = self._node(role_uuid, "agreement_role") or role
-            parent = self._node(parent.uuid, "agreement") or parent
+            role = self._node(role_uuid, "team_role") or role
+            parent = self._node(parent.uuid, "team") or parent
             if not self._offer_for(role, seated.uuid):
                 return SessionResult(
                     "error", reason="this role has not been offered to it",
@@ -1219,7 +1235,7 @@ class TeamLogic:
         )
         if answered.status != "ok":
             return answered
-        seated = self._node(agreement_uuid, "agreement") or seated
+        seated = self._node(agreement_uuid, "team") or seated
         existing = next(
             (
                 holding for holding in self.parent_holdings(seated)
@@ -1234,11 +1250,11 @@ class TeamLogic:
         held = self.session.create_child(
             seated.uuid,
             {
-                "type": "agreement_role_holding",
+                "type": "team_role_holding",
                 "parent_agreement_uuid": parent.uuid,
                 "role_uuid": role.uuid,
                 "order": self.session.next_child_order(
-                    seated.uuid, "agreement_role_holding",
+                    seated.uuid, "team_role_holding",
                 ),
             },
             {},
@@ -1272,7 +1288,7 @@ class TeamLogic:
         for holding in holdings:
             parent = self._node(
                 str(holding.data.get("parent_agreement_uuid") or "").strip(),
-                "agreement",
+                "team",
             )
             if not parent:
                 continue
@@ -1303,7 +1319,7 @@ class TeamLogic:
         above = self.actor_uuids(parent) | {seated.uuid}
         outside = set()
         for actor_uuid in self.actor_uuids(seated):
-            if actor_uuid in above or self._node(actor_uuid, "agreement"):
+            if actor_uuid in above or self._node(actor_uuid, "team"):
                 continue
             known = self._known_people().get(actor_uuid) or {}
             outside.add(
@@ -1367,7 +1383,7 @@ class TeamLogic:
         as accepted while the agreement no longer claims it, and neither view
         is wrong on its own - they simply contradict each other.
         """
-        seated = self._node(agreement_uuid, "agreement")
+        seated = self._node(agreement_uuid, "team")
         if not seated:
             return SessionResult("error", reason="agreement not found")
         if not self.holds_identity(seated):
@@ -1405,7 +1421,7 @@ class TeamLogic:
         offered, which is what lets it be answered again.
         """
         role = self._node(
-            str(holding.data.get("role_uuid") or "").strip(), "agreement_role",
+            str(holding.data.get("role_uuid") or "").strip(), "team_role",
         )
         decision = self._role_decision_for(role, seated.uuid) if role else None
         if not decision:
@@ -1417,7 +1433,7 @@ class TeamLogic:
         self, holding_uuid: str, index: int,
     ) -> SessionResult:
         """Reorder which parent is preferred as home."""
-        holding = self._node(holding_uuid, "agreement_role_holding")
+        holding = self._node(holding_uuid, "team_role_holding")
         if not holding:
             return SessionResult("error", reason="holding not found")
         agreement = self._local_agreement_topic(holding.uuid)
@@ -1436,10 +1452,10 @@ class TeamLogic:
             parent_uuid = str(
                 holding.data.get("parent_agreement_uuid") or "",
             ).strip()
-            parent = self._node(parent_uuid, "agreement")
+            parent = self._node(parent_uuid, "team")
             role = self._node(
                 str(holding.data.get("role_uuid") or "").strip(),
-                "agreement_role",
+                "team_role",
             )
             out.append({
                 "holding_uuid": holding.uuid,
@@ -1476,13 +1492,13 @@ class TeamLogic:
             actors.append({
                 "uuid": other.uuid,
                 "name": other.data.get("title") or "Untitled agreement",
-                "kind": "agreement",
+                "kind": "team",
             })
         return actors
 
     def resign_role(self, role_uuid: str) -> SessionResult:
         """Step out of a role. Deleting only what this participant wrote."""
-        role = self._node(role_uuid, "agreement_role")
+        role = self._node(role_uuid, "team_role")
         if not role:
             return SessionResult("error", reason="role not found")
         allowed = self._interaction_guard_for_node(role.uuid)
@@ -1511,7 +1527,7 @@ class TeamLogic:
         """
         actor = actor_uuid or self._identity_uuid
         data = {
-            "type": "agreement_role_decision",
+            "type": "team_role_decision",
             "actor_uuid": actor,
             "decision": decision,
             "decided_at": self._now(),
@@ -1552,7 +1568,7 @@ class TeamLogic:
                 (
                     child for child in peer_role.live_children()
                     if (
-                        child.data.get("type") == "agreement_role_offer"
+                        child.data.get("type") == "team_role_offer"
                         and child.data.get("actor_uuid") == actor_uuid
                     )
                 ),
@@ -1588,7 +1604,7 @@ class TeamLogic:
             (
                 child for child in role.live_children()
                 if (
-                    child.data.get("type") == "agreement_role_decision"
+                    child.data.get("type") == "team_role_decision"
                     and child.data.get("actor_uuid") == actor_uuid
                 )
             ),
@@ -1660,7 +1676,7 @@ class TeamLogic:
             # the member test below would call every one of them a stranger.
             # Its standing is read from the answer given on its behalf.
             is_team = bool(
-                offer and offer.data.get("actor_kind") == "agreement"
+                offer and offer.data.get("actor_kind") == "team"
             )
             if revoked:
                 status = "revoked"
@@ -1694,8 +1710,8 @@ class TeamLogic:
             # An Agreement actor is not among the people on this topic, so it
             # is named by the agreement it is, when that is joined here.
             seated = (
-                self._node(actor_uuid, "agreement")
-                if (offer and offer.data.get("actor_kind") == "agreement")
+                self._node(actor_uuid, "team")
+                if (offer and offer.data.get("actor_kind") == "team")
                 else None
             )
             holders.append({
@@ -1734,7 +1750,7 @@ class TeamLogic:
                     or "Somebody you have not met"
                 ),
                 "joined": bool(seated) if (
-                    offer and offer.data.get("actor_kind") == "agreement"
+                    offer and offer.data.get("actor_kind") == "team"
                 ) else None,
                 # Individual or Agreement. The view draws them differently,
                 # because "a person holds this" and "a body holds this" are
@@ -1767,7 +1783,7 @@ class TeamLogic:
                 if peer_topic else None
             )
             if peer_role and any(
-                child.data.get("type") == "agreement_role_offer"
+                child.data.get("type") == "team_role_offer"
                 and child.data.get("actor_uuid") == mine
                 and not child.data.get("revoked_at")
                 for child in peer_role.live_children()
@@ -1816,7 +1832,7 @@ class TeamLogic:
                 continue
             for child in peer_role.live_children():
                 if (
-                    child.data.get("type") == "agreement_role_decision"
+                    child.data.get("type") == "team_role_decision"
                     and child.data.get("actor_uuid") == member["uuid"]
                 ):
                     found[member["uuid"]] = dict(child.data)
@@ -1834,7 +1850,7 @@ class TeamLogic:
             str(child.data.get("actor_uuid") or ""): dict(child.data)
             for child in role.live_children()
             if (
-                child.data.get("type") == "agreement_role_decision"
+                child.data.get("type") == "team_role_decision"
                 and child.data.get("decided_by") == actor_uuid
             )
         }
@@ -1859,7 +1875,7 @@ class TeamLogic:
         return None
 
     def accept_agreement_invitation(self, subtree: ProtocolNode) -> SessionResult:
-        if subtree.data.get("type") != "agreement":
+        if subtree.data.get("type") != "team":
             return SessionResult("error", reason="invited topic is not an agreement")
         # The invited subtree carries its own holdings, so its ancestry can
         # be checked before it is mounted. Joining it does not require
@@ -1882,10 +1898,10 @@ class TeamLogic:
     # it. Both primitives are Session's; this application only names which
     # node types may be reacted to.
     REACTABLE = frozenset({
-        "agreement", "agreement_section", "agreement_clause",
-        "agreement_role", "agreement_accountability", "agreement_domain",
-        "agreement_role_holding",
-        "agreement_identity", "agreement_role_offer", "agreement_role_decision",
+        "team", "team_section", "team_clause",
+        "team_role", "team_accountability", "team_domain",
+        "team_role_holding",
+        "team_trustee", "team_role_offer", "team_role_decision",
     })
     OWNED_NODE_TYPES = frozenset({
         *REACTABLE, "agenda_item",
@@ -1926,7 +1942,7 @@ class TeamLogic:
     def adopt_peer_changes(self, source_addr: str,
                            agreement_uuid: str) -> SessionResult:
         if (
-            not self._node(agreement_uuid, "agreement")
+            not self._node(agreement_uuid, "team")
             or not self.owns_node(agreement_uuid, source_addr)
         ):
             return SessionResult("error", reason="agreement not found")
@@ -1937,7 +1953,7 @@ class TeamLogic:
             source_addr,
             agreement_uuid,
             lambda node, _event_type: (
-                node.data.get("type") != "agreement_role_decision"
+                node.data.get("type") != "team_role_decision"
             ),
         )
         return SessionResult("ok", value=changed)
@@ -1986,16 +2002,16 @@ class TeamLogic:
     # falls through to the bare "Missing in <peer>" - which tells the reader
     # that something differs while withholding what.
     NODE_LABELS = {
-        "agreement": "Agreement",
-        "agreement_section": "Section",
-        "agreement_clause": "Clause",
-        "agreement_role": "Role",
-        "agreement_accountability": "Accountability",
-        "agreement_domain": "Domain",
-        "agreement_identity": "Identity",
-        "agreement_role_offer": "Role offer",
-        "agreement_role_decision": "Role answer",
-        "agreement_role_holding": "Seat",
+        "team": "Agreement",
+        "team_section": "Section",
+        "team_clause": "Clause",
+        "team_role": "Role",
+        "team_accountability": "Accountability",
+        "team_domain": "Domain",
+        "team_trustee": "Identity",
+        "team_role_offer": "Role offer",
+        "team_role_decision": "Role answer",
+        "team_role_holding": "Seat",
         "agenda_item": "Discussion topic",
     }
     # Text-bearing fields, by the name they are read under.
@@ -2105,7 +2121,7 @@ class TeamLogic:
         # its own container - so the parents always differ and always will.
         # Session excludes that from classification; the description has to
         # exclude it too, or every shared agreement reads as "moved".
-        if node_type != "agreement" and local.parent_uuid != peer.parent_uuid:
+        if node_type != "team" and local.parent_uuid != peer.parent_uuid:
             changes.append({
                 "kind": "move",
                 "field": "parent_uuid",
@@ -2134,7 +2150,7 @@ class TeamLogic:
         handover reads as an unnamed "Item changed" - which is exactly the
         kind of difference somebody most needs told.
         """
-        if node_type == "agreement_identity":
+        if node_type == "team_trustee":
             field = "holder_actor_uuid"
             if local.data.get(field) == peer.data.get(field):
                 return []
@@ -2155,7 +2171,7 @@ class TeamLogic:
                     f"{self._actor_name(local.data.get(field))} as Identity"
                 ),
             }]
-        if node_type == "agreement_role_offer":
+        if node_type == "team_role_offer":
             if bool(local.data.get("revoked_at")) == bool(
                 peer.data.get("revoked_at"),
             ):
@@ -2179,7 +2195,7 @@ class TeamLogic:
                     else f"Keep the offer to {who} withdrawn"
                 ),
             }]
-        if node_type == "agreement_role_decision":
+        if node_type == "team_role_decision":
             if (
                 local.data.get("decision") == peer.data.get("decision")
                 and local.data.get("expires_at") == peer.data.get("expires_at")
@@ -2212,7 +2228,7 @@ class TeamLogic:
             return "you"
         if known := self._known_people().get(normalized):
             return known.get("name") or known.get("address") or "somebody"
-        if seated := self._node(normalized, "agreement"):
+        if seated := self._node(normalized, "team"):
             return seated.data.get("title") or "an agreement"
         return "somebody you have not met"
 
@@ -2329,7 +2345,7 @@ class TeamLogic:
         )
         return {
             "address": self.session.address,
-            "agreement": (
+            "team": (
                 self._document_node_dict(selected) if selected else None
             ),
             "agreements": [
@@ -2414,8 +2430,8 @@ class TeamLogic:
     # as document-change proposals. Their divergences are unaffected:
     # transition events come from the protocol tree, not from this view.
     NON_DOCUMENT_TYPES = frozenset({
-        "agreement_identity",
-        "agreement_role_offer", "agreement_role_decision",
+        "team_trustee",
+        "team_role_offer", "team_role_decision",
     })
 
     @classmethod
@@ -2447,7 +2463,7 @@ class TeamLogic:
             view = self.transition_by_node([event]).get(node_uuid)
             if view:
                 decorated.append((event, view))
-        agreement = payload.get("agreement") or {}
+        agreement = payload.get("team") or {}
         return {
             "payload": payload,
             "topic_uuid": agreement.get("uuid"),
@@ -2518,7 +2534,7 @@ class TeamLogic:
     def _selected_agreement(self, requested_uuid: str | None,
                             agreements: list[ProtocolNode]) -> ProtocolNode | None:
         selected_uuid = requested_uuid or self._metadata().get("selected_agreement_uuid")
-        selected = self._node(selected_uuid, "agreement") if selected_uuid else None
+        selected = self._node(selected_uuid, "team") if selected_uuid else None
         if selected:
             return selected
         if agreements:
@@ -2545,7 +2561,7 @@ class TeamLogic:
     def collaboration_context(
         self, topic_uuid: str, network: dict | None = None,
     ) -> dict:
-        agreement = self._node(topic_uuid, "agreement")
+        agreement = self._node(topic_uuid, "team")
         if not agreement:
             return {}
         events = self.transition_events(topic_uuid, network)
@@ -2575,7 +2591,7 @@ class TeamLogic:
         self, agreement_uuid: str,
     ) -> list[ProtocolNode]:
         """Locally joined descendants in deterministic parent-first order."""
-        root = self._node(agreement_uuid, "agreement")
+        root = self._node(agreement_uuid, "team")
         if not root:
             return []
         descendants = []
@@ -2584,7 +2600,7 @@ class TeamLogic:
         while pending:
             parent = pending.pop(0)
             for child_uuid, role in self.child_agreements(parent):
-                child = self._node(child_uuid, "agreement")
+                child = self._node(child_uuid, "team")
                 if not child or child.uuid in seen:
                     continue
                 # Both sides have to name the same seat. A role offered to
@@ -2614,7 +2630,7 @@ class TeamLogic:
         this session cannot reach is the reverse, listed with their answer
         unobserved rather than guessed at.
         """
-        agreement = self._node(agreement_uuid, "agreement")
+        agreement = self._node(agreement_uuid, "team")
         if not agreement:
             return []
         people = {
@@ -2712,7 +2728,7 @@ class TeamLogic:
             lambda: self.agreement_reference_hash(agreement),
         )
         definition = self._content_hash(role, {
-            "agreement_role", "agreement_accountability", "agreement_domain",
+            "team_role", "team_accountability", "team_domain",
         })
         combined = f"{body}|{definition}".encode("utf-8")
         return f"sha256:{hashlib.sha256(combined).hexdigest()}"
@@ -2728,7 +2744,7 @@ class TeamLogic:
         holdings arrive.
         """
         return self._content_hash(agreement, {
-            "agreement", "agreement_section", "agreement_clause",
+            "team", "team_section", "team_clause",
         })
 
     @staticmethod
@@ -2793,7 +2809,7 @@ class TeamLogic:
         ).strip()
         if parent_uuid in visiting:
             return ("cycle", "")
-        parent = self._node(parent_uuid, "agreement")
+        parent = self._node(parent_uuid, "team")
         if not parent:
             return ("unjoined", "")
         if not self._holding_is_live(holder, holding):
@@ -2835,7 +2851,7 @@ class TeamLogic:
             if uuid in seen:
                 continue
             seen.add(uuid)
-            node = self._node(uuid, "agreement")
+            node = self._node(uuid, "team")
             if not node:
                 continue
             pending.extend(
@@ -3140,7 +3156,7 @@ class TeamLogic:
         for topic_uuid in self.session.peer_topics_for_node(
             peer_addr, node_uuid,
         ):
-            if agreement := self._node(topic_uuid, "agreement"):
+            if agreement := self._node(topic_uuid, "team"):
                 return agreement
         return None
 
@@ -3159,7 +3175,7 @@ class TeamLogic:
             self.session.get_cached_peer_subtree(peer_addr, node_uuid)
             or self.session.protocol.index.get(node_uuid)
         )
-        if not node or node.data.get("type") != "agreement_role_offer":
+        if not node or node.data.get("type") != "team_role_offer":
             return SessionResult("ok")
         agreement = self._agreement_for_reaction(peer_addr, node_uuid)
         if not agreement:
@@ -3220,7 +3236,7 @@ class TeamLogic:
                 topic_uuids.add(local_topic.uuid)
             return any(
                 (topic := self.session.get_cached_peer_subtree(peer_addr, topic_uuid))
-                and topic.data.get("type") == "agreement"
+                and topic.data.get("type") == "team"
                 and self._subtree_contains(topic, node_uuid)
                 for topic_uuid in topic_uuids
             )
@@ -3238,11 +3254,11 @@ class TeamLogic:
         current = node
         while current and current.uuid not in seen:
             seen.add(current.uuid)
-            if current.data.get("type") == "agreement":
+            if current.data.get("type") == "team":
                 parent = self.session.protocol.index.get(current.parent_uuid)
                 return current if (
                     parent
-                    and parent.data.get("type") == "agreement_app"
+                    and parent.data.get("type") == "team_app"
                     and parent.data.get("name") == TEAM_APP_NAME
                 ) else None
             current = self.session.protocol.index.get(current.parent_uuid)
@@ -3258,7 +3274,7 @@ class TeamLogic:
     def create_agenda_item(
         self, agreement_uuid: str, text: str, priority: str | None = None,
     ) -> SessionResult:
-        agreement = self._node(agreement_uuid, "agreement")
+        agreement = self._node(agreement_uuid, "team")
         if not agreement:
             return SessionResult("error", reason="agreement not found")
         allowed = self._interaction_guard(agreement)
@@ -3314,7 +3330,7 @@ class TeamLogic:
 
     def _agreement_container(self) -> ProtocolNode:
         return self._folder(
-            self._apps_folder(), TEAM_APP_NAME, "agreement_app",
+            self._apps_folder(), TEAM_APP_NAME, "team_app",
         )
 
     def _find_agreement_container(self) -> ProtocolNode | None:
@@ -3331,7 +3347,7 @@ class TeamLogic:
         return next(
             (
                 child for child in apps.live_children()
-                if child.data.get("type") == "agreement_app"
+                if child.data.get("type") == "team_app"
                 and child.data.get("name") == TEAM_APP_NAME
             ),
             None,
