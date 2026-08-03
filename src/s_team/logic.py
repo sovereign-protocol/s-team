@@ -306,7 +306,6 @@ class TeamLogic:
             return created
         child = created.value
         identity = self._create_identity(child)
-        participant = self._create_default_participant(child)
         offered = self.offer_role(role.uuid, child.uuid)
         if offered.status != "ok":
             self.session.delete(child.uuid)
@@ -315,6 +314,12 @@ class TeamLogic:
         if seated.status != "ok":
             self.session.delete(child.uuid)
             return seated
+        # After the seat, never before it. An acceptance records the basis it
+        # was given against, and taking the seat *is* a change of basis - so
+        # accepting first would time-stamp the creator's own participation
+        # against an agreement that did not yet rest on anything, and leave
+        # them outdated in their own new subagreement from the first moment.
+        participant = self._create_default_participant(child)
         self._remember_agreement(child.uuid)
         return SessionResult(
             "ok",
@@ -2619,10 +2624,11 @@ class TeamLogic:
     def _build_role_reference_hash(
         self, agreement: ProtocolNode, role: ProtocolNode,
     ) -> str:
-        body = self._cached(
-            ("body_hash", agreement.uuid),
-            lambda: self.agreement_reference_hash(agreement),
-        )
+        body = self.agreement_reference_hash(agreement)
+        # Same reason as in _build_agreement_reference_hash: the role's
+        # accountabilities and domains are children, and a caller writing
+        # them holds a snapshot from before they existed.
+        role = self._node(role.uuid, "agreement_role") or role
         definition = self._content_hash(role, {
             "agreement_role", "agreement_accountability", "agreement_domain",
         })
@@ -2630,18 +2636,73 @@ class TeamLogic:
         return f"sha256:{hashlib.sha256(combined).hexdigest()}"
 
     def agreement_reference_hash(self, agreement: ProtocolNode) -> str:
-        """Hash agreement content without participant decision records.
+        """This agreement's body, and the body of everything it rests on.
 
         Role nodes are deliberately absent. An acceptance covers the document
         body plus the definitions of the roles that participant *holds*, so
         that editing one role does not re-open everybody else's acceptance.
-        Nobody holds a role yet, which makes the held-role contribution empty
-        and this hash exactly right for now; the scoping becomes visible when
-        holdings arrive.
+
+        The bodies of the parents are present, because a subagreement's
+        agreement rests on theirs: its trustee agreed to them on its behalf,
+        so the parent's text is part of what anybody taking a role here is
+        agreeing to. Without it somebody could be party to a body while
+        never having committed to its basis, and a change to that basis
+        would not re-open the acceptance it changed the meaning of.
+
+        A parent's *roles* still do not propagate, so the original scoping
+        holds: editing the Treasurer's accountabilities up there re-opens
+        nothing down here. Only its body does.
         """
-        return self._content_hash(agreement, {
+        return self._cached(
+            ("body_hash", agreement.uuid),
+            lambda: self._build_agreement_reference_hash(
+                agreement, {agreement.uuid},
+            ),
+        )
+
+    def _build_agreement_reference_hash(
+        self, agreement: ProtocolNode, visiting: set[str],
+    ) -> str:
+        # A ProtocolNode is a snapshot, and callers hold them across writes -
+        # _create_default_participant still carries the one it was given
+        # before the seat was taken. This hash is compared across time and
+        # across clients, so it has to read what is stored now rather than
+        # whatever its caller happened to be holding.
+        agreement = self._node(agreement.uuid, "agreement") or agreement
+        own = self._content_hash(agreement, {
             "agreement", "agreement_section", "agreement_clause",
         })
+        bases = []
+        for holding in self.parent_holdings(agreement):
+            parent_uuid = str(
+                holding.data.get("parent_agreement_uuid") or "",
+            ).strip()
+            if not parent_uuid or parent_uuid in visiting:
+                continue
+            parent = self._node(parent_uuid, "agreement")
+            # A basis this session does not hold cannot be hashed - you
+            # cannot have agreed to text you have never seen. It is named
+            # rather than skipped, so the absence is part of the hash
+            # instead of silently reading as "no parent at all". Anybody in
+            # that state is already read-only here (_holding_problem
+            # reports it as unjoined), so nothing they could do depends on
+            # agreeing with the hash somebody holding it computes.
+            bases.append((
+                parent_uuid,
+                self._build_agreement_reference_hash(
+                    parent, visiting | {parent_uuid},
+                ) if parent else "",
+            ))
+        if not bases:
+            return own
+        # Sorted by uuid, never by declared order: reordering seats changes
+        # where an agreement is *drawn*, which is not a change to what it
+        # rests on, and must not re-open a single acceptance.
+        bases.sort()
+        combined = json.dumps(
+            [own, bases], separators=(",", ":"),
+        ).encode("utf-8")
+        return f"sha256:{hashlib.sha256(combined).hexdigest()}"
 
     @staticmethod
     def _content_hash(root: ProtocolNode, included_types: set[str]) -> str:

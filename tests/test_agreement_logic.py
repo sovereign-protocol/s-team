@@ -2189,6 +2189,68 @@ class TeamLogicTests(unittest.TestCase):
             if holder["is_self"]
         )
 
+    def test_a_role_commits_you_to_what_the_agreement_rests_on(self):
+        # A subagreement's agreement rests on its parent's: the trustee
+        # agreed to it on the body's behalf, so the parent's text is part of
+        # what anybody taking a role in the child is agreeing to. Without
+        # this somebody is party to a body while never having committed to
+        # its basis, and a change to that basis does not re-open the
+        # acceptance whose meaning it changed.
+        session = Session("local")
+        logic = TeamLogic(session)
+        root = logic.create_agreement("Cooperative").value
+        child = logic.create_subagreement(root, "Operations").value
+        grandchild = logic.create_subagreement(child, "Purchasing").value
+
+        def standing(agreement_uuid):
+            agreement = session.protocol.index[agreement_uuid]
+            role = logic.roles(agreement)[0]
+            return next(
+                holder["status"]
+                for holder in logic.role_holders(agreement, role)
+                if holder["is_self"]
+            )
+
+        levels = (root, child, grandchild)
+        # Creating a seated agreement records its creator's acceptance
+        # against the basis it has once seated, not the one it had for the
+        # moment before.
+        self.assertEqual([standing(item) for item in levels],
+                         ["accepted"] * 3)
+
+        section = logic.create_section(root, "Purpose").value
+        logic.create_clause(section, "We buy together.")
+        # All the way down, not just where the edit was made.
+        self.assertEqual([standing(item) for item in levels],
+                         ["outdated"] * 3)
+
+        for agreement_uuid in levels:
+            for role in logic.roles(session.protocol.index[agreement_uuid]):
+                logic.decide_role(role.uuid, "accepted")
+        self.assertEqual([standing(item) for item in levels],
+                         ["accepted"] * 3)
+
+        # A *role* in the parent is still scoped out, or editing the
+        # Treasurer's accountabilities up there would re-open every
+        # acceptance in every body below.
+        role_uuid = logic.create_role(root, "Treasurer").value
+        logic.create_role_item(role_uuid, "accountability", "Bank accounts")
+        self.assertEqual([standing(item) for item in levels],
+                         ["accepted"] * 3)
+
+        # And so is the order the seats are declared in: that decides where
+        # an agreement is drawn, not what it rests on.
+        second = logic.create_agreement("Federation").value
+        seat = logic.create_role(second, "Member").value
+        logic.offer_role(seat, child)
+        logic.seat_agreement(seat, child)
+        for role in logic.roles(session.protocol.index[child]):
+            logic.decide_role(role.uuid, "accepted")
+        before = standing(child)
+        holdings = logic.parent_holdings(session.protocol.index[child])
+        logic.move_parent_holding(holdings[-1].uuid, 0)
+        self.assertEqual(standing(child), before)
+
     def test_an_offer_still_only_a_proposal_is_shown_to_who_it_is_for(self):
         # Only Identity may offer, so an offer reaches the person it names
         # as a proposal on their side - nothing merges without somebody's
