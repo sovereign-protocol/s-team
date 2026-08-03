@@ -1640,6 +1640,7 @@ class TeamLogic:
             for offer in self._all_role_offers(role)
         }
         decisions = self._observed_decisions(team, role)
+        withdrawn = self._withdrawn_by_trustee(team, role)
         admitted = self.actors_admitted_above(team)
         mine = self._identity_uuid
         # An offer authored by the Identity holder arrives here as a proposal
@@ -1666,11 +1667,23 @@ class TeamLogic:
             # first has simply not been invited here, which is actionable
             # and is not the same as being unable to see their answer.
             known = None if member else self._known_people().get(actor_uuid)
-            revoked = bool(offer and offer.data.get("revoked_at"))
-            if revoked and not record:
-                # Withdrawn, and nobody left holding an answer to it. The
-                # record stays so the offer can be revived, but there is no
-                # longer anyone involved to show.
+            revoked = (
+                bool(offer and offer.data.get("revoked_at"))
+                or actor_uuid in withdrawn
+            )
+            if revoked:
+                # Withdrawal is the trustee's own act on their own record,
+                # and it is final: the holding is gone whether or not the
+                # actor had answered. Showing the survivors said otherwise -
+                # a withdrawn offer that had been accepted stayed on the
+                # roster, greyed but still there, and on the actor's own
+                # side it stayed *clickable*, so the one person the offer
+                # had been taken away from could put themselves back.
+                #
+                # The actor's answer is not deleted - it is theirs (2.3) -
+                # it simply stops being half of a live holding. Offering
+                # again revives the same offer record, and their surviving
+                # answer makes it live at once.
                 continue
             # A Team actor is never among the people on this topic, so
             # the member test below would call every one of them a stranger.
@@ -1678,9 +1691,7 @@ class TeamLogic:
             is_team = bool(
                 offer and offer.data.get("actor_kind") == "team"
             )
-            if revoked:
-                status = "revoked"
-            elif unmerged_offer:
+            if unmerged_offer:
                 # Offered, and not answered - the same standing as an offer
                 # that had already merged, because from the reader's side it
                 # is the same fact and calls for the same act.
@@ -1768,6 +1779,54 @@ class TeamLogic:
                 "offered_by": (offer.data.get("offered_by") if offer else None),
             })
         return sorted(holders, key=lambda item: (item["status"], item["name"]))
+
+    def _withdrawn_by_trustee(
+        self, team: ProtocolNode, role: ProtocolNode,
+    ) -> set[str]:
+        """Offers the trustee's own replica shows withdrawn.
+
+        An offer is the trustee's record, so their replica is what it says -
+        the same credibility rule 2.6 applies to an answer, pointed at the
+        other author. Without it a withdrawal has to be adopted by everybody
+        it is news to, and until they do the person goes on being shown as
+        holding a role that was taken back: on their own client the badge
+        stayed active, which is the one place it must not.
+
+        Only consulted when somebody else holds Identity. When it is this
+        session, the local record already *is* the trustee's.
+        """
+        holder = self.identity_holder(team)
+        if not holder or holder == self._identity_uuid:
+            return set()
+        member = next(
+            (
+                person for person in self._topic_members(team.uuid)
+                if person["uuid"] == holder
+            ),
+            None,
+        )
+        if not member:
+            return set()
+        withdrawn: set[str] = set()
+        for address in member.get("addresses") or [member.get("address")]:
+            if not address:
+                continue
+            peer_topic = self.session.get_cached_peer_subtree(
+                address, team.uuid,
+            )
+            peer_role = (
+                self._find_in_subtree(peer_topic, role.uuid)
+                if peer_topic else None
+            )
+            if not peer_role:
+                continue
+            withdrawn.update(
+                str(child.data.get("actor_uuid") or "")
+                for child in peer_role.live_children()
+                if child.data.get("type") == "team_role_offer"
+                and child.data.get("revoked_at")
+            )
+        return withdrawn
 
     def _offer_proposed_to(
         self, team: ProtocolNode, role: ProtocolNode, actor_uuid: str,

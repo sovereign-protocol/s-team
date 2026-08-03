@@ -982,11 +982,51 @@ class TeamLogicTests(unittest.TestCase):
         # Their decision is theirs. It survives, pointing at nothing.
         theirs = right.session.protocol.index[role_uuid]
         self.assertTrue(right.logic._own_role_decision(theirs))
-        # The role is no longer held. The leftover answer reads as
-        # revoked rather than as a fresh request, or the Identity holder
-        # would be asked to re-offer what they had just withdrawn.
-        remaining = left.logic.role_holders(team, role)
-        self.assertEqual([item["status"] for item in remaining], ["revoked"])
+        # The role is no longer held, and nobody is shown holding it.
+        # Withdrawal is the trustee's own act on their own record and it is
+        # final: leaving the accepted answer on the roster said otherwise,
+        # and on the actor's own side left it clickable, so the one person
+        # it had been taken from could put themselves back.
+        self.assertEqual(left.logic.role_holders(team, role), [])
+
+    def test_a_withdrawal_reaches_the_person_it_was_taken_from(self):
+        # An offer is the trustee's record, so their replica is what it
+        # says - the credibility rule pointed at the other author. Read
+        # from merged content alone, a withdrawal had to be adopted by
+        # everybody it was news to, and until then the person went on
+        # being shown as holding a role that had been taken back: on
+        # their own client the badge stayed active, which is the one
+        # place it must not.
+        left, right = self.runtime(9709), self.runtime(9710)
+        team_uuid = left.logic.create_team("Charter").value
+        role_uuid = left.logic.create_role(team_uuid, "Treasurer").value
+        connect(left, right, team_uuid)
+        right.logic.accept_team_invitation(
+            right.session.protocol.index[team_uuid],
+        )
+        sync(left, right)
+        left.logic.offer_role(role_uuid, right.session.identity.uuid)
+        sync(left, right)
+        right.logic.decide_role(role_uuid, "accepted")
+        sync(left, right)
+
+        def mine_on_the_right():
+            team = right.session.protocol.index[team_uuid]
+            role = right.session.protocol.index[role_uuid]
+            return [
+                holder for holder in right.logic.role_holders(team, role)
+                if holder["is_self"]
+            ]
+
+        self.assertEqual(
+            [holder["status"] for holder in mine_on_the_right()], ["accepted"],
+        )
+
+        left.logic.revoke_role_offer(role_uuid, right.session.identity.uuid)
+        sync(left, right)
+
+        # Nothing was adopted on the right; the withdrawal still lands.
+        self.assertEqual(mine_on_the_right(), [])
 
     def test_resigning_removes_only_the_participants_own_record(self):
         runtime = self.runtime(9500)
@@ -1110,10 +1150,12 @@ class TeamLogicTests(unittest.TestCase):
         runtime.logic.offer_role(role_uuid, mine)
         self.assertEqual(statuses(), ["accepted"])
         runtime.logic.revoke_role_offer(role_uuid, mine)
-        self.assertEqual(statuses(), ["revoked"])
+        self.assertEqual(statuses(), [])
 
         # Offering again revives the same record rather than laying a second
-        # one beside it, and the answer already on file still counts.
+        # one beside it, and the answer already on file still counts - which
+        # is the whole reason a withdrawal marks the offer instead of
+        # deleting it, even though nothing is shown while it stands.
         runtime.logic.offer_role(role_uuid, mine)
         self.assertEqual(statuses(), ["accepted"])
         role = runtime.session.protocol.index[role_uuid]

@@ -300,11 +300,17 @@ class AssetTests(unittest.TestCase):
         self.assertIn("actors: false", self.team)
         self.assertIn("roles: false", self.team)
 
-    def test_copying_an_team_is_not_offered_on_its_own_page(self):
+    def test_copying_is_only_offered_while_making_a_new_team(self):
         # Starting a new team from this one is a choice made where a new
-        # team is made, which is the cockpit's create flow.
+        # team is made. There is now such a flow on this page as well as in
+        # the cockpit, so cloning may appear here - but only ever as the
+        # "copy from" of the New Team modal, never as an action sitting on
+        # the team you happen to be looking at.
         self.assertNotIn("state-duplicate", self.team)
-        self.assertNotIn("teams/clone", self.team)
+        self.assertIn("newTeamTemplate", self.team)
+        for line in self.team.split("\n"):
+            if "teams/clone" in line:
+                self.assertIn("template", line)
 
     def test_the_page_uses_shared_add_controls_and_has_no_state_line(self):
         css = files("s_team.assets").joinpath(
