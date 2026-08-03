@@ -436,6 +436,10 @@ h2.element-label { margin: 0 0 4px; }
   cursor: help;
 }
 .holder-name { font-weight: 600; }
+/* Accepted here, but out of a team above - so out of this one. Dimmed
+   rather than restyled: their answer stands, it is their standing that
+   does not. */
+.holder-badge[data-outside-parent="true"] { opacity: 0.55; }
 .holder-badge[data-status="refused"] .holder-name { text-decoration: line-through; }
 /* Not styled like "pending": this is "I cannot see", not "they have not
    answered", and the two must not read as the same thing. */

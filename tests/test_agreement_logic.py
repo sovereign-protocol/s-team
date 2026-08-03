@@ -1249,10 +1249,13 @@ class TeamLogicTests(unittest.TestCase):
         )
         return alpha, beta, circle
 
-    def test_one_parent_going_invalid_does_not_close_a_second_one(self):
-        # ANY path, not all: holding a seat in two agreements means either
-        # can carry it, so one parent lapsing suspends that relationship
-        # rather than paralysing a body the other still depends on.
+    def test_every_parent_is_a_commitment_not_a_spare_route(self):
+        # A second parent is a second commitment. A body sits inside each of
+        # the teams above it, so taking part in it is taking part in all of
+        # them - and losing one is losing the body, however sound the other
+        # is. Reading them as alternative routes let somebody keep working
+        # in a team through a parent they were still in, inside a parent
+        # they had left.
         runtime = self.runtime(9514)
         alpha, beta, circle = self.two_parents(runtime, None)
 
@@ -1263,12 +1266,113 @@ class TeamLogicTests(unittest.TestCase):
 
         self.assertTrue(writable())
         self.leave(runtime, alpha)
-        self.assertTrue(writable())
+        self.assertFalse(writable())
+        # Still shut with the other parent intact: Beta was never the reason
+        # it was open.
         self.leave(runtime, beta)
         self.assertFalse(writable())
-        # And it comes back through whichever parent recovers.
+        # Both have to come back, because both were given up.
         self.rejoin(runtime, beta)
+        self.assertFalse(writable())
+        self.rejoin(runtime, alpha)
         self.assertTrue(writable())
+
+    def test_the_roster_does_not_call_somebody_accepted_who_is_out(self):
+        # Invalidity above is derived, and was derived only for whoever was
+        # reading. Everybody else went on being shown as accepted here, so
+        # a team's own member list stated something untrue about them.
+        left, right = self.runtime(9707), self.runtime(9708)
+        parent = left.logic.create_agreement("Cooperative").value
+        child = left.logic.create_subagreement(parent, "Operations").value
+
+        for topic in (parent, child):
+            connect(left, right, topic)
+            right.logic.accept_agreement_invitation(
+                right.session.protocol.index[topic],
+            )
+            sync(left, right)
+            role_uuid = left.logic.roles(
+                left.session.protocol.index[topic],
+            )[0].uuid
+            left.logic.offer_role(role_uuid, right.session.identity.uuid)
+            sync(left, right)
+            right.logic.decide_role(role_uuid, "accepted")
+            sync(left, right)
+
+        def theirs(agreement_uuid):
+            agreement = left.session.protocol.index[agreement_uuid]
+            role = left.logic.roles(agreement)[0]
+            return next(
+                holder for holder in left.logic.role_holders(agreement, role)
+                if not holder["is_self"]
+            )
+
+        self.assertEqual(theirs(child)["status"], "accepted")
+        self.assertFalse(theirs(child)["outside_parent"])
+
+        # They step out of the parent. Their answer in the child is
+        # untouched - nothing is written into it - but they are out of it.
+        parent_role = right.logic.roles(
+            right.session.protocol.index[parent],
+        )[0].uuid
+        right.logic.resign_role(parent_role)
+        sync(left, right)
+
+        self.assertTrue(theirs(child)["outside_parent"])
+        self.assertFalse(theirs(parent)["outside_parent"])
+        # And it reverses itself when the role above is taken up again.
+        right.logic.decide_role(parent_role, "accepted")
+        sync(left, right)
+        self.assertFalse(theirs(child)["outside_parent"])
+
+    def test_a_team_cannot_take_a_seat_its_members_are_not_party_to(self):
+        # Being on a team below is being on the team above, so a seat
+        # commits everybody already on this team to the parent. Accepting
+        # one on their behalf would carry them into an agreement they never
+        # took a role in - and would shut the team for them, including for
+        # the trustee who accepted it.
+        left, right = self.runtime(9705), self.runtime(9706)
+        parent = left.logic.create_agreement("Cooperative").value
+        child = right.logic.create_agreement("Operations").value
+        seat = left.logic.create_role(parent, "Member team").value
+
+        connect(left, right, parent)
+        right.logic.accept_agreement_invitation(
+            right.session.protocol.index[parent],
+        )
+        sync(left, right)
+        self.assertEqual(left.logic.offer_role(seat, child).status, "ok")
+        sync(left, right)
+
+        # Right speaks for the child and was offered the seat, but holds
+        # nothing in the parent.
+        refused = right.logic.seat_agreement(seat, child)
+        self.assertEqual(refused.status, "error")
+        self.assertIn("Cooperative", refused.reason)
+        self.assertTrue(
+            right.logic.interaction_payload(
+                right.session.protocol.index[child],
+            )["allowed"],
+            "refusing the seat must leave the team it protects usable",
+        )
+
+        # Taking a role up there first is what makes the seat available.
+        participant = right.logic.roles(
+            right.session.protocol.index[parent],
+        )[0].uuid
+        right.logic.decide_role(participant, "accepted")
+        sync(left, right)
+        left.logic.offer_role(participant, right.session.identity.uuid)
+        sync(left, right)
+        right.logic.decide_role(participant, "accepted")
+        sync(left, right)
+
+        self.assertEqual(right.logic.seat_agreement(seat, child).status, "ok")
+        self.assertTrue(
+            right.logic.interaction_payload(
+                right.session.protocol.index[child],
+            )["allowed"],
+        )
 
     def test_home_is_the_first_seat_that_works_and_falls_back(self):
         runtime = self.runtime(9515)
