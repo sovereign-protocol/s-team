@@ -17,7 +17,7 @@
       <h2>Organization</h2>
       <div id="organizationTree"></div>
       <p class="consent-note">
-        Joining a parent does not join its subagreements; it makes them
+        Joining a parent does not join its subteams; it makes them
         available. A role must be held in every parent first.
       </p>
     </aside>
@@ -306,9 +306,9 @@
         .map(pair => pair[0]);
     };
 
-    const selectAgreement = async (agreementUuid) => {
-      await api('/api/team/agreements/select',
-        {agreement_uuid: agreementUuid});
+    const selectTeam = async (agreementUuid) => {
+      await api('/api/team/teams/select',
+        {team_uuid: agreementUuid});
       await load();
     };
 
@@ -317,14 +317,14 @@
     // invitation - and offered neither, so a client with no team had no way
     // to get one.
     //
-    // Creating selects, so you land in the new team's own (empty) agreement
+    // Creating selects, so you land in the new team's own (empty) team
     // rather than back on the same empty state you just left.
     const newTeamControl = () => SovereignUI.addComposer({
       noun: 'team',
       placeholder: 'Team name',
       onSubmit: async title => {
-        const created = await api('/api/team/agreements/create', {title});
-        if (created?.value) await selectAgreement(created.value);
+        const created = await api('/api/team/teams/create', {title});
+        if (created?.value) await selectTeam(created.value);
         else await load();
       },
       onError: error => showToast(error.message, true),
@@ -362,8 +362,8 @@
               ? `Open ${item.title}`
               : `Open ${item.title} read-only`
           )
-          : 'This subagreement has separate membership';
-        if (item.joined) button.onclick = () => selectAgreement(item.uuid);
+          : 'This subteam has separate membership';
+        if (item.joined) button.onclick = () => selectTeam(item.uuid);
 
         const count = document.createElement('span');
         count.className = 'member-count';
@@ -371,12 +371,12 @@
           ? `${(item.members || []).length} ${(item.members || []).length === 1 ? 'person' : 'people'}`
           : 'Not joined';
         row.append(button, count);
-        // An agreement nobody is in reads as a tree row like any other, and
+        // A team nobody is in reads as a tree row like any other, and
         // would otherwise be indistinguishable from one people rely on. Only
         // that case is marked here: one actor is the ordinary state of
         // anything you have just made, so badging it in a tree of your own
-        // agreements marks every row and distinguishes nothing. It stays on
-        // the agreement's own page, where it is about that agreement.
+        // teams marks every row and distinguishes nothing. It stays on
+        // the team's own page, where it is about that team.
         if (item.state === 'template') {
           const state = document.createElement('span');
           state.className = 'state-badge';
@@ -385,7 +385,7 @@
           state.title = TEMPLATE_BADGE.title;
           row.append(state);
         }
-        // The tree is drawn through home, so any other seat this agreement
+        // The tree is drawn through home, so any other seat this team
         // holds would otherwise be invisible - and an unseen second parent
         // is a trap for whoever deletes the first.
         if ((item.other_parents || []).length) {
@@ -395,7 +395,7 @@
             + item.other_parents.map(other => other.title).join(', ');
           row.append(also);
         }
-        if (item.relationship_status === 'awaiting_parent_agreement') {
+        if (item.relationship_status === 'awaiting_parent_team') {
           const pending = document.createElement('span');
           pending.className = 'relationship-pending';
           pending.textContent = 'Parent link pending';
@@ -413,7 +413,7 @@
       if (!tree.children.length) {
         const empty = document.createElement('p');
         empty.className = 'organization-empty';
-        empty.textContent = 'No agreements yet';
+        empty.textContent = 'No teams yet';
         tree.append(empty);
       }
     };
@@ -426,10 +426,10 @@
     // group mark for a team. Shared, so an actor looks the same wherever it
     // is drawn.
     //
-    // An actor is an Individual or a Team. "Agreement" is what the document
+    // An actor is an Individual or a Team. "Team" is what the document
     // is, and using the same word for the body that holds a role made a
     // role-holder list read as a list of documents. The node type stays
-    // `agreement` - it is the same node - but nothing calls an actor that.
+    // `team` - it is the same node - but nothing calls an actor that.
     const avatarFor = (person) => {
       if (person.actor_kind === 'team') {
         return SovereignUI.entityBadge({
@@ -488,7 +488,7 @@
               async () => {
                 try {
                   await api('/api/team/identity/resign',
-                    {agreement_uuid: current.uuid});
+                    {team_uuid: current.uuid});
                   await load();
                   showToast('You no longer hold Identity');
                 } catch (error) { showToast(error.message, true); }
@@ -543,7 +543,7 @@
         return row;
       };
 
-      // This agreement is an actor too, and the roles it holds elsewhere are
+      // This team is an actor too, and the roles it holds elsewhere are
       // roles like any other - so they are badges on its own line, read and
       // acted on exactly as yours are. There is no separate idea of a seat:
       // "Operations in Cooperative" is one role, named by where it is.
@@ -559,7 +559,7 @@
         name.textContent = 'This team';
         const chips = document.createElement('span');
         chips.className = 'participant-roles';
-        // Whoever speaks for the agreement answers for it, so the badges act
+        // Whoever speaks for the team answers for it, so the badges act
         // only for them. For everybody else they state where it stands.
         const mine = interactive && payloadState.holds_identity;
         for (const [index, seat] of seats.entries()) {
@@ -601,7 +601,7 @@
           chip.disabled = true;
           try {
             await api('/api/team/roles/unseat', {
-              role_uuid: seat.role_uuid, agreement_uuid: current.uuid,
+              role_uuid: seat.role_uuid, team_uuid: current.uuid,
             });
             await load();
           } catch (error) {
@@ -613,7 +613,7 @@
           const prefer = document.createElement('span');
           prefer.className = 'chip-action ui-entity-action';
           prefer.textContent = '↑';
-          prefer.title = `Draw this agreement under ${seat.title}`;
+          prefer.title = `Draw this team under ${seat.title}`;
           prefer.onclick = async event => {
             event.stopPropagation();
             try {
@@ -641,7 +641,7 @@
           chip.disabled = true;
           chip.dataset.status = 'expired';
           chip.title = `${badgeLabel} — ${offer.title} already sits`
-            + ' below this agreement, so taking it would make the'
+            + ' below this team, so taking it would make the'
             + ' organisation circular.';
           return chip;
         }
@@ -655,7 +655,7 @@
           chip.disabled = true;
           try {
             await api('/api/team/roles/seat', {
-              role_uuid: offer.role_uuid, agreement_uuid: current.uuid,
+              role_uuid: offer.role_uuid, team_uuid: current.uuid,
             });
             await load();
             showToast(`Now holding ${offer.role_name} in ${offer.title}`);
@@ -675,7 +675,7 @@
             event.stopPropagation();
             try {
               await api('/api/team/roles/decline_seat', {
-                role_uuid: offer.role_uuid, agreement_uuid: current.uuid,
+                role_uuid: offer.role_uuid, team_uuid: current.uuid,
               });
               await load();
             } catch (error) { showToast(error.message, true); }
@@ -717,7 +717,7 @@
     const ephemeral = {openMenu: '', disclosures: null};
 
     // Identity is one line, not a panel: it says who speaks for this
-    // agreement and gets out of the way. Taking it from somebody is real but
+    // team and gets out of the way. Taking it from somebody is real but
     // rare, so it lives behind the overflow rather than as a button.
     const renderIdentity = (identity, interactive) => {
       const line = document.createElement('div');
@@ -826,7 +826,7 @@
           const run = async () => {
             try {
               await api('/api/team/identity/take',
-                {agreement_uuid: current.uuid});
+                {team_uuid: current.uuid});
               ephemeral.openMenu = '';
               await load();
               showToast('You now hold Identity');
@@ -862,12 +862,12 @@
       refused: 'refused',
       expired: 'lapsed',
       outdated: 'accepted an earlier version',
-      uninvited: 'not invited to this agreement yet',
+      uninvited: 'not invited to this team yet',
       unobserved: 'answer not visible from here',
     };
 
-    // An agreement nobody is in is worth marking in the tree, where it sits
-    // among agreements people rely on. On its own page it needs no line: the
+    // A team nobody is in is worth marking in the tree, where it sits
+    // among teams people rely on. On its own page it needs no line: the
     // Identity line already says nobody holds it and every role already says
     // nobody is invited, so a third statement of the same fact is repetition.
     // Working and instantiated are marked nowhere - they are the ordinary
@@ -1072,12 +1072,12 @@
         badge.title = `${holder.is_self ? 'You' : holder.name} — `
           + detail.map(part => part.replace(/\.$/, '')).join('. ');
 
-        // A seat filled by another agreement opens it. Structure is made by
+        // A seat filled by another team opens it. Structure is made by
         // filling a role, so this is where the organisation is walked.
         if (holder.actor_kind === 'team' && holder.joined) {
-          badge.classList.add('agreement-link');
+          badge.classList.add('team-link');
           badge.tabIndex = 0;
-          const open = () => selectAgreement(holder.actor_uuid);
+          const open = () => selectTeam(holder.actor_uuid);
           badge.onclick = open;
           badge.onkeydown = event => {
             if (event.key === 'Enter' || event.key === ' ') {
@@ -1261,7 +1261,7 @@
               async () => {
                 try {
                   await api('/api/team/identity/resign',
-                    {agreement_uuid: current.uuid});
+                    {team_uuid: current.uuid});
                   await load();
                   showToast('You no longer hold Identity');
                 } catch (error) { showToast(error.message, true); }
@@ -1288,7 +1288,7 @@
             take.disabled = true;
             try {
               await api('/api/team/identity/take',
-                {agreement_uuid: current.uuid});
+                {team_uuid: current.uuid});
               await load();
               showToast('You now hold Identity');
             } catch (error) {
@@ -1306,17 +1306,17 @@
     // Roles are content, not administration. They render inside the document
     // rather than in a side panel, because a role is part of what people
     // accept - but as cards rather than prose, because they are structured.
-    const renderRoles = (agreement, interactive) => {
+    const renderRoles = (team, interactive) => {
       const section = document.createElement('div');
       section.className = 'roles';
       const explanation = document.createElement('p');
       explanation.className = 'section-intro';
       explanation.textContent =
-        'What this agreement expects, and who has been invited to it.';
+        'What this team expects, and who has been invited to it.';
       section.append(explanation);
       section.append(renderIdentityRoleCard(interactive));
 
-      const roles = displayedChildren(agreement, 'team_role');
+      const roles = displayedChildren(team, 'team_role');
       const rolesHaveProposals = roles.some(entry => entry.proposed);
       roles.forEach(({node: role, proposed}, index) => {
         section.append(renderRoleCard({
@@ -1342,7 +1342,7 @@
           placeholder: 'Role name',
           onSubmit: async name => {
             await api('/api/team/roles/create',
-              {agreement_uuid: agreement.uuid, name});
+              {team_uuid: team.uuid, name});
             await load();
           },
           onError: error => showToast(error.message, true),
@@ -1362,20 +1362,20 @@
       const encoded = JSON.stringify(payload);
       if (encoded === renderedPayloadJson) { SovereignShell.refresh(); return; }
       payloadState = payload;
-      current = payload.agreement;
+      current = payload.team;
       currentInteractionAllowed = Boolean(payload.interaction?.allowed);
       renderOrganization(payload.organization);
       SovereignShell.setTopicSelector({
-        label: 'Agreement',
-        topics: payload.agreements.map(item => ({
+        label: 'Team',
+        topics: payload.teams.map(item => ({
           uuid: item.uuid,
-          title: item.data.title || 'Untitled agreement',
+          title: item.data.title || 'Untitled team',
         })),
         selectedUuid: current?.uuid || '',
-        onSelect: selectAgreement,
+        onSelect: selectTeam,
         onRename: current && currentInteractionAllowed ? async title => {
-          await api('/api/team/agreements/rename',
-            {agreement_uuid: current.uuid, title});
+          await api('/api/team/teams/rename',
+            {team_uuid: current.uuid, title});
           await load();
         } : null,
       });
@@ -1418,15 +1418,18 @@
         onToggle: open => { ephemeral.disclosures[key] = open; },
       });
 
-      const documentPart = disclosure('Agreement document', 'document');
+      // "Agreement" survives here alone, and without "document" after it:
+      // this section *is* the agreement - the text the team's members
+      // consent to - while everything around it is the team.
+      const documentPart = disclosure('Agreement', 'document');
       const content = document.createElement('div');
       content.className = 'content';
       documentPart.content.append(elementRow({
         node: current,
         tag: 'h2',
         field: 'title',
-        rename: value => api('/api/team/agreements/rename',
-          {agreement_uuid: current.uuid, title: value}),
+        rename: value => api('/api/team/teams/rename',
+          {team_uuid: current.uuid, title: value}),
         interactive: currentInteractionAllowed,
         addControl: currentInteractionAllowed
           ? SovereignUI.addComposer({
@@ -1435,7 +1438,7 @@
             className: 'element-add-control',
             onSubmit: async title => {
               await api('/api/team/sections/create',
-                {agreement_uuid: current.uuid, title});
+                {team_uuid: current.uuid, title});
               await load();
             },
             onError: error => showToast(error.message, true),
@@ -1447,7 +1450,7 @@
         notice.className = 'readonly-notice';
         notice.textContent = (
           payload.interaction?.reason
-          || 'This subagreement is visible but read-only.'
+          || 'This subteam is visible but read-only.'
         );
         documentPart.content.append(notice);
       }
@@ -1567,7 +1570,7 @@
       state: () => payloadState,
       onChanged: () => load(),
       agendaRoutes: {
-        topicKey: 'agreement_uuid',
+        topicKey: 'team_uuid',
         create: '/api/team/agenda/create',
         delete: '/api/team/agenda/delete',
         setPriority: '/api/team/agenda/set_priority',
@@ -1583,21 +1586,21 @@
       },
     });
 
-    // Deep link from the overview: /apps/team?agreement=<uuid> selects
-    // that agreement on arrival, mirroring Kanban's ?board=<uuid>.
-    async function selectAgreementFromUrl() {
+    // Deep link from the overview: /apps/team?team=<uuid> selects
+    // that team on arrival, mirroring Kanban's ?board=<uuid>.
+    async function selectTeamFromUrl() {
       const params = new URLSearchParams(window.location.search);
       const uuid = params.get('team');
       if (!uuid) return;
       try {
-        await api('/api/team/agreements/select', {agreement_uuid: uuid});
+        await api('/api/team/teams/select', {team_uuid: uuid});
       } catch (error) { showToast(error.message, true); }
       params.delete('team');
       const query = params.toString();
       window.history.replaceState({}, '', window.location.pathname + (query ? `?${query}` : ''));
     }
 
-    selectAgreementFromUrl().then(load);
+    selectTeamFromUrl().then(load);
     setInterval(load, 3000);
   </script>
 </body>

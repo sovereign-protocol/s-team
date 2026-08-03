@@ -127,7 +127,7 @@ class BoundaryTests(unittest.TestCase):
             self.assertFalse(used & forbidden, str(path))
 
     def test_reads_the_transition_ranking_rather_than_copying_it(self):
-        # Kanban and Agreement had each copied Session's ranking and the
+        # Kanban and Team had each copied Session's ranking and the
         # copies drifted: one ranked divergence 6, the other 5, so the same
         # conflict surfaced differently in each. Session owns the ranking.
         for path in SOURCES:
@@ -175,33 +175,33 @@ class BoundaryTests(unittest.TestCase):
 
 class AssetTests(unittest.TestCase):
     def setUp(self):
-        self.agreement = files("s_team.assets").joinpath(
+        self.team = files("s_team.assets").joinpath(
             "team.html",
         ).read_text(encoding="utf-8")
 
     def test_peer_only_nodes_are_presented_as_proposals(self):
-        self.assertIn("payloadState.proposed_nodes", self.agreement)
-        self.assertIn("Accept proposal", self.agreement)
-        self.assertIn("Withdraw proposal", self.agreement)
+        self.assertIn("payloadState.proposed_nodes", self.team)
+        self.assertIn("Accept proposal", self.team)
+        self.assertIn("Withdraw proposal", self.team)
         # "Keep mine" is the Kanban reaction, offered after a merge. An
-        # agreement never merges a peer's node first, so it must not appear.
-        self.assertNotIn("Keep mine", self.agreement)
+        # team never merges a peer's node first, so it must not appear.
+        self.assertNotIn("Keep mine", self.team)
 
     def test_topic_header_delegates_navigation_and_creation_to_the_shell(self):
-        self.assertNotIn("onCreateTopic", self.agreement)
-        self.assertIn("SovereignShell.setTopicSelector", self.agreement)
+        self.assertNotIn("onCreateTopic", self.team)
+        self.assertIn("SovereignShell.setTopicSelector", self.team)
 
     def test_agenda_exposes_the_shared_move_route(self):
-        self.assertIn("move: '/api/team/agenda/move'", self.agreement)
+        self.assertIn("move: '/api/team/agenda/move'", self.team)
         self.assertIn(
             "displayedChildren(current, 'team_section')",
-            self.agreement,
+            self.team,
         )
 
     def test_polling_preserves_focused_form_fields(self):
         self.assertIn(
             "document.activeElement.matches('input, textarea, select')",
-            self.agreement,
+            self.team,
         )
 
     def test_participants_are_listed_by_the_roles_they_hold(self):
@@ -215,10 +215,10 @@ class AssetTests(unittest.TestCase):
             "role.identity ?",
             "Identity",
         ):
-            self.assertIn(marker, self.agreement)
+            self.assertIn(marker, self.team)
 
-    def test_actor_rows_start_with_the_agreement_then_you_then_others(self):
-        ordering = self.agreement.split("const people = participants || [];", 1)[1]
+    def test_actor_rows_start_with_the_team_then_you_then_others(self):
+        ordering = self.team.split("const people = participants || [];", 1)[1]
         ordering = ordering.split("return section;", 1)[0]
         own = ordering.index("section.append(own)")
         me = ordering.index("section.append(rowFor(me, interactive))")
@@ -227,24 +227,24 @@ class AssetTests(unittest.TestCase):
         self.assertLess(me, others)
         self.assertNotIn(
             "if (!seats.length && !offers.length) return null",
-            self.agreement,
+            self.team,
         )
 
     def test_only_your_own_badges_act(self):
         # Somebody else's standing is a statement, not a control over
         # them, so those badges are inert.
-        self.assertIn("rowFor(me, interactive)", self.agreement)
-        self.assertIn("rowFor(person, false)", self.agreement)
-        self.assertIn("Click to step out", self.agreement)
-        self.assertIn("Click to take it", self.agreement)
+        self.assertIn("rowFor(me, interactive)", self.team)
+        self.assertIn("rowFor(person, false)", self.team)
+        self.assertIn("Click to step out", self.team)
+        self.assertIn("Click to take it", self.team)
 
     def test_an_unreachable_answer_is_not_worded_as_an_unanswered_one(self):
         # "They have not answered" and "this session cannot see whether they
         # have" are different facts, and the interface has to say which.
-        self.assertIn("offered, not yet decided", self.agreement)
-        self.assertIn("answer not visible from here", self.agreement)
+        self.assertIn("offered, not yet decided", self.team)
+        self.assertIn("answer not visible from here", self.team)
         self.assertIn(
-            "you cannot see their answer", self.agreement,
+            "you cannot see their answer", self.team,
         )
 
     def test_destructive_role_actions_state_their_consequence(self):
@@ -256,84 +256,87 @@ class AssetTests(unittest.TestCase):
             "writes a competing holder into the same record",
             "confirmModalConfirmBtn",
         ):
-            self.assertIn(marker, self.agreement)
+            self.assertIn(marker, self.team)
 
     def test_inviting_and_withdrawing_belong_to_identity_alone(self):
         # Both live on the holder's badge, revealed on hover the way Delete
         # is, so a role reads as a line of people rather than of controls.
-        self.assertIn("payloadState.holds_identity", self.agreement)
-        self.assertIn("holder-action", self.agreement)
-        self.assertIn("/api/team/roles/revoke", self.agreement)
-        self.assertIn("/api/team/roles/offer", self.agreement)
+        self.assertIn("payloadState.holds_identity", self.team)
+        self.assertIn("holder-action", self.team)
+        self.assertIn("/api/team/roles/revoke", self.team)
+        self.assertIn("/api/team/roles/offer", self.team)
 
     def test_who_holds_a_role_is_a_badge_and_the_rest_is_a_tooltip(self):
         # The line shows a face and a name; when they answered, against which
         # version and who offered it are one holder's details, so they belong
         # in the tooltip rather than in columns nobody reads across.
-        self.assertIn("holder-badges", self.agreement)
-        self.assertIn("const badge = SovereignUI.entityBadge({", self.agreement)
-        self.assertIn("className: 'holder-badge'", self.agreement)
-        self.assertIn("badge.title", self.agreement)
+        self.assertIn("holder-badges", self.team)
+        self.assertIn("const badge = SovereignUI.entityBadge({", self.team)
+        self.assertIn("className: 'holder-badge'", self.team)
+        self.assertIn("badge.title", self.team)
 
-    def test_an_agreement_holds_roles_the_way_a_person_does(self):
-        # An Agreement is a normal actor, so the roles it holds elsewhere are
+    def test_an_team_holds_roles_the_way_a_person_does(self):
+        # A Team is a normal actor, so the roles it holds elsewhere are
         # badges on its own line in Actors - taken and left by clicking, as
         # yours are. There is no separate idea of a seat with a section of
         # its own.
-        self.assertIn("payloadState.seat_offers", self.agreement)
-        self.assertIn("/api/team/roles/decline_seat", self.agreement)
-        self.assertIn("is-team", self.agreement)
+        self.assertIn("payloadState.seat_offers", self.team)
+        self.assertIn("/api/team/roles/decline_seat", self.team)
+        self.assertIn("is-team", self.team)
         for gone in ("renderSeats", "renderSeatOffers", "seat-offer", "Seats held"):
-            self.assertNotIn(gone, self.agreement)
+            self.assertNotIn(gone, self.team)
 
-    def test_the_three_agreement_parts_use_shared_disclosures(self):
+    def test_the_three_team_parts_use_shared_disclosures(self):
         for title, key in (
-            ("Agreement document", "document"),
+            # "Agreement" and not "Team document": this section *is* the
+            # agreement - the text the members consent to - and it is the
+            # one place the word survives the move to Team.
+            ("Agreement", "document"),
             ("Actors", "actors"),
             ("Roles", "roles"),
         ):
-            self.assertIn(f"disclosure('{title}', '{key}')", self.agreement)
-        self.assertIn("document: true", self.agreement)
-        self.assertIn("actors: false", self.agreement)
-        self.assertIn("roles: false", self.agreement)
+            self.assertIn(f"disclosure('{title}', '{key}')", self.team)
+        self.assertIn("document: true", self.team)
+        self.assertIn("actors: false", self.team)
+        self.assertIn("roles: false", self.team)
 
-    def test_copying_an_agreement_is_not_offered_on_its_own_page(self):
-        # Starting a new agreement from this one is a choice made where a new
-        # agreement is made, which is the cockpit's create flow.
-        self.assertNotIn("state-duplicate", self.agreement)
-        self.assertNotIn("agreements/clone", self.agreement)
+    def test_copying_an_team_is_not_offered_on_its_own_page(self):
+        # Starting a new team from this one is a choice made where a new
+        # team is made, which is the cockpit's create flow.
+        self.assertNotIn("state-duplicate", self.team)
+        self.assertNotIn("teams/clone", self.team)
 
     def test_the_page_uses_shared_add_controls_and_has_no_state_line(self):
         css = files("s_team.assets").joinpath(
             "team.css",
         ).read_text(encoding="utf-8")
         self.assertIn("#document > .ui-disclosure", css)
-        self.assertIn("SovereignUI.addComposer", self.agreement)
+        self.assertIn("SovereignUI.addComposer", self.team)
         for noun in ("section", "clause", "role"):
-            self.assertIn(f"noun: '{noun}'", self.agreement)
-        self.assertIn("noun: kind", self.agreement)
-        self.assertIn("kind: 'accountability'", self.agreement)
-        self.assertIn("kind: 'domain'", self.agreement)
+            self.assertIn(f"noun: '{noun}'", self.team)
+        self.assertIn("noun: kind", self.team)
+        self.assertIn("kind: 'accountability'", self.team)
+        self.assertIn("kind: 'domain'", self.team)
         # How many actors are in it is not worth a line of its own: the
         # Identity line and every role already say it.
-        self.assertNotIn("agreement-state", self.agreement)
-        self.assertNotIn("One actor", self.agreement)
+        self.assertNotIn("team-state", self.team)
+        self.assertNotIn("One actor", self.team)
 
     def test_document_add_controls_live_on_their_heading_rows(self):
         css = files("s_team.assets").joinpath(
             "team.css",
         ).read_text(encoding="utf-8")
-        self.assertIn("addControl: currentInteractionAllowed", self.agreement)
-        self.assertIn("addControl: !proposed && currentInteractionAllowed", self.agreement)
-        self.assertIn("className: 'element-add-control'", self.agreement)
+        self.assertIn("addControl: currentInteractionAllowed", self.team)
+        self.assertIn("addControl: !proposed && currentInteractionAllowed", self.team)
+        self.assertIn("className: 'element-add-control'", self.team)
         self.assertIn(".element-row:hover .element-add-control", css)
-        self.assertNotIn("block.append(SovereignUI.addComposer", self.agreement)
+        self.assertNotIn("block.append(SovereignUI.addComposer", self.team)
 
     def test_role_offer_picker_shares_the_held_by_heading_and_theme(self):
         css = files("s_team.assets").joinpath(
             "team.css",
         ).read_text(encoding="utf-8")
-        self.assertIn("heldHeading.append(picker)", self.agreement)
+        self.assertIn("heldHeading.append(picker)", self.team)
         self.assertIn(".role-holders-heading", css)
         self.assertIn("background-color: var(--panel)", css)
         self.assertIn(".role-offer-picker option", css)
@@ -341,7 +344,7 @@ class AssetTests(unittest.TestCase):
     def test_assets_never_navigate_to_the_bare_root_with_a_query(self):
         # "/" serves whichever application is primary, so a root-relative link
         # lands somewhere that depends on host configuration.
-        for number, line in enumerate(self.agreement.splitlines(), start=1):
+        for number, line in enumerate(self.team.splitlines(), start=1):
             for pattern in ('href = `/?', 'href="/?', "href='/?"):
                 self.assertNotIn(pattern, line, f"team.html:{number}")
 

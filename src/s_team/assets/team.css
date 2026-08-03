@@ -20,7 +20,7 @@
 }
 
 /* Light theme. The warm ink identity is kept - same hue family, lightened -
-   so Agreement still reads as its own application rather than collapsing
+   so Team still reads as its own application rather than collapsing
    into the Cockpit's neutral gray (U2). This is also the palette the old
    light document page used to sit in, now applied to the whole surface
    rather than only the article. */
@@ -45,7 +45,7 @@ main {
   gap: 20px;
   align-items: start;
 }
-/* Every application separates header from content with a rule; Agreement had
+/* Every application separates header from content with a rule; Team had
    none, which is why its header read as floating. */
 header {
   border-bottom: 1px solid var(--line);
@@ -124,7 +124,7 @@ button, select { padding: 8px 11px; border-radius: 6px; border: 1px solid var(--
 }
 
 /* One row shape at every level: status on the left with the name, actions on
-   the right. Same grid for the agreement, its sections, and its clauses, so
+   the right. Same grid for the team, its sections, and its clauses, so
    the eye finds the same thing in the same place all the way down. */
 .element-row {
   display: grid;
@@ -190,14 +190,14 @@ h2.element-label { margin: 0 0 4px; }
   white-space: nowrap;
   font-size: 11px;
 }
-.agreement-link {
+.team-link {
   color: var(--proposal);
   cursor: pointer;
   text-decoration: underline;
   text-decoration-color: transparent;
   text-underline-offset: 3px;
 }
-.agreement-link:hover { text-decoration-color: currentColor; }
+.team-link:hover { text-decoration-color: currentColor; }
 .readonly-notice {
   margin: 10px 4px 6px 22px;
   padding: 7px 9px;
@@ -262,7 +262,7 @@ h2.element-label { margin: 0 0 4px; }
 .editable:focus { outline: 2px solid var(--proposal); outline-offset: 1px; background: var(--hover); }
 
 /* Participants are listed by the roles they hold, because holding a role is
-   what being part of an agreement means. Somebody present who holds nothing
+   what being part of a team means. Somebody present who holds nothing
    is shown, and shown to be outside. */
 .participant {
   display: grid;
@@ -296,7 +296,7 @@ h2.element-label { margin: 0 0 4px; }
 .role-chip:disabled { cursor: default; }
 /* One extra mark on a badge, for the thing that is not simply taking or
    leaving the role: declining an invitation, or preferring where the
-   organisation draws this agreement. Hidden until the badge is under the
+   organisation draws this team. Hidden until the badge is under the
    pointer, so the line reads as roles rather than as controls. */
 .chip-action {
   margin-left: 5px;
@@ -309,7 +309,7 @@ h2.element-label { margin: 0 0 4px; }
 .role-chip[data-status="unobserved"] { font-style: italic; opacity: 0.6; }
 .participant-observer { font-size: 12px; color: var(--text-muted); }
 
-/* Identity is a line, not a panel: who speaks for this agreement, stated
+/* Identity is a line, not a panel: who speaks for this team, stated
    once and then out of the way. It only raises its voice when contested. */
 .identity-line {
   display: flex;
@@ -450,8 +450,8 @@ h2.element-label { margin: 0 0 4px; }
    answered", and the two must not read as the same thing. */
 .holder-badge[data-status="unobserved"] { font-style: italic; opacity: 0.65; }
 .holder-badge[data-status="uninvited"] { border-style: dotted; }
-.holder-badge.agreement-link { cursor: pointer; }
-.holder-badge.agreement-link:hover { border-color: var(--proposal); }
+.holder-badge.team-link { cursor: pointer; }
+.holder-badge.team-link:hover { border-color: var(--proposal); }
 /* Withdrawing is destructive and rare, so it waits for a hover the way
    Delete does - and stays reachable by keyboard, which is why focus-within
    shows it too. */
@@ -502,7 +502,7 @@ h2.element-label { margin: 0 0 4px; }
   font-size: 11px;
 }
 
-/* The agreement text collapses behind a caret on the title itself, because
+/* The team text collapses behind a caret on the title itself, because
    once a document is settled the interesting part is the structure below it.
    A caret and nothing more: what it folds is directly underneath, so a label
    saying so would only repeat the page. It shares the title's grid cell so
@@ -525,8 +525,8 @@ h2.element-label { margin: 0 0 4px; }
 .element-toggle:hover { color: var(--text); }
 .content.is-collapsed { display: none; }
 
-/* An agreement nobody is in is worth marking in the tree, where it sits
-   among agreements people rely on. Nowhere else: on its own page the
+/* A team nobody is in is worth marking in the tree, where it sits
+   among teams people rely on. Nowhere else: on its own page the
    Identity line and every role already say the same thing. */
 .state-badge {
   padding: 1px 8px;
