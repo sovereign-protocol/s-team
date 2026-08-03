@@ -404,9 +404,9 @@
     // role-holder list read as a list of documents. The node type stays
     // `agreement` - it is the same node - but nothing calls an actor that.
     const avatarFor = (person) => {
-      if (person.actor_kind === 'agreement') {
+      if (person.actor_kind === 'team') {
         return SovereignUI.entityBadge({
-          kind: 'agreement', compact: true,
+          kind: 'team', compact: true,
           className: 'acceptance-avatar', title: person.name || 'Team',
         });
       }
@@ -525,7 +525,7 @@
         const offers = payloadState.seat_offers || [];
         const row = document.createElement('div');
         row.className = 'participant is-team';
-        row.append(avatarFor({actor_kind: 'agreement'}));
+        row.append(avatarFor({actor_kind: 'team'}));
         const body = document.createElement('span');
         body.className = 'acceptance-body';
         const name = document.createElement('strong');
@@ -854,11 +854,11 @@
     // one card renders both columns from this table.
     const ROLE_ITEM_KINDS = [
       {
-        kind: 'accountability', type: 'agreement_accountability',
+        kind: 'accountability', type: 'team_accountability',
         label: 'Accountabilities', add: 'New accountability',
       },
       {
-        kind: 'domain', type: 'agreement_domain',
+        kind: 'domain', type: 'team_domain',
         label: 'Domains', add: 'New domain',
       },
     ];
@@ -993,7 +993,7 @@
       const badges = document.createElement('div');
       badges.className = 'holder-badges';
       for (const holder of holders) {
-        const kind = holder.actor_kind === 'agreement' ? 'agreement' : 'person';
+        const kind = holder.actor_kind === 'team' ? 'team' : 'person';
         const badge = SovereignUI.entityBadge({
           kind,
           person: holder,
@@ -1012,7 +1012,7 @@
             'You do not sync with them, so you cannot see their answer.',
           );
         }
-        if (holder.actor_kind === 'agreement' && !holder.joined) {
+        if (holder.actor_kind === 'team' && !holder.joined) {
           detail.push(
             'Invited separately; you have not joined that team.',
           );
@@ -1047,7 +1047,7 @@
 
         // A seat filled by another agreement opens it. Structure is made by
         // filling a role, so this is where the organisation is walked.
-        if (holder.actor_kind === 'agreement' && holder.joined) {
+        if (holder.actor_kind === 'team' && holder.joined) {
           badge.classList.add('agreement-link');
           badge.tabIndex = 0;
           const open = () => selectAgreement(holder.actor_uuid);
@@ -1145,7 +1145,7 @@
             option.textContent = actor.uuid === payloadState.identity_uuid
               ? 'You'
               : actor.name;
-            groups[actor.kind === 'agreement' ? 'agreement' : 'individual']
+            groups[actor.kind === 'team' ? 'team' : 'individual']
               .append(option);
           }
           for (const group of Object.values(groups)) {
@@ -1289,7 +1289,7 @@
       section.append(explanation);
       section.append(renderIdentityRoleCard(interactive));
 
-      const roles = displayedChildren(agreement, 'agreement_role');
+      const roles = displayedChildren(agreement, 'team_role');
       const rolesHaveProposals = roles.some(entry => entry.proposed);
       roles.forEach(({node: role, proposed}, index) => {
         section.append(renderRoleCard({
@@ -1417,7 +1417,7 @@
         );
         documentPart.content.append(notice);
       }
-      const sections = displayedChildren(current, 'agreement_section');
+      const sections = displayedChildren(current, 'team_section');
       const sectionsHaveProposals = sections.some(entry => entry.proposed);
       sections.forEach(({node: section, proposed}, sIndex) => {
         const block = document.createElement('section');
@@ -1464,7 +1464,7 @@
         }));
 
         const clauses = displayedChildren(
-          section, 'agreement_clause', proposed,
+          section, 'team_clause', proposed,
         );
         const clausesHaveProposals = clauses.some(entry => entry.proposed);
         clauses.forEach(({node: clause, proposed: clauseProposed}, cIndex) => {
@@ -1553,12 +1553,12 @@
     // that agreement on arrival, mirroring Kanban's ?board=<uuid>.
     async function selectAgreementFromUrl() {
       const params = new URLSearchParams(window.location.search);
-      const uuid = params.get('agreement');
+      const uuid = params.get('team');
       if (!uuid) return;
       try {
         await api('/api/team/agreements/select', {agreement_uuid: uuid});
       } catch (error) { showToast(error.message, true); }
-      params.delete('agreement');
+      params.delete('team');
       const query = params.toString();
       window.history.replaceState({}, '', window.location.pathname + (query ? `?${query}` : ''));
     }

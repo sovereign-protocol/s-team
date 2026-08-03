@@ -194,7 +194,7 @@ class AssetTests(unittest.TestCase):
     def test_agenda_exposes_the_shared_move_route(self):
         self.assertIn("move: '/api/team/agenda/move'", self.agreement)
         self.assertIn(
-            "displayedChildren(current, 'agreement_section')",
+            "displayedChildren(current, 'team_section')",
             self.agreement,
         )
 

@@ -13,7 +13,7 @@ from .logic import TeamLogic
 APPLICATION_MANIFEST = ApplicationManifest(
     application_id="team",
     display_name="S-Team",
-    data_schema_version=3,
+    data_schema_version=4,
     asset_package="s_team.assets",
     icon=(
         '<path d="M6 3h8l4 4v14H6z"></path>'
