@@ -107,6 +107,12 @@ def build_routes(logic, runtime) -> list[Route]:
             data["agreement_uuid"], data.get("actor_uuid", ""),
         ))
 
+    async def api_resign_identity(request: Request):
+        data = await request.json()
+        return await _json_result(
+            runtime, logic.resign_identity(data["agreement_uuid"]),
+        )
+
     async def api_create_role(request: Request):
         data = await request.json()
         return await _json_result(runtime, logic.create_role(
@@ -287,6 +293,11 @@ def build_routes(logic, runtime) -> list[Route]:
         Route(
             "/api/team/identity/offer",
             api_offer_identity,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/team/identity/resign",
+            api_resign_identity,
             methods=["POST"],
         ),
         Route("/api/team/roles/create", api_create_role, methods=["POST"]),

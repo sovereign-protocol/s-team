@@ -49,6 +49,9 @@ class TeamFacade:
     def offer_identity(self, agreement_uuid: str, actor_uuid: str):
         return self._logic.offer_identity(agreement_uuid, actor_uuid)
 
+    def resign_identity(self, agreement_uuid: str):
+        return self._logic.resign_identity(agreement_uuid)
+
     def roles(self, agreement: ProtocolNode) -> list[ProtocolNode]:
         return self._logic.roles(agreement)
 
