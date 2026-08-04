@@ -516,9 +516,219 @@ h2.element-label { margin: 0 0 4px; }
 
 .role-answer-prompt { flex: 1; min-width: 0; }
 
+.membership-panel {
+  margin: 14px 4px 6px 22px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.membership-heading,
+.membership-opening-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.membership-heading h4 { margin: 0; font-size: 14px; }
+.membership-heading button,
+.membership-opening-head button,
+.membership-actions button,
+.membership-apply { padding: 4px 8px; font-size: 12px; }
+.membership-empty {
+  margin: 8px 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.membership-opening {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--hover);
+}
+.membership-opening-head { font-size: 13px; }
+.membership-application {
+  display: grid;
+  grid-template-columns: auto minmax(100px, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 13px;
+}
+.membership-state {
+  color: var(--text-muted);
+  text-transform: capitalize;
+}
+.membership-actions { display: inline-flex; gap: 5px; }
+.membership-apply { margin-top: 8px; }
+
+.elections-panel {
+  margin: 14px 4px 6px 22px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.elections-heading,
+.election-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.elections-heading h4 { margin: 0; font-size: 14px; }
+.election-start-actions { display: inline-flex; flex-wrap: wrap; gap: 5px; }
+.election-start-group { display: inline-flex; gap: 4px; }
+.election-start-group select { max-width: 150px; font-size: 12px; }
+.election-start-actions button,
+.election-implement { padding: 4px 8px; font-size: 12px; }
+.elections-empty,
+.election-detail {
+  margin: 8px 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.election-card {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--hover);
+}
+.election-card-head { font-size: 13px; }
+.election-state { color: var(--text-muted); text-transform: capitalize; }
+.election-process {
+  display: block;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+}
+.election-implement { margin-top: 8px; }
+
+.trustee-candidacies {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+}
+.trustee-candidacies h6 { margin: 0 0 6px; font-size: 12px; }
+.trustee-candidacies p { margin: 6px 0; color: var(--text-muted); font-size: 12px; }
+.trustee-candidate { display: flex; align-items: center; gap: 8px; margin: 5px 0; }
+.trustee-candidate span { flex: 1; font-size: 13px; }
+.trustee-candidate button,
+.trustee-candidacies > button { padding: 4px 8px; font-size: 12px; }
+
+.trustee-actions-panel {
+  margin: 14px 4px 6px 22px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.trustee-actions-panel > h4 { margin: 0 0 8px; font-size: 14px; }
+.trustee-action-form {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.8fr) minmax(180px, 1.4fr);
+  gap: 6px;
+  margin: 8px 0;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.trustee-action-form strong { grid-column: 1 / -1; font-size: 13px; }
+.trustee-action-form textarea,
+.trustee-action-form input { box-sizing: border-box; width: 100%; }
+.trustee-action-form button { justify-self: start; padding: 4px 8px; font-size: 12px; }
+.trustee-actions-empty { color: var(--text-muted); font-size: 13px; }
+.trustee-action-card {
+  margin-top: 8px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--hover);
+}
+.trustee-action-card.is-contested { border-color: var(--warning, #b7791f); }
+.trustee-action-heading { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
+.action-contested,
+.action-recorded { color: var(--text-muted); font-size: 11px; }
+.action-contested { color: var(--warning, #b7791f); }
+.trustee-action-decision { margin: 8px 0; white-space: pre-wrap; }
+.trustee-action-context {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 3px 8px;
+  margin: 8px 0;
+  font-size: 12px;
+}
+.trustee-action-context dt { color: var(--text-muted); }
+.trustee-action-context dd { margin: 0; white-space: pre-wrap; }
+.trustee-action-context .is-missing { color: var(--warning, #b7791f); font-weight: 600; }
+.trustee-reality { margin: 8px 0; padding-left: 9px; border-left: 3px solid var(--line); font-size: 12px; }
+.trustee-reality-form { display: flex; gap: 6px; margin-top: 8px; }
+.trustee-reality-form input { flex: 1; min-width: 0; }
+.trustee-reality-form button { padding: 4px 8px; font-size: 12px; }
+
+#decisionContextForm { min-width: min(440px, 80vw); }
+#decisionContextForm label { display: grid; gap: 4px; margin: 10px 0; }
+#decisionContextForm textarea { box-sizing: border-box; width: 100%; }
+.decision-context-note { color: var(--text-muted); font-size: 12px; }
+
+.pool-navigation-item {
+  box-sizing: border-box;
+  width: 100%;
+  margin-bottom: 6px;
+  padding: 8px;
+  text-align: left;
+}
+.pool-heading,
+.pool-card-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.pool-heading h2 { margin: 0; }
+.pool-intro,
+.pool-empty { color: var(--text-muted); }
+.pool-publish-form {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(170px, 0.8fr) auto;
+  gap: 8px;
+  align-items: end;
+  margin: 18px 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.pool-publish-form strong,
+.pool-publish-form small { grid-column: 1 / -1; }
+.pool-invitation-card {
+  margin: 10px 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--hover);
+}
+.pool-card-heading span { color: var(--text-muted); font-size: 12px; }
+.pool-invitation-card > button { margin-top: 10px; }
+.pool-application {
+  display: grid;
+  grid-template-columns: auto minmax(120px, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+}
+.pool-application-state { color: var(--text-muted); text-transform: capitalize; }
+.pool-application-actions { display: inline-flex; flex-wrap: wrap; gap: 5px; }
+.pool-application-actions button { padding: 4px 8px; font-size: 12px; }
+.pool-history { margin-top: 18px; color: var(--text-muted); }
+.pool-history p { margin: 6px 0 0 14px; font-size: 12px; }
+
 @media (max-width: 780px) {
   .acceptance-body { grid-template-columns: 120px minmax(0, 1fr); }
   .role-columns { grid-template-columns: 1fr; }
+  .trustee-action-form { grid-template-columns: 1fr; }
+  .pool-publish-form { grid-template-columns: 1fr; }
+  .pool-application { grid-template-columns: auto 1fr; }
+  .pool-application-actions { grid-column: 1 / -1; }
   main { grid-template-columns: 1fr; padding: 12px; }
   #organization { position: static; }
   article { padding: 24px 20px; }

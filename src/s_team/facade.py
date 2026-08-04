@@ -43,6 +43,12 @@ class TeamFacade:
     def identity(self, team: ProtocolNode) -> dict:
         return self._logic.identity_payload(team)
 
+    def trust_holder(self, team: ProtocolNode) -> str:
+        return self._logic.trust_holder(team)
+
+    def trust(self, team: ProtocolNode) -> dict:
+        return self._logic.trust_payload(team)
+
     def take_identity(self, team_uuid: str):
         return self._logic.take_identity(team_uuid)
 
@@ -54,6 +60,143 @@ class TeamFacade:
 
     def roles(self, team: ProtocolNode) -> list[ProtocolNode]:
         return self._logic.roles(team)
+
+    def member_role(self, team: ProtocolNode) -> ProtocolNode | None:
+        return self._logic.member_role(team)
+
+    def membership(self, team: ProtocolNode) -> dict:
+        return self._logic.membership_payload(team)
+
+    def verify_flow_decision_result(
+        self,
+        process_uuid: str,
+        expected_result_hash: str | None = None,
+        expected_definition_id: str = "integrative-election",
+        expected_definition_version: str | None = None,
+    ) -> dict:
+        return self._logic.verify_flow_decision_result(
+            process_uuid,
+            expected_result_hash,
+            expected_definition_id,
+            expected_definition_version,
+        )
+
+    def start_trustee_election(
+        self, team_uuid: str, trust: str, facilitator_actor_uuid: str = "",
+    ):
+        return self._logic.start_trustee_election(
+            team_uuid, trust, facilitator_actor_uuid,
+        )
+
+    def implement_trustee_election(
+        self, team_uuid: str, election_uuid: str,
+        signals: str = "", consideration: str = "", expectation: str = "",
+    ):
+        return self._logic.implement_trustee_election(
+            team_uuid, election_uuid, signals, consideration, expectation,
+        )
+
+    def trustee_elections(self, team: ProtocolNode) -> list[dict]:
+        return self._logic.trustee_elections_payload(team)
+
+    def enter_trustee_candidacy(self, team_uuid: str, trust: str):
+        return self._logic.enter_trustee_candidacy(team_uuid, trust)
+
+    def withdraw_trustee_candidacy(
+        self, team_uuid: str, candidacy_uuid: str,
+    ):
+        return self._logic.withdraw_trustee_candidacy(
+            team_uuid, candidacy_uuid,
+        )
+
+    def record_trustee_action(
+        self, team_uuid: str, trust: str, subject_uuid: str,
+        payload: dict | None = None, signals: str = "",
+        consideration: str = "", expectation: str = "",
+        action_kind: str = "domain_action",
+    ):
+        return self._logic.record_trustee_action(
+            team_uuid, trust, subject_uuid, payload, signals,
+            consideration, expectation, action_kind,
+        )
+
+    def append_trustee_reality(
+        self, team_uuid: str, action_uuid: str, reality: str,
+    ):
+        return self._logic.append_trustee_reality(
+            team_uuid, action_uuid, reality,
+        )
+
+    def trustee_actions(self, team: ProtocolNode) -> list[dict]:
+        return self._logic.trustee_actions_payload(team)
+
+    def pools(self) -> list[ProtocolNode]:
+        return self._logic.pools()
+
+    def pool(self, pool: ProtocolNode) -> dict:
+        return self._logic.pool_payload(pool)
+
+    def publish_pool_invitation(
+        self, team_uuid: str, opening_uuid: str, expires_at: str = "",
+    ):
+        return self._logic.publish_pool_invitation(
+            team_uuid, opening_uuid, expires_at,
+        )
+
+    def submit_pool_application(
+        self, pool_uuid: str, invitation_uuid: str,
+    ):
+        return self._logic.submit_pool_application(
+            pool_uuid, invitation_uuid,
+        )
+
+    def withdraw_pool_application(
+        self, pool_uuid: str, application_uuid: str,
+    ):
+        return self._logic.withdraw_pool_application(
+            pool_uuid, application_uuid,
+        )
+
+    def resolve_pool_application(
+        self, pool_uuid: str, application_uuid: str, outcome: str,
+        signals: str = "", consideration: str = "", expectation: str = "",
+    ):
+        return self._logic.resolve_pool_application(
+            pool_uuid, application_uuid, outcome,
+            signals, consideration, expectation,
+        )
+
+    def mount_accepted_team(
+        self, pool_uuid: str, application_uuid: str,
+    ):
+        return self._logic.mount_accepted_team(
+            pool_uuid, application_uuid,
+        )
+
+    def open_member_opening(self, team_uuid: str):
+        return self._logic.open_member_opening(team_uuid)
+
+    def close_member_opening(self, team_uuid: str, opening_uuid: str):
+        return self._logic.close_member_opening(team_uuid, opening_uuid)
+
+    def submit_member_application(self, team_uuid: str, opening_uuid: str):
+        return self._logic.submit_member_application(team_uuid, opening_uuid)
+
+    def withdraw_member_application(
+        self, team_uuid: str, application_uuid: str,
+    ):
+        return self._logic.withdraw_member_application(
+            team_uuid, application_uuid,
+        )
+
+    def resolve_member_application(
+        self, team_uuid: str, application_uuid: str, outcome: str,
+        signals: str = "", consideration: str = "", expectation: str = "",
+    ):
+        return self._logic.resolve_member_application(
+            team_uuid, application_uuid, outcome,
+            signals, consideration, expectation,
+        )
 
     def accountabilities(self, role: ProtocolNode) -> list[ProtocolNode]:
         return self._logic.accountabilities(role)
@@ -103,6 +246,9 @@ class TeamFacade:
 
     def home_parent_uuid(self, team: ProtocolNode) -> str:
         return self._logic.home_parent_uuid(team)
+
+    def is_organization(self, team: ProtocolNode) -> bool:
+        return self._logic.is_organization(team)
 
     def organization(self) -> dict:
         return self._logic.organization_payload()
