@@ -662,9 +662,30 @@ full re-render per payload.
 └─────────────────────────────────────────────────────┘
 ```
 
-**[DONE]** The region is the definition rather than the doing. It sits last:
-the team's agreement comes first, then who is in it — you, this team,
-everybody else — then what it expects of them.
+**[DONE]** The region is the definition rather than the doing.
+
+**[DONE] The page reads: team name, Actors, Roles, Agreement.** An earlier
+version put the agreement first and the roles last, reasoning that what we
+agree comes before who is in it. In use it read the other way round: the
+agreement is the longest section on the page and the least often changed, so
+leading with it buried the team behind its own text. Who is here, then what
+is expected of them, then the text they hold to — and the text arrives
+collapsed, because it is reference rather than the working surface.
+
+**[DONE] The team's name and the agreement's name are two fields.** They sat
+on one — a team called "Finance" had an agreement called "Finance", and
+renaming the body silently retitled the document everybody had accepted. The
+team's name heads the page, outside every disclosure, and carries the team
+node's lamp and reaction. The agreement's name sits inside its section, drawn
+the way a role's purpose is: editable text, no row of its own, because the
+status a second row would carry is already on the name above — they are one
+node. It is stored as `agreement_title` beside `title` rather than under a new
+agreement node, since sections already hang off the team directly. Left unset
+rather than defaulted: an agreement nobody has named is a real state, and the
+page prompts in its place. Both fields sit inside `team_reference_hash`, so
+renaming either re-opens acceptances, which is right for the title of the
+thing that was accepted. A copy takes a new team name and keeps the
+agreement's — which is what makes a template a template.
 
 The text collapses behind **a caret on the title itself**, and nothing more.
 An earlier version put a labelled toggle above the sections; the label only
@@ -780,10 +801,12 @@ line and every role already say who is and is not in it, so it was a third
 statement of the same fact. Template is marked in the tree only (§4.6),
 where it distinguishes one row among many.
 
-**Two rules on the page**, and no more: one between what the agreement says
-and who is in it, one between who is in it and what it expects of them.
-A blanket rule on every `<section>` drew a line between each pair of
-paragraphs instead.
+**One rule on the page**, and no more: under the team's name, separating the
+subject of the page from the three sections that describe it. The sections
+carry none of their own — their disclosure headings already separate them,
+and a blanket rule on every `<section>` drew a line between each pair of
+paragraphs instead. The earlier arrangement needed two, because the sections
+had no headings above them to do the separating.
 
 Actor kinds are drawn differently, so "a person holds this" and "a body
 holds this" do not read alike.

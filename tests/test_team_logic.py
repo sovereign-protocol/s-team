@@ -628,6 +628,49 @@ class TeamLogicTests(unittest.TestCase):
         self.assertEqual(section["data"]["title"], "Scope")
         self.assertEqual(section["children"][0]["data"]["text"], "First draft.")
 
+    def test_the_agreement_is_named_apart_from_the_team(self):
+        # One field used to serve both, so renaming the body silently
+        # retitled the document its members had accepted.
+        runtime = self.runtime(9433)
+        team_uuid = runtime.logic.create_team("Finance").value
+
+        payload = runtime.logic.document_payload()
+        self.assertEqual(payload["team"]["data"]["title"], "Finance")
+        # Unnamed rather than defaulted: an agreement nobody has named is a
+        # real state, and the page shows a prompt in its place.
+        self.assertNotIn("agreement_title", payload["team"]["data"])
+
+        self.assertEqual(
+            runtime.logic.rename_agreement(team_uuid, "Terms of trade").status,
+            "ok",
+        )
+        self.assertEqual(
+            runtime.logic.rename_team(team_uuid, "Treasury").status, "ok",
+        )
+        payload = runtime.logic.document_payload()
+        self.assertEqual(payload["team"]["data"]["title"], "Treasury")
+        self.assertEqual(
+            payload["team"]["data"]["agreement_title"], "Terms of trade",
+        )
+
+        self.assertEqual(
+            runtime.logic.rename_agreement(team_uuid, "   ").status, "error",
+        )
+
+    def test_a_copy_takes_a_new_team_name_and_keeps_the_agreement_s(self):
+        # A template is a new body holding the same agreement, which is what
+        # separate names are for.
+        runtime = self.runtime(9434)
+        team_uuid = runtime.logic.create_team("Finance").value
+        runtime.logic.rename_agreement(team_uuid, "Terms of trade")
+
+        copy_uuid = runtime.logic.clone_team(team_uuid, "Finance copy").value
+        payload = runtime.logic.document_payload(copy_uuid)
+        self.assertEqual(payload["team"]["data"]["title"], "Finance copy")
+        self.assertEqual(
+            payload["team"]["data"]["agreement_title"], "Terms of trade",
+        )
+
     def test_renaming_rejects_blank_titles_and_unknown_nodes(self):
         runtime = self.runtime(9404)
         team_uuid = runtime.logic.create_team("Draft").value
