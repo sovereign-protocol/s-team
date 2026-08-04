@@ -11,8 +11,9 @@ from starlette.routing import Route
 def build_routes(logic, runtime) -> list[Route]:
     async def api_document(request: Request):
         requested = request.query_params.get("team_uuid")
+        requested_pool = request.query_params.get("pool_uuid")
         return runtime.composite_response(
-            lambda: logic.document_snapshot(requested),
+            lambda: logic.document_snapshot(requested, requested_pool),
             lambda snapshot: runtime.collaboration.network_info(
                 snapshot.get("topic_uuid"),
             ),
@@ -118,6 +119,123 @@ def build_routes(logic, runtime) -> list[Route]:
         return await _json_result(
             runtime, logic.resign_identity(data["team_uuid"]),
         )
+
+    async def api_resign_trusteeship(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.resign_trusteeship(
+            data["team_uuid"], data.get("trust", ""),
+            data.get("signals", ""), data.get("consideration", ""),
+            data.get("expectation", ""),
+        ))
+
+    async def api_enter_trustee_candidacy(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.enter_trustee_candidacy(
+            data["team_uuid"], data.get("trust", ""),
+        ))
+
+    async def api_withdraw_trustee_candidacy(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.withdraw_trustee_candidacy(
+            data["team_uuid"], data["candidacy_uuid"],
+        ))
+
+    async def api_record_trustee_action(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.record_trustee_action(
+            data["team_uuid"], data.get("trust", ""),
+            data.get("subject_uuid", ""), data.get("payload"),
+            data.get("signals", ""), data.get("consideration", ""),
+            data.get("expectation", ""),
+            data.get("action_kind", "domain_action"),
+        ))
+
+    async def api_append_trustee_reality(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.append_trustee_reality(
+            data["team_uuid"], data["action_uuid"],
+            data.get("reality", ""),
+        ))
+
+    async def api_publish_pool_invitation(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.publish_pool_invitation(
+            data["team_uuid"], data["opening_uuid"],
+            data.get("expires_at", ""),
+        ))
+
+    async def api_submit_pool_application(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.submit_pool_application(
+            data["pool_uuid"], data["invitation_uuid"],
+        ))
+
+    async def api_withdraw_pool_application(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.withdraw_pool_application(
+            data["pool_uuid"], data["application_uuid"],
+        ))
+
+    async def api_resolve_pool_application(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.resolve_pool_application(
+            data["pool_uuid"], data["application_uuid"],
+            data.get("outcome", ""), data.get("signals", ""),
+            data.get("consideration", ""), data.get("expectation", ""),
+        ))
+
+    async def api_mount_accepted_team(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.mount_accepted_team(
+            data["pool_uuid"], data["application_uuid"],
+        ))
+
+    async def api_open_membership(request: Request):
+        data = await request.json()
+        return await _json_result(
+            runtime, logic.open_member_opening(data["team_uuid"]),
+        )
+
+    async def api_close_membership(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.close_member_opening(
+            data["team_uuid"], data["opening_uuid"],
+        ))
+
+    async def api_apply_membership(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.submit_member_application(
+            data["team_uuid"], data["opening_uuid"],
+        ))
+
+    async def api_withdraw_membership(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.withdraw_member_application(
+            data["team_uuid"], data["application_uuid"],
+        ))
+
+    async def api_resolve_membership(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.resolve_member_application(
+            data["team_uuid"], data["application_uuid"],
+            data.get("outcome", ""), data.get("signals", ""),
+            data.get("consideration", ""), data.get("expectation", ""),
+        ))
+
+    async def api_start_trustee_election(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.start_trustee_election(
+            data["team_uuid"], data.get("trust", ""),
+            data.get("facilitator_actor_uuid", ""),
+        ))
+
+    async def api_implement_trustee_election(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.implement_trustee_election(
+            data["team_uuid"], data["election_uuid"],
+            data.get("signals", ""), data.get("consideration", ""),
+            data.get("expectation", ""),
+        ))
 
     async def api_create_role(request: Request):
         data = await request.json()
@@ -309,6 +427,84 @@ def build_routes(logic, runtime) -> list[Route]:
         Route(
             "/api/team/identity/resign",
             api_resign_identity,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/team/trusteeships/resign",
+            api_resign_trusteeship,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/team/trusteeships/candidacy/enter",
+            api_enter_trustee_candidacy,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/team/trusteeships/candidacy/withdraw",
+            api_withdraw_trustee_candidacy,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/team/trusteeships/actions/record",
+            api_record_trustee_action,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/team/trusteeships/actions/reality",
+            api_append_trustee_reality,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/team/pool/invitations/publish",
+            api_publish_pool_invitation,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/team/pool/applications/submit",
+            api_submit_pool_application,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/team/pool/applications/withdraw",
+            api_withdraw_pool_application,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/team/pool/applications/resolve",
+            api_resolve_pool_application,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/team/pool/team/mount",
+            api_mount_accepted_team,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/team/membership/open", api_open_membership,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/team/membership/close", api_close_membership,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/team/membership/apply", api_apply_membership,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/team/membership/withdraw", api_withdraw_membership,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/team/membership/resolve", api_resolve_membership,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/team/elections/start", api_start_trustee_election,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/team/elections/implement", api_implement_trustee_election,
             methods=["POST"],
         ),
         Route("/api/team/roles/create", api_create_role, methods=["POST"]),

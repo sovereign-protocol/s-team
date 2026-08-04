@@ -204,6 +204,15 @@ class AssetTests(unittest.TestCase):
         self.assertNotIn("onCreateTopic", self.team)
         self.assertIn("SovereignShell.setTopicSelector", self.team)
 
+    def test_root_teams_are_worded_as_organizations(self):
+        self.assertIn("<h2>New Organization</h2>", self.team)
+        self.assertIn("+ Add organization", self.team)
+        self.assertIn("No organizations yet", self.team)
+        self.assertIn(
+            "label: payload.is_organization ? 'Organization' : 'Team'",
+            self.team,
+        )
+
     def test_agenda_exposes_the_shared_move_route(self):
         self.assertIn("move: '/api/team/agenda/move'", self.team)
         self.assertIn(
@@ -225,8 +234,9 @@ class AssetTests(unittest.TestCase):
             "holds no role here",
             "holds no role elsewhere",
             # Identity reads as a role like any other, told apart by a key.
-            "role.identity ?",
+            "role.trustee ?",
             "Identity",
+            "Trust",
         ):
             self.assertIn(marker, self.team)
 
@@ -265,9 +275,37 @@ class AssetTests(unittest.TestCase):
             # Revoking says what survives it and what does not.
             "This withdraws the offer",
             "is theirs and stays",
-            # Taking Identity says what it does to everyone else.
-            "writes a competing holder into the same record",
+            # Trustee resignation says what happens next.
+            "trusteeship stays vacant until a valid decision is implemented",
             "confirmModalConfirmBtn",
+        ):
+            self.assertIn(marker, self.team)
+
+    def test_vacancy_and_decision_trail_are_operable_in_the_page(self):
+        for marker in (
+            "Acting candidates",
+            "/api/team/trusteeships/candidacy/enter",
+            "/api/team/trusteeships/candidacy/withdraw",
+            "Decision trail",
+            "/api/team/trusteeships/actions/record",
+            "/api/team/trusteeships/actions/reality",
+            "signals_missing",
+            "Conflicting actions",
+            "requestDecisionContext",
+        ):
+            self.assertIn(marker, self.team)
+
+    def test_pool_onboarding_has_a_separate_topic_view(self):
+        for marker in (
+            "Onboarding Pool",
+            "separate onboarding channel",
+            "/api/team/pool/invitations/publish",
+            "/api/team/pool/applications/submit",
+            "/api/team/pool/applications/resolve",
+            "/api/team/pool/team/mount",
+            "Join Team channel",
+            "active_invitations",
+            "pool_uuid=",
         ):
             self.assertIn(marker, self.team)
 

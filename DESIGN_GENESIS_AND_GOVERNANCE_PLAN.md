@@ -1,6 +1,7 @@
 # Team Genesis and Governance - delivery plan
 
-Status: proposed for review before implementation.
+Status: implementation in progress. Increments 0-7 and 9 are complete;
+Increment 8 - Hard Fork - remains deferred.
 
 This plan replaces the earlier two-phase split. The delivery order is driven
 by trust and data dependencies: verified authorship must exist before trustee
@@ -111,11 +112,24 @@ basis for silently accepting an incoming trustee action. Therefore:
   observable;
 - cryptography proves which key authored a record; S-Team governance determines
   whether that author had authority; and
-- unsigned legacy content remains readable, but it never qualifies for the new
-  authoritative auto-adoption path.
+- unsigned content does not satisfy the new protocol schema.
 
 This uses cryptography for attributable truth. It does not prevent a person
 from writing or transmitting a record.
+
+Each client has its own Ed25519 private key. The Core profile carries an
+append-only key-event chain: the bootstrap activation is self-signed; later
+device or rotation activations are signed by an active key; revocation must be
+signed by a different active key. A received chain may only extend the last
+trusted prefix. Stale or competing profiles remain observable but cannot roll
+back a trusted revocation. A sole compromised key cannot revoke itself; without
+another active sibling key the identity must be replaced.
+
+Private keys live only in the local session envelope. Pairing first authorises
+a distinct sibling key, then carries that private-key bundle in the bearer
+pairing token. Session files and pairing tokens are therefore sensitive. This
+phase is a clean break: older Core protocol, profile, session and token schemas
+are rejected rather than migrated.
 
 ### 2.2 Operational authority is append-only
 
@@ -133,9 +147,7 @@ Trusteeship state becomes an append-only chain. Each state record names:
 - the standard trustee-decision fields.
 
 One valid successor advances the state. Concurrent valid successors create a
-visible contest rather than being ordered by timestamps. Existing mutable
-`team_trustee` records require a compatibility projection or a one-time local
-migration; they must not be silently reinterpreted.
+visible contest rather than being ordered by timestamps.
 
 Other authoritative records - openings, membership resolutions and acting
 trustee actions - follow the same append-only rule. Withdrawal or reversal is
@@ -164,7 +176,7 @@ normal proposal/consent path.
 
 ## 3. Data additions
 
-Names are provisional but their separation is required.
+These names and boundaries are the initial implementation contract.
 
 | Record | Purpose |
 | --- | --- |
@@ -177,36 +189,87 @@ Names are provisional but their separation is required.
 | `team_trustee_candidacy` | Member-authored application for acting authority during vacancy |
 | `team_trustee_action` | Authoritative action where no more specific record is the action itself |
 | `team_trustee_reality` | Facilitator-authored observation about an earlier action |
+| `team_external_member_resolution` | Team-side accepted standing backed by a signed Pool application |
+| `team_pool` | Separate shared onboarding topic containing no Team document |
+| `team_pool_invitation` | Identity-authored invitation referencing an opening and expiry |
+| `team_pool_application` | External Actor's signed application or withdrawal |
+| `team_pool_resolution` | Identity's Pool outcome and, only on acceptance, Core connection coordinates |
 
 The existing offer/answer model remains for ordinary non-Member roles. Member
 standing is derived from a live application plus an accepted resolution for
 the system Member role. Identity and Trust standing are derived from their
 settled trustee states.
 
+### 3.1 Record fields
+
+All governance records carry the ordinary Core node identity and revision
+metadata. The application data fields are:
+
+| Record | Required fields |
+| --- | --- |
+| `team_trustee_state` | `trust`, `holder_actor_uuid`, `previous_state_uuid`, `cause`, `acted_by`, `acted_at`, `authority_basis_uuid`, `signals`, `consideration`, `expectation`; optional `process_uuid`, `process_result_hash` |
+| system Member `team_role` | `name`, `purpose`, `order`, `system_key: member` |
+| `team_member_opening` | `member_role_uuid`, `previous_opening_uuid`, `state`, `opened_by`, `opened_at`, `authority_basis_uuid`; optional `closed_at` |
+| `team_member_application` | `opening_uuid`, `previous_application_uuid`, `actor_uuid`, `submitted_at`, `state`; optional `withdrawn_at` |
+| `team_member_resolution` | `opening_uuid`, `application_uuid`, `actor_uuid`, `outcome`, `resolved_by`, `resolved_at`, `authority_basis_uuid`, `signals`, `consideration`, `expectation` |
+| `team_trustee_election` | `trust`, `target_state_uuid`, `process_uuid`, `process_definition_id`, `process_definition_version`, `electorate_actor_uuids`, `facilitator_trust`, `facilitator_actor_uuid`, `facilitator_authority_basis_uuid`, `triggered_by`, `triggered_at` |
+| `team_trustee_candidacy` | `trust`, `actor_uuid`, `vacant_state_uuid`, `previous_candidacy_uuid`, `submitted_at`, `state`; optional `withdrawn_at` |
+| `team_trustee_action` | `trust`, `action_kind`, `subject_uuid`, `acted_by`, `acted_at`, `authority_basis_uuid`, `signals`, `consideration`, `expectation`, `payload` |
+| `team_trustee_reality` | `action_uuid`, `observed_by`, `observed_at`, `reality`, `authority_basis_uuid` |
+| `team_external_member_resolution` | `pool_uuid`, `pool_invitation_uuid`, `pool_application_uuid`, `opening_uuid`, `actor_uuid`, `outcome`, `resolved_by`, `resolved_at`, `authority_basis_uuid`, `application_evidence_hash`, `signals`, `consideration`, `expectation` |
+| `team_pool_invitation` | `team_uuid`, `team_title`, `opening_uuid`, `published_by`, `published_at`, `expires_at`, `authority_basis_uuid` |
+| `team_pool_application` | `invitation_uuid`, `team_uuid`, `opening_uuid`, `actor_uuid`, `submitted_at`, `state`, `previous_application_uuid`; optional `withdrawn_at` |
+| `team_pool_resolution` | `invitation_uuid`, `application_uuid`, `team_uuid`, `opening_uuid`, `actor_uuid`, `outcome`, `resolved_by`, `resolved_at`, `authority_basis_uuid`, `signals`, `consideration`, `expectation`; accepted outcomes also carry `team_invitation_token` |
+
+`state`, `outcome`, `cause`, `trust` and `action_kind` use closed enums defined
+beside their validators. UUID references always point to the exact record on
+which authority or meaning depends; display names are never authority keys.
+Opening, application and candidacy state changes name their preceding record;
+an empty predecessor denotes the initial record. This keeps close and withdraw
+operations append-only rather than disguising them as mutations.
+
+### 3.2 Authority matrix
+
+| Action | Authorised Actor | Authority basis | Adoption |
+| --- | --- | --- | --- |
+| Open/close Member opening | Identity or acting Identity candidate | Settled Identity state, or vacancy plus candidacy | Automatic when verified |
+| Submit/withdraw application | The applicant | Verified self-authorship and live opening | Observed as the applicant's fact |
+| Accept/reject application | Identity or acting Identity candidate | Settled Identity state, or vacancy plus candidacy | Automatic when verified |
+| Trigger trustee election | Any current Member | Accepted Member standing at trigger | Observed; creates no authority |
+| Implement Identity election | Trust or acting Trust candidate | Settled Trust state, or Trust vacancy plus candidacy, and terminal S-Flow result | Automatic when verified |
+| Implement Trust election | Identity or acting Identity candidate | Settled Identity state, or Identity vacancy plus candidacy, and terminal S-Flow result | Automatic when verified |
+| Resign trusteeship | Current holder | Current settled state of that trusteeship | Automatic when verified |
+| Enter/withdraw candidacy | Current Member named by the record | Vacant trustee state plus Member standing | Observed as the candidate's fact |
+| Execute trustee-domain action | Trustee or active candidate for a vacant trust | Settled trustee state, or vacancy plus candidacy | Automatic when verified |
+| Add Reality observation | Facilitating trustee or its acting candidate | Facilitating trusteeship state | Automatic when verified |
+| Publish Pool invitation | Identity or acting Identity candidate | Live Member opening plus Identity authority | Automatic when verified |
+| Submit/withdraw Pool application | The external applicant | Verified self-authorship and invitation validity at submission | Automatic when verified |
+| Resolve Pool application | The current Identity who published that invitation | Identity authority plus pending signed application | Automatic when verified |
+| Mount Team after Pool acceptance | Accepted applicant named by the resolution | Applicant-specific accepted resolution carrying normal Core coordinates | Local connection action |
+
+An Actor who merely transports or replicates a record receives no authority
+from doing so.
+
 ## 4. Delivery sequence
 
 Each increment must leave the application usable and must be tested before the
 next increment starts.
 
-### Increment 0 - contract and compatibility baseline
+### Increment 0 - contract baseline
 
 - Add the final schemas and authority matrix to the design documentation.
 - Mark the existing default role with `system_key: member` for new data.
-- Define legacy recognition conservatively: only the untouched default
-  Participant role may be inferred as Member. A customised legacy role requires
-  explicit user selection; its name is never silently overwritten.
 - Define Organization as a derived root-Team projection across S-Team and
   S-Cockpit.
-- Freeze fixtures for current teams so migration remains testable.
 
-**Gate:** current files open without mutation and existing tests remain green.
+**Gate:** the new contract is explicit and existing tests remain green.
 
 ### Increment 1 - signed authorship in S-Core
 
 - Create and persist a local identity signing keypair.
 - Publish the public-key binding with the Core identity.
 - Canonically sign new protocol revisions and verify incoming ones.
-- Surface verification as `valid`, `unknown`, `legacy_unsigned` or `invalid`.
+- Surface verification as `valid`, `unknown` or `invalid`.
 - Define key rotation and compromised-key revocation before enabling silent
   adoption.
 - Preserve invalid records in peer observations rather than dropping them.
@@ -237,8 +300,6 @@ actions surface a conflict.
 - On ordinary Team creation, assign Member, Identity and Trust to the creator.
 - Distinguish ordinary creation from template cloning: a template remains
   empty until instantiated.
-- Project legacy mutable trustee records through the compatibility path agreed
-  in Increment 0.
 
 **Gate:** an N=1 Organization is fully usable and its creator holds exactly the
 three base roles.
@@ -300,6 +361,8 @@ ends acting authority.
 
 ### Increment 8 - Hard Fork / organic mitosis
 
+**Status:** deferred; Increment 9 has no dependency on this increment.
+
 - Keep the existing governance-DNA copy allowlist.
 - Introduce an explicit Hard Fork flow for a current Member.
 - Copy into a new root Organization with fresh UUIDs.
@@ -312,6 +375,8 @@ ends acting authority.
 actors, authority, holdings or conflicts.
 
 ### Increment 9 - Pool / DMZ onboarding
+
+**Status:** implemented as clean schema version 10, with no legacy migration.
 
 - Introduce the Pool as a separate shared topic/channel.
 - Publish signed invitations referencing a Member opening and expiry.
@@ -338,7 +403,7 @@ used by the normal client flow.
 - Trustee resignation during an election.
 - Facilitating trusteeship vacant during another trusteeship's election.
 - Member expiry or departure during a snapshotted S-Flow process.
-- Legacy Participant and mutable Identity records.
+- Clean-schema rejection of obsolete Participant and mutable Identity records.
 - Clone and Hard Fork exclusion of all new operational/history node types.
 
 ## 6. Explicit non-goals
@@ -357,11 +422,10 @@ used by the normal client flow.
 Expected ownership by repository:
 
 - **S-Core:** signatures, verification state and transport-preserving evidence.
-- **S-Team:** governance records, authority evaluation, projections, UI and
-  migrations.
+- **S-Team:** governance records, authority evaluation, projections and UI.
 - **S-Flow:** stable terminal decision-result facade and election execution.
 - **S-Cockpit:** contextual Organization wording and cross-application entry
   points only.
 
-No implementation should begin until the append-only trusteeship model, legacy
-migration rule and signed-key lifecycle in this plan are accepted.
+The append-only trusteeship model and signed-key lifecycle in this plan are
+the accepted implementation boundary.

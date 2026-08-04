@@ -60,7 +60,7 @@ people editing different accountabilities into one undiffable divergence.
 
 `agreement_link` is retired — a subteam is a Team actor holding a role in the
 parent. `agreement_decision` is retired in favour of `team_role_decision` on
-the default Participant role.
+the system Member role.
 
 Which of these may be reacted to, and which are somebody else's fact rather
 than a thing to agree with, is Core's question rather than this document's —
@@ -292,7 +292,7 @@ other end. Three things follow, all built:
   level above had already lost.
 
 The role above may be the smallest "member" role there is; what matters is
-that it exists. The default Participant role is exactly that.
+that it exists. The system Member role is exactly that.
 
 Computing it reads strictly **upward**. Asking a team who is on it, in order
 to decide who is on it, is circular; the question goes to the parents alone,
@@ -488,7 +488,7 @@ Actor is still Individual only.
 adoption predicate (§2.1); divergence rendering; warned self-install.
 
 **2b — Offers and decisions.** `team_role_offer` and `team_role_decision`;
-default Participant role on every new team; revocation and resignation as
+default Member role on every new team; revocation and resignation as
 authored-node deletion (§2.3); membership becomes explicit; badges switch
 from peers to actors and gain `unobserved`.
 
@@ -562,7 +562,7 @@ The parts worth recording:
   offers, answers or holdings. A clone-then-strip pass would have had to know
   the same list inverted, and would have been a second place to forget a node
   type when one is added.
-- **The default Participant travels**, because it is content. A template that
+- **The system Member role travels**, because it is content. A template that
   arrived with no role at all would make its first user invent one before
   taking part, which is the thing §2.8 says a template should spare them.
 - **Copying is not gated on standing in the original.** It reads that team

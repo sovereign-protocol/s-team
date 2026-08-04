@@ -17,7 +17,7 @@
       <div class="organization-header">
         <h2>Organization</h2>
         <button type="button" id="newTeamBtn"
-                class="ui-button ui-button-small">+ Add team</button>
+                class="ui-button ui-button-small">+ Add organization</button>
       </div>
       <div id="organizationTree"></div>
       <p class="consent-note">
@@ -27,7 +27,7 @@
     </aside>
     <div class="document-pane">
       <div id="empty">
-        <p>Create a team to begin, or accept an invitation to one.</p>
+        <p>Create an organization to begin, or accept an invitation to a team.</p>
       </div>
       <article id="document"></article>
     </div>
@@ -46,12 +46,34 @@
   </dialog>
   <dialog id="newTeamModal">
     <form method="dialog" id="newTeamForm">
-      <h2>New Team</h2>
-      <label>Name<input id="newTeamName" value="Untitled team"></label>
+      <h2>New Organization</h2>
+      <label>Name<input id="newTeamName" value="Untitled organization"></label>
       <label>Copy from (optional)<select id="newTeamTemplate"></select></label>
       <menu>
         <button type="button" id="cancelNewTeamBtn">Cancel</button>
         <button type="submit" class="primary">Create</button>
+      </menu>
+    </form>
+  </dialog>
+  <dialog id="decisionContextModal">
+    <form method="dialog" id="decisionContextForm">
+      <h2 id="decisionContextTitle">Decision context</h2>
+      <label>Signals
+        <textarea id="decisionSignals" rows="2"
+          placeholder="What called for this decision?"></textarea>
+      </label>
+      <label>Consideration
+        <textarea id="decisionConsideration" rows="2"
+          placeholder="What did you take into account?"></textarea>
+      </label>
+      <label>Expectation
+        <textarea id="decisionExpectation" rows="2"
+          placeholder="What do you expect to happen?"></textarea>
+      </label>
+      <p class="decision-context-note">Signals may be left empty, but the decision will be marked.</p>
+      <menu>
+        <button type="button" id="decisionContextCancel">Cancel</button>
+        <button type="submit" class="primary">Continue</button>
       </menu>
     </form>
   </dialog>
@@ -60,9 +82,35 @@
   <script>
     const api = SovereignApi.request;
     let current = null;
+    let currentPool = null;
     let currentInteractionAllowed = false;
     let payloadState = {};
     const nodeStatus = (payload, uuid) => payload.transition_by_node[uuid]?.type;
+
+    const requestDecisionContext = title => new Promise(resolve => {
+      const dialog = document.querySelector('#decisionContextModal');
+      const form = document.querySelector('#decisionContextForm');
+      form.reset();
+      document.querySelector('#decisionContextTitle').textContent = title;
+      const finish = value => {
+        if (dialog.open) dialog.close();
+        resolve(value);
+      };
+      form.onsubmit = event => {
+        event.preventDefault();
+        finish({
+          signals: document.querySelector('#decisionSignals').value.trim(),
+          consideration: document.querySelector('#decisionConsideration').value.trim(),
+          expectation: document.querySelector('#decisionExpectation').value.trim(),
+        });
+      };
+      document.querySelector('#decisionContextCancel').onclick = () => finish(null);
+      dialog.oncancel = event => {
+        event.preventDefault();
+        finish(null);
+      };
+      dialog.showModal();
+    });
 
     // Core's transition sentences ask the page who a peer is, and fall back
     // to the raw address when the page cannot say - which is how the
@@ -323,11 +371,22 @@
     };
 
     const selectTeam = async (teamUuid) => {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('pool');
+      window.history.replaceState({}, '', url);
       await api('/api/team/teams/select', {team_uuid: teamUuid});
       await load();
     };
 
-    // A team has to be creatable from the page that shows teams. The empty
+    const openPool = async poolUuid => {
+      const url = new URL(window.location.href);
+      url.searchParams.set('pool', poolUuid);
+      url.searchParams.delete('team');
+      window.history.pushState({}, '', url);
+      await load();
+    };
+
+    // A root team has to be creatable from the page that shows organizations. The empty
     // state named the two ways in - create one, or accept an invitation -
     // and offered neither, so a client with no team had no way to get one.
     //
@@ -335,9 +394,10 @@
     // and it is the same modal the Cockpit uses, because it is the same
     // act: a name, and optionally a team to copy - which is how a template
     // gets used (2.8). Being a dialog rather than an inline field also puts
-    // it outside the polled rebuild entirely.
+    // it outside the polled rebuild entirely. A root Team is presented as an
+    // Organization; storage and API vocabulary remain Team.
     const openNewTeamModal = () => {
-      document.querySelector('#newTeamName').value = 'Untitled team';
+      document.querySelector('#newTeamName').value = 'Untitled organization';
       const template = document.querySelector('#newTeamTemplate');
       template.replaceChildren();
       const blank = document.createElement('option');
@@ -359,7 +419,7 @@
     document.querySelector('#newTeamForm').onsubmit = async event => {
       event.preventDefault();
       const title =
-        document.querySelector('#newTeamName').value.trim() || 'Untitled team';
+        document.querySelector('#newTeamName').value.trim() || 'Untitled organization';
       const template = document.querySelector('#newTeamTemplate').value;
       document.querySelector('#newTeamModal').close();
       try {
@@ -452,7 +512,7 @@
       if (!tree.children.length) {
         const empty = document.createElement('p');
         empty.className = 'organization-empty';
-        empty.textContent = 'No teams yet';
+        empty.textContent = 'No organizations yet';
         tree.append(empty);
       }
     };
@@ -482,17 +542,22 @@
       });
     };
 
-    const renderParticipants = (participants, identity, interactive) => {
+    const renderParticipants = (participants, trusteeships, interactive) => {
       const section = document.createElement('div');
       section.className = 'acceptance-panel';
 
-      // Identity is a role like any other here, drawn with a key so it can
-      // be told apart at a glance.
+      // Trustee roles are derived from their append-only state chains.
       const badgesFor = (person) => {
         const badges = [];
-        if (identity?.state === 'held'
-            && identity.holder_actor_uuid === person.uuid) {
-          badges.push({name: 'Identity', status: 'accepted', identity: true});
+        for (const trust of ['identity', 'trust']) {
+          const state = trusteeships?.[trust] || {};
+          if (['held', 'contested'].includes(state.state)
+              && state.holder_actor_uuid === person.uuid) {
+            badges.push({
+              name: trust === 'identity' ? 'Identity' : 'Trust',
+              status: 'accepted', trustee: trust,
+            });
+          }
         }
         return badges.concat(person.roles || []);
       };
@@ -500,10 +565,10 @@
       const badgeElement = (role, actionable) => {
         const chip = SovereignUI.entityBadge({
           kind: 'role', label: role.name, status: role.status,
-          icon: role.identity ? '🔑' : '◇', interactive: true,
+          icon: role.trustee ? '🔑' : '◇', interactive: true,
           className: 'role-chip',
         });
-        if (role.identity) chip.dataset.identity = 'true';
+        if (role.trustee) chip.dataset.trustee = role.trustee;
         const label = HOLDER_STATUS[role.status] || role.status;
         if (!actionable) {
           chip.disabled = true;
@@ -515,21 +580,26 @@
         // role is - from your own badge. Leaving it inert was the only
         // holding on the page with no way out of it, which made the person
         // who speaks for a team the one person who could not leave.
-        if (role.identity) {
-          chip.title = `Identity \u2014 ${label}. Click to step out.`;
+        if (role.trustee) {
+          chip.title = `${role.name} \u2014 ${label}. Click to step out.`;
           chip.onclick = () => {
             document.querySelector('#confirmModalConfirmBtn').textContent =
               'Step out';
             confirmAction(
-              'Step out of Identity?',
-              'Nobody speaks for this team until somebody takes it, so no '
-              + 'role can be offered or withdrawn here in the meantime.',
+              `Step out of ${role.name}?`,
+              'The trusteeship stays vacant until a valid decision is implemented.',
               async () => {
                 try {
-                  await api('/api/team/identity/resign',
-                    {team_uuid: current.uuid});
+                  const context = await requestDecisionContext(
+                    `Step out of ${role.name}`,
+                  );
+                  if (!context) return;
+                  await api('/api/team/trusteeships/resign', {
+                    team_uuid: current.uuid, trust: role.trustee,
+                    ...context,
+                  });
                   await load();
-                  showToast('You no longer hold Identity');
+                  showToast(`You no longer hold ${role.name}`);
                 } catch (error) { showToast(error.message, true); }
               },
             );
@@ -733,6 +803,399 @@
       for (const person of others) section.append(rowFor(person, false));
       return section;
     };
+
+    const renderMembership = (membership, interactive) => {
+      const panel = document.createElement('section');
+      panel.className = 'membership-panel';
+      const heading = document.createElement('div');
+      heading.className = 'membership-heading';
+      const title = document.createElement('h4');
+      title.textContent = 'Membership';
+      heading.append(title);
+      if (payloadState.pool?.uuid) {
+        const poolLink = document.createElement('button');
+        poolLink.type = 'button';
+        poolLink.textContent = 'Onboarding Pool';
+        poolLink.onclick = () => openPool(payloadState.pool.uuid);
+        heading.append(poolLink);
+      }
+      if (interactive && membership.can_resolve) {
+        const open = document.createElement('button');
+        open.type = 'button';
+        open.textContent = 'Open applications';
+        open.onclick = async () => {
+          try {
+            await api('/api/team/membership/open', {team_uuid: current.uuid});
+            await load();
+          } catch (error) { showToast(error.message, true); }
+        };
+        heading.append(open);
+      }
+      panel.append(heading);
+
+      const openings = membership.openings || [];
+      if (!openings.length) {
+        const empty = document.createElement('p');
+        empty.className = 'membership-empty';
+        empty.textContent = 'No application round has been opened.';
+        panel.append(empty);
+        return panel;
+      }
+      for (const opening of openings) {
+        const card = document.createElement('article');
+        card.className = 'membership-opening';
+        const head = document.createElement('div');
+        head.className = 'membership-opening-head';
+        const label = document.createElement('strong');
+        label.textContent = opening.state === 'open'
+          ? 'Applications open'
+          : (opening.state === 'contested' ? 'Opening conflicted' : 'Applications closed');
+        head.append(label);
+        if (interactive && membership.can_resolve && opening.state === 'open') {
+          const close = document.createElement('button');
+          close.type = 'button';
+          close.textContent = 'Close';
+          close.onclick = async () => {
+            try {
+              await api('/api/team/membership/close', {
+                team_uuid: current.uuid, opening_uuid: opening.uuid,
+              });
+              await load();
+            } catch (error) { showToast(error.message, true); }
+          };
+          head.append(close);
+        }
+        card.append(head);
+
+        let selfApplied = false;
+        for (const application of opening.applications || []) {
+          if (application.actor.is_self) selfApplied = true;
+          const row = document.createElement('div');
+          row.className = 'membership-application';
+          row.append(avatarFor(application.actor));
+          const name = document.createElement('strong');
+          name.textContent = application.actor.is_self ? 'You' : application.actor.name;
+          const state = document.createElement('span');
+          state.className = 'membership-state';
+          state.textContent = application.resolution.state === 'pending'
+            ? application.state
+            : application.resolution.state;
+          row.append(name, state);
+          const actions = document.createElement('span');
+          actions.className = 'membership-actions';
+          const pending = application.state === 'submitted'
+            && application.resolution.state === 'pending';
+          if (interactive && pending && application.actor.is_self) {
+            const withdraw = document.createElement('button');
+            withdraw.type = 'button';
+            withdraw.textContent = 'Withdraw';
+            withdraw.onclick = async () => {
+              try {
+                await api('/api/team/membership/withdraw', {
+                  team_uuid: current.uuid, application_uuid: application.uuid,
+                });
+                await load();
+              } catch (error) { showToast(error.message, true); }
+            };
+            actions.append(withdraw);
+          }
+          if (interactive && pending && membership.can_resolve) {
+            for (const [outcome, text] of [['accepted', 'Accept'], ['rejected', 'Reject']]) {
+              const decide = document.createElement('button');
+              decide.type = 'button';
+              decide.textContent = text;
+              decide.onclick = async () => {
+                try {
+                  const context = await requestDecisionContext(
+                    `${text} membership application`,
+                  );
+                  if (!context) return;
+                  await api('/api/team/membership/resolve', {
+                    team_uuid: current.uuid,
+                    application_uuid: application.uuid,
+                    outcome,
+                    ...context,
+                  });
+                  await load();
+                } catch (error) { showToast(error.message, true); }
+              };
+              actions.append(decide);
+            }
+          }
+          row.append(actions);
+          card.append(row);
+        }
+        if (interactive && opening.state === 'open'
+            && !membership.is_member && !selfApplied) {
+          const apply = document.createElement('button');
+          apply.type = 'button';
+          apply.className = 'membership-apply';
+          apply.textContent = 'Apply to join';
+          apply.onclick = async () => {
+            try {
+              await api('/api/team/membership/apply', {
+                team_uuid: current.uuid, opening_uuid: opening.uuid,
+              });
+              await load();
+            } catch (error) { showToast(error.message, true); }
+          };
+          card.append(apply);
+        }
+        panel.append(card);
+      }
+      return panel;
+    };
+
+    const renderTrusteeElections = (elections, membership, interactive) => {
+      const panel = document.createElement('section');
+      panel.className = 'elections-panel';
+      const heading = document.createElement('div');
+      heading.className = 'elections-heading';
+      const title = document.createElement('h4');
+      title.textContent = 'Trustee decisions';
+      heading.append(title);
+      if (interactive && membership.is_member) {
+        const actions = document.createElement('span');
+        actions.className = 'election-start-actions';
+        for (const trust of ['identity', 'trust']) {
+          const startGroup = document.createElement('span');
+          startGroup.className = 'election-start-group';
+          const facilitatorTrust = trust === 'identity' ? 'trust' : 'identity';
+          const facilitator = payloadState[facilitatorTrust] || {};
+          let facilitatorPicker = null;
+          if (facilitator.state === 'vacant') {
+            facilitatorPicker = document.createElement('select');
+            facilitatorPicker.title = `Acting ${facilitatorTrust === 'identity' ? 'Identity' : 'Trust'} facilitator`;
+            for (const candidate of facilitator.candidates || []) {
+              const option = document.createElement('option');
+              option.value = candidate.actor_uuid;
+              option.textContent = candidate.is_self ? 'You facilitate' : `${candidate.name} facilitates`;
+              facilitatorPicker.append(option);
+            }
+            facilitatorPicker.disabled = !(facilitator.candidates || []).length;
+            startGroup.append(facilitatorPicker);
+          }
+          const start = document.createElement('button');
+          start.type = 'button';
+          start.textContent = `Elect ${trust === 'identity' ? 'Identity' : 'Trust'}`;
+          start.disabled = Boolean(facilitatorPicker?.disabled);
+          start.onclick = async () => {
+            try {
+              await api('/api/team/elections/start', {
+                team_uuid: current.uuid, trust,
+                facilitator_actor_uuid: facilitatorPicker?.value || '',
+              });
+              await load();
+              showToast(`${start.textContent} started`);
+            } catch (error) { showToast(error.message, true); }
+          };
+          startGroup.append(start);
+          actions.append(startGroup);
+        }
+        heading.append(actions);
+      }
+      panel.append(heading);
+      if (!(elections || []).length) {
+        const empty = document.createElement('p');
+        empty.className = 'elections-empty';
+        empty.textContent = 'No trustee election has been started.';
+        panel.append(empty);
+        return panel;
+      }
+      for (const election of elections) {
+        const card = document.createElement('article');
+        card.className = 'election-card';
+        const head = document.createElement('div');
+        head.className = 'election-card-head';
+        const name = document.createElement('strong');
+        name.textContent = `${election.trust === 'identity' ? 'Identity' : 'Trust'} election`;
+        const state = document.createElement('span');
+        state.className = 'election-state';
+        state.textContent = election.implemented
+          ? 'Implemented'
+          : (election.outcome || election.lifecycle || 'Unavailable');
+        head.append(name, state);
+        card.append(head);
+        const detail = document.createElement('p');
+        detail.className = 'election-detail';
+        if (election.outcome === 'elected') {
+          detail.textContent = election.selected_candidate_name
+            ? `Selected ${election.selected_candidate_name}`
+            : 'A candidate has been selected.';
+        } else if (election.outcome === 'void') {
+          detail.textContent = 'The election ended without a selection.';
+        } else if (election.lifecycle === 'unavailable') {
+          detail.textContent = 'Join the linked S-Flow process to see its progress.';
+        } else {
+          detail.textContent = election.current_stage
+            ? `Current step: ${election.current_stage}`
+            : `S-Flow is ${election.lifecycle}.`;
+        }
+        card.append(detail);
+        const process = document.createElement('code');
+        process.className = 'election-process';
+        process.textContent = election.process_uuid;
+        process.title = 'S-Flow process';
+        card.append(process);
+        if (interactive && election.can_implement) {
+          const implement = document.createElement('button');
+          implement.type = 'button';
+          implement.className = 'election-implement';
+          implement.textContent = 'Implement decision';
+          implement.onclick = async () => {
+            try {
+              const context = await requestDecisionContext(
+                `Implement ${election.trust === 'identity' ? 'Identity' : 'Trust'} decision`,
+              );
+              if (!context) return;
+              await api('/api/team/elections/implement', {
+                team_uuid: current.uuid, election_uuid: election.uuid,
+                ...context,
+              });
+              await load();
+              showToast('Trusteeship updated');
+            } catch (error) { showToast(error.message, true); }
+          };
+          card.append(implement);
+        }
+        panel.append(card);
+      }
+      return panel;
+    };
+
+    const renderTrusteeActions = (actions, interactive) => {
+      const panel = document.createElement('section');
+      panel.className = 'trustee-actions-panel';
+      const title = document.createElement('h4');
+      title.textContent = 'Decision trail';
+      panel.append(title);
+
+      if (interactive) {
+        for (const trust of ['identity', 'trust']) {
+          const trusteeship = payloadState[trust] || {};
+          if (!trusteeship.can_act) continue;
+          const form = document.createElement('form');
+          form.className = 'trustee-action-form';
+          const heading = document.createElement('strong');
+          heading.textContent = `Record ${trust === 'identity' ? 'Identity' : 'Trust'} action`;
+          const subject = document.createElement('input');
+          subject.required = true;
+          subject.placeholder = 'Subject or reference';
+          const decision = document.createElement('textarea');
+          decision.required = true;
+          decision.rows = 2;
+          decision.placeholder = 'Decision or action';
+          const signals = document.createElement('textarea');
+          signals.rows = 2;
+          signals.placeholder = 'Signals (optional, missing will be marked)';
+          const consideration = document.createElement('textarea');
+          consideration.rows = 2;
+          consideration.placeholder = 'Consideration';
+          const expectation = document.createElement('textarea');
+          expectation.rows = 2;
+          expectation.placeholder = 'Expectation';
+          const submit = document.createElement('button');
+          submit.type = 'submit';
+          submit.textContent = 'Record action';
+          form.append(
+            heading, subject, decision, signals, consideration, expectation,
+            submit,
+          );
+          form.onsubmit = async event => {
+            event.preventDefault();
+            try {
+              await api('/api/team/trusteeships/actions/record', {
+                team_uuid: current.uuid,
+                trust,
+                subject_uuid: subject.value.trim(),
+                payload: {decision: decision.value.trim()},
+                signals: signals.value.trim(),
+                consideration: consideration.value.trim(),
+                expectation: expectation.value.trim(),
+              });
+              await load();
+            } catch (error) { showToast(error.message, true); }
+          };
+          panel.append(form);
+        }
+      }
+
+      if (!(actions || []).length) {
+        const empty = document.createElement('p');
+        empty.className = 'trustee-actions-empty';
+        empty.textContent = 'No trustee action has been recorded.';
+        panel.append(empty);
+        return panel;
+      }
+      for (const action of actions) {
+        const card = document.createElement('article');
+        card.className = 'trustee-action-card';
+        card.classList.toggle('is-contested', Boolean(action.contested));
+        const heading = document.createElement('div');
+        heading.className = 'trustee-action-heading';
+        const label = document.createElement('strong');
+        label.textContent = `${action.trust === 'identity' ? 'Identity' : 'Trust'} · ${action.subject_uuid}`;
+        const state = document.createElement('span');
+        state.className = action.contested ? 'action-contested' : 'action-recorded';
+        state.textContent = action.contested ? 'Conflicting actions' : 'Recorded';
+        heading.append(label, state);
+        card.append(heading);
+        const decision = document.createElement('p');
+        decision.className = 'trustee-action-decision';
+        decision.textContent = action.payload?.decision || 'Action recorded';
+        card.append(decision);
+        const context = document.createElement('dl');
+        context.className = 'trustee-action-context';
+        for (const [name, value, missing] of [
+          ['Signals', action.signals, action.signals_missing],
+          ['Consideration', action.consideration, false],
+          ['Expectation', action.expectation, false],
+        ]) {
+          const term = document.createElement('dt');
+          term.textContent = name;
+          const detail = document.createElement('dd');
+          detail.textContent = value || (missing ? 'Missing' : 'Not recorded');
+          detail.classList.toggle('is-missing', Boolean(missing));
+          context.append(term, detail);
+        }
+        card.append(context);
+        const byline = document.createElement('small');
+        byline.textContent = `Recorded by ${action.actor_name}`;
+        card.append(byline);
+        for (const observation of action.realities || []) {
+          const reality = document.createElement('blockquote');
+          reality.className = 'trustee-reality';
+          reality.textContent = `Reality: ${observation.reality} — ${observation.observer_name}`;
+          card.append(reality);
+        }
+        if (interactive && action.can_observe) {
+          const realityForm = document.createElement('form');
+          realityForm.className = 'trustee-reality-form';
+          const input = document.createElement('input');
+          input.required = true;
+          input.placeholder = 'What actually happened?';
+          const submit = document.createElement('button');
+          submit.type = 'submit';
+          submit.textContent = 'Add Reality';
+          realityForm.append(input, submit);
+          realityForm.onsubmit = async event => {
+            event.preventDefault();
+            try {
+              await api('/api/team/trusteeships/actions/reality', {
+                team_uuid: current.uuid,
+                action_uuid: action.uuid,
+                reality: input.value.trim(),
+              });
+              await load();
+            } catch (error) { showToast(error.message, true); }
+          };
+          card.append(realityForm);
+        }
+        panel.append(card);
+      }
+      return panel;
+    };
+
     const findDisplayedNode = (uuid) => {
       const roots = [
         current,
@@ -755,135 +1218,43 @@
     // DOM so a full re-render restores it instead of destroying it.
     const ephemeral = {openMenu: '', disclosures: null};
 
-    // Identity is one line, not a panel: it says who speaks for this
-    // team and gets out of the way. Taking it from somebody is real but
-    // rare, so it lives behind the overflow rather than as a button.
+    // Identity gets a compact warning line only when it needs attention.
     const renderIdentity = (identity, interactive) => {
       const line = document.createElement('div');
       line.className = 'identity-line';
-      const claims = identity.claims || [];
-      const state = claims.length ? 'contested' : (identity.state || 'vacant');
+      const state = identity.state || 'unconfigured';
       line.dataset.state = state;
 
       const mark = document.createElement('span');
       mark.className = 'identity-mark';
-      mark.textContent = state === 'held' ? '\u{1F511}' : '⚠';
+      mark.textContent = ['held', 'contested'].includes(state) ? '\u{1F511}' : '⚠';
 
       const text = document.createElement('span');
       text.className = 'identity-text';
-      if (state === 'ambiguous') {
-        text.textContent =
-          'Identity is recorded twice here. Settle that before changing it.';
+      if (state === 'unconfigured') {
+        text.textContent = 'Template: instantiate Member, Identity, and Trust';
       } else if (state === 'vacant') {
-        text.textContent = 'Identity: nobody yet';
-      } else if (!claims.length) {
-        text.textContent = `Identity: ${identity.holder_name}`;
+        text.textContent = 'Identity is vacant; a decision is required';
+      } else if (state === 'contested') {
+        text.textContent = `Identity is contested; ${identity.holder_name} remains incumbent`;
       } else {
-        // One competing record, three meanings - say which one this is. The
-        // holder reads as "you" when it is you, or the sentence turns into
-        // "you see You".
-        const handover = claims.every(claim => claim.is_handover);
-        const vacated = claims.every(claim => claim.is_vacancy);
-        const others = claims
-          .map(claim => claim.holder_name).filter(Boolean).join(', ');
-        const here = identity.is_self
-          ? 'you still hold it' : `you see ${identity.holder_name}`;
-        // Somebody stepping out is not a claim over them and not a handover
-        // to anybody: nothing has taken the seat, and until this side takes
-        // that in, it is still showing a holder who has already left.
-        text.textContent = vacated
-          ? (identity.is_self
-            ? 'Identity: elsewhere the seat is empty, you still hold it'
-            : `Identity: ${identity.holder_name} has stepped out, `
-              + 'your copy still has them holding it')
-          : (handover
-            ? `Identity handover: ${others} has taken it, ${here}`
-            : `Identity contested: ${here}, elsewhere ${others}`);
+        text.textContent = `Identity: ${identity.holder_name}`;
       }
 
       const actions = document.createElement('span');
       actions.className = 'identity-actions';
-
-      const transition = identity.node_uuid
-        ? payloadState.transition_by_node?.[identity.node_uuid]
-        : null;
-      if (interactive && claims.length && transition?.peer_addr) {
-        const theirs = document.createElement('button');
-        theirs.type = 'button';
-        theirs.textContent = claims[0].is_vacancy
-          ? 'Accept the empty seat'
-          : `Accept ${claims[0].holder_name}`;
-        theirs.onclick = async () => {
+      if (interactive && state === 'unconfigured') {
+        const instantiate = document.createElement('button');
+        instantiate.type = 'button';
+        instantiate.textContent = 'Instantiate';
+        instantiate.onclick = async () => {
           try {
-            await api('/api/team/react', {
-              node_uuid: identity.node_uuid,
-              source_addr: transition.peer_addr,
-              reaction: 'adopt',
-            });
+            await api('/api/team/identity/take', {team_uuid: current.uuid});
             await load();
-            showToast('Identity updated');
+            showToast('Organization instantiated');
           } catch (error) { showToast(error.message, true); }
         };
-        const mine = document.createElement('button');
-        mine.type = 'button';
-        mine.textContent =
-          `Keep ${identity.is_self ? 'yours' : identity.holder_name}`;
-        mine.onclick = async () => {
-          try {
-            await api('/api/team/react', {
-              node_uuid: identity.node_uuid,
-              source_addr: transition.peer_addr,
-              reaction: 'rollback',
-            });
-            await load();
-            showToast('Kept your version');
-          } catch (error) { showToast(error.message, true); }
-        };
-        actions.append(theirs, mine);
-      }
-
-      if (interactive && state !== 'ambiguous' && !identity.is_self) {
-        const menuKey = `identity:${current?.uuid || ''}`;
-        const menu = document.createElement('span');
-        menu.className = 'identity-menu';
-        menu.classList.toggle('is-open', ephemeral.openMenu === menuKey);
-        const toggle = document.createElement('button');
-        toggle.type = 'button';
-        toggle.className = 'identity-toggle';
-        toggle.textContent = '⋯';
-        toggle.title = 'Identity options';
-        toggle.onclick = () => {
-          const open = ephemeral.openMenu === menuKey;
-          ephemeral.openMenu = open ? '' : menuKey;
-          menu.classList.toggle('is-open', !open);
-        };
-        const take = document.createElement('button');
-        take.type = 'button';
-        take.className = 'identity-take';
-        take.textContent = 'Take Identity';
-        take.onclick = () => {
-          const run = async () => {
-            try {
-              await api('/api/team/identity/take',
-                {team_uuid: current.uuid});
-              ephemeral.openMenu = '';
-              await load();
-              showToast('You now hold Identity');
-            } catch (error) { showToast(error.message, true); }
-          };
-          if (state === 'vacant') { run(); return; }
-          document.querySelector('#confirmModalConfirmBtn').textContent =
-            'Take Identity';
-          confirmAction(
-            'Take Identity from ' + identity.holder_name + '?',
-            identity.holder_name + ' currently holds Identity. Taking it '
-            + 'writes a competing holder into the same record, which both of '
-            + 'you will see as a divergence until one of you settles it.',
-            run,
-          );
-        };
-        menu.append(toggle, take);
-        actions.append(menu);
+        actions.append(instantiate);
       }
 
       line.append(mark, text, actions);
@@ -1041,6 +1412,7 @@
       // Identity holder's, because inviting and withdrawing are theirs
       // alone and there is nowhere else for them to live.
       const holders = (payloadState.role_holders || {})[role.uuid] || [];
+      const governedMember = role.data.system_key === 'member';
       const held = document.createElement('div');
       held.className = 'role-holders';
       const heldHeading = document.createElement('div');
@@ -1135,7 +1507,7 @@
         // badge, revealed on hover the way Delete is, so the line stays a
         // line of people rather than a row of controls.
         const mine = interactive && payloadState.holds_identity;
-        if (mine && holder.status === 'requested' && !holder.is_self) {
+        if (!governedMember && mine && holder.status === 'requested' && !holder.is_self) {
           const confirm = document.createElement('button');
           confirm.type = 'button';
           confirm.className = 'holder-action ui-entity-action';
@@ -1151,7 +1523,7 @@
             } catch (error) { showToast(error.message, true); }
           };
           badge.append(confirm);
-        } else if (mine) {
+        } else if (!governedMember && mine) {
           const revoke = document.createElement('button');
           revoke.type = 'button';
           revoke.className = 'holder-action ui-entity-action';
@@ -1181,7 +1553,7 @@
       if (holders.length) held.append(badges);
 
       // Inviting is the Identity holder's alone.
-      if (interactive && payloadState.holds_identity) {
+      if (!governedMember && interactive && payloadState.holds_identity) {
         // A withdrawn offer is re-offerable - offer_role revives the same
         // record - so only a standing one takes somebody out of the list. A
         // request is left out too, because Confirm on their row is how that
@@ -1245,12 +1617,13 @@
     // reason (§1.3) - so it is read where the roles are read rather than as
     // a line off to one side. It carries no accountabilities or domains
     // yet, and the card says so rather than drawing two empty columns.
-    const renderIdentityRoleCard = (interactive) => {
-      const identity = payloadState.identity || {state: 'vacant'};
+    const renderTrusteeRoleCard = (trust, interactive) => {
+      const label = trust === 'identity' ? 'Identity' : 'Trust';
+      const trusteeship = payloadState[trust] || {state: 'unconfigured'};
       const card = document.createElement('article');
       card.className = 'role-card is-identity';
       card.append(elementRow({
-        node: {uuid: identity.node_uuid || '', data: {name: 'Identity'}},
+        node: {uuid: trusteeship.node_uuid || '', data: {name: label}},
         tag: 'h4',
         field: 'name',
         // The word "Identity" is not editable - it is the role's name, not
@@ -1261,8 +1634,9 @@
 
       const purpose = document.createElement('p');
       purpose.className = 'role-purpose';
-      purpose.textContent =
-        'Speak for this team: offer and withdraw its roles, and hand this on.';
+      purpose.textContent = trust === 'identity'
+        ? 'Control membership and represent the Team in its identity domain.'
+        : 'Facilitate decisions about Identity and represent the Team in its trust domain.';
       card.append(purpose);
 
       const held = document.createElement('div');
@@ -1274,45 +1648,50 @@
       heading.append(title);
       held.append(heading);
 
-      if (identity.state === 'held') {
+      if (['held', 'contested'].includes(trusteeship.state)) {
         const person = (payloadState.participants || []).find(
-          entry => entry.uuid === identity.holder_actor_uuid,
+          entry => entry.uuid === trusteeship.holder_actor_uuid,
         ) || {};
         const badges = document.createElement('div');
         badges.className = 'holder-badges';
         const badge = SovereignUI.entityBadge({
           kind: 'person',
           person,
-          label: identity.is_self ? 'You' : identity.holder_name,
+          label: trusteeship.is_self ? 'You' : trusteeship.holder_name,
           status: 'accepted',
-          self: Boolean(identity.is_self),
+          self: Boolean(trusteeship.is_self),
           className: 'holder-badge',
         });
         badge.querySelector('.ui-entity-label').classList.add('holder-name');
-        badge.title = `${identity.is_self ? 'You' : identity.holder_name} — `
-          + 'speaks for this team';
+        badge.title = `${trusteeship.is_self ? 'You' : trusteeship.holder_name} — `
+          + `holds ${label}`;
         // Stepping out is the holder's own act, so the mark is on their own
         // badge - the same place, and the same ×, as withdrawing an offer.
-        if (interactive && identity.is_self) {
+        if (interactive && trusteeship.is_self) {
           const leave = document.createElement('button');
           leave.type = 'button';
           leave.className = 'holder-action ui-entity-action';
           leave.textContent = '×';
-          leave.title = 'Step out of Identity';
+          leave.title = `Step out of ${label}`;
           leave.onclick = event => {
             event.stopPropagation();
             document.querySelector('#confirmModalConfirmBtn').textContent =
               'Step out';
             confirmAction(
-              'Step out of Identity?',
-              'Nobody speaks for this team until somebody takes it, so no '
-              + 'role can be offered or withdrawn here in the meantime.',
+              `Step out of ${label}?`,
+              'The trusteeship stays vacant until a valid decision is implemented.',
               async () => {
                 try {
-                  await api('/api/team/identity/resign',
-                    {team_uuid: current.uuid});
+                  const context = await requestDecisionContext(
+                    `Step out of ${label}`,
+                  );
+                  if (!context) return;
+                  await api('/api/team/trusteeships/resign', {
+                    team_uuid: current.uuid, trust,
+                    ...context,
+                  });
                   await load();
-                  showToast('You no longer hold Identity');
+                  showToast(`You no longer hold ${label}`);
                 } catch (error) { showToast(error.message, true); }
               },
             );
@@ -1324,29 +1703,63 @@
       } else {
         const none = document.createElement('p');
         none.className = 'role-unheld';
-        none.textContent = identity.state === 'ambiguous'
-          ? 'Recorded twice here. Settle that before changing it.'
-          : 'Nobody holds it';
+        none.textContent = trusteeship.state === 'contested'
+          ? 'Concurrent successors are contested; the incumbent remains.'
+          : trusteeship.state === 'unconfigured'
+            ? 'Not instantiated'
+            : 'Vacant — a decision is required';
         held.append(none);
-        if (interactive && identity.state !== 'ambiguous') {
-          const take = document.createElement('button');
-          take.type = 'button';
-          take.className = 'identity-claim';
-          take.textContent = 'Take Identity';
-          take.onclick = async () => {
-            take.disabled = true;
-            try {
-              await api('/api/team/identity/take',
-                {team_uuid: current.uuid});
-              await load();
-              showToast('You now hold Identity');
-            } catch (error) {
-              take.disabled = false;
-              showToast(error.message, true);
-            }
-          };
-          heading.append(take);
+      }
+      if (trusteeship.state === 'vacant') {
+        const candidacies = document.createElement('div');
+        candidacies.className = 'trustee-candidacies';
+        const candidacyTitle = document.createElement('h6');
+        candidacyTitle.textContent = 'Acting candidates';
+        candidacies.append(candidacyTitle);
+        for (const candidate of trusteeship.candidates || []) {
+          const row = document.createElement('div');
+          row.className = 'trustee-candidate';
+          row.append(avatarFor(candidate));
+          const name = document.createElement('span');
+          name.textContent = candidate.is_self ? 'You' : candidate.name;
+          row.append(name);
+          if (interactive && candidate.can_withdraw) {
+            const withdraw = document.createElement('button');
+            withdraw.type = 'button';
+            withdraw.textContent = 'Withdraw';
+            withdraw.onclick = async () => {
+              try {
+                await api('/api/team/trusteeships/candidacy/withdraw', {
+                  team_uuid: current.uuid,
+                  candidacy_uuid: candidate.uuid,
+                });
+                await load();
+              } catch (error) { showToast(error.message, true); }
+            };
+            row.append(withdraw);
+          }
+          candidacies.append(row);
         }
+        if (!(trusteeship.candidates || []).length) {
+          const empty = document.createElement('p');
+          empty.textContent = 'No current Member is acting in this domain.';
+          candidacies.append(empty);
+        }
+        if (interactive && trusteeship.can_enter_candidacy) {
+          const enter = document.createElement('button');
+          enter.type = 'button';
+          enter.textContent = `Act for ${label}`;
+          enter.onclick = async () => {
+            try {
+              await api('/api/team/trusteeships/candidacy/enter', {
+                team_uuid: current.uuid, trust,
+              });
+              await load();
+            } catch (error) { showToast(error.message, true); }
+          };
+          candidacies.append(enter);
+        }
+        held.append(candidacies);
       }
       card.append(held);
       return card;
@@ -1363,7 +1776,8 @@
       explanation.textContent =
         'What this team expects, and who has been invited to it.';
       section.append(explanation);
-      section.append(renderIdentityRoleCard(interactive));
+      section.append(renderTrusteeRoleCard('identity', interactive));
+      section.append(renderTrusteeRoleCard('trust', interactive));
 
       const roles = displayedChildren(team, 'team_role');
       const rolesHaveProposals = roles.some(entry => entry.proposed);
@@ -1410,15 +1824,244 @@
     // retried on the next poll instead of being lost.
     let renderedPayloadJson = '';
 
+    const renderPool = (payload, encoded) => {
+      payloadState = payload;
+      current = null;
+      currentPool = payload.pool;
+      currentInteractionAllowed = true;
+      document.querySelector('.organization-header h2').textContent = 'Pool access';
+      const tree = document.querySelector('#organizationTree');
+      tree.replaceChildren();
+      for (const pool of payload.pools || []) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'organization-name pool-navigation-item';
+        button.textContent = `${pool.team_title || 'Team'} Pool`;
+        button.onclick = () => openPool(pool.uuid);
+        tree.append(button);
+      }
+      SovereignShell.setTopicSelector({
+        label: 'Pool',
+        topics: (payload.pools || []).map(pool => ({
+          uuid: pool.uuid,
+          title: `${pool.team_title || 'Team'} Pool`,
+        })),
+        selectedUuid: currentPool?.uuid || '',
+        onSelect: openPool,
+      });
+      document.querySelector('#empty').hidden = true;
+      const article = document.querySelector('#document');
+      if (article.contains(document.activeElement)
+          && document.activeElement.matches('input, textarea, select')) {
+        SovereignShell.refresh();
+        return;
+      }
+      renderedPayloadJson = encoded;
+      article.replaceChildren();
+      article.classList.remove('is-readonly');
+
+      const heading = document.createElement('div');
+      heading.className = 'pool-heading';
+      const title = document.createElement('h2');
+      title.textContent = `${currentPool.team_title || 'Team'} onboarding Pool`;
+      heading.append(title);
+      if (currentPool.linked_team_present) {
+        const back = document.createElement('button');
+        back.type = 'button';
+        back.textContent = 'Open Team';
+        back.onclick = () => selectTeam(currentPool.team_uuid);
+        heading.append(back);
+      }
+      article.append(heading);
+      const intro = document.createElement('p');
+      intro.className = 'pool-intro';
+      intro.textContent = 'This is a separate onboarding channel. Team content is not published here.';
+      article.append(intro);
+
+      if (currentPool.can_publish) {
+        const form = document.createElement('form');
+        form.className = 'pool-publish-form';
+        const label = document.createElement('strong');
+        label.textContent = 'Publish invitation';
+        const opening = document.createElement('select');
+        opening.required = true;
+        for (const item of currentPool.publishable_openings || []) {
+          const option = document.createElement('option');
+          option.value = item.uuid;
+          option.textContent = `Member opening · ${item.opened_at || 'open'}`;
+          opening.append(option);
+        }
+        const expiry = document.createElement('input');
+        expiry.type = 'datetime-local';
+        const defaultExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+        expiry.value = defaultExpiry.toISOString().slice(0, 16);
+        const publish = document.createElement('button');
+        publish.type = 'submit';
+        publish.textContent = 'Publish';
+        publish.disabled = !opening.options.length;
+        form.append(label, opening, expiry, publish);
+        if (!opening.options.length) {
+          const note = document.createElement('small');
+          note.textContent = 'Open Member applications in the Team first.';
+          form.append(note);
+        }
+        form.onsubmit = async event => {
+          event.preventDefault();
+          try {
+            await api('/api/team/pool/invitations/publish', {
+              team_uuid: currentPool.team_uuid,
+              opening_uuid: opening.value,
+              expires_at: new Date(expiry.value).toISOString(),
+            });
+            await load();
+          } catch (error) { showToast(error.message, true); }
+        };
+        article.append(form);
+      }
+
+      const activeTitle = document.createElement('h3');
+      activeTitle.textContent = 'Active invitations';
+      article.append(activeTitle);
+      if (!(currentPool.active_invitations || []).length) {
+        const empty = document.createElement('p');
+        empty.className = 'pool-empty';
+        empty.textContent = 'No active invitation is published.';
+        article.append(empty);
+      }
+      for (const invitation of currentPool.active_invitations || []) {
+        const card = document.createElement('section');
+        card.className = 'pool-invitation-card';
+        const head = document.createElement('div');
+        head.className = 'pool-card-heading';
+        const name = document.createElement('strong');
+        name.textContent = invitation.team_title;
+        const expiry = document.createElement('span');
+        expiry.textContent = `Expires ${new Date(invitation.expires_at).toLocaleString()}`;
+        head.append(name, expiry);
+        card.append(head);
+        if (invitation.can_apply) {
+          const apply = document.createElement('button');
+          apply.type = 'button';
+          apply.textContent = 'Apply to join';
+          apply.onclick = async () => {
+            try {
+              await api('/api/team/pool/applications/submit', {
+                pool_uuid: currentPool.uuid,
+                invitation_uuid: invitation.uuid,
+              });
+              await load();
+            } catch (error) { showToast(error.message, true); }
+          };
+          card.append(apply);
+        }
+        for (const application of invitation.applications || []) {
+          const row = document.createElement('div');
+          row.className = 'pool-application';
+          row.append(avatarFor({
+            uuid: application.actor_uuid,
+            name: application.actor_name,
+            picture: application.picture,
+            is_self: application.is_self,
+          }));
+          const applicant = document.createElement('strong');
+          applicant.textContent = application.is_self ? 'You' : application.actor_name;
+          const state = document.createElement('span');
+          state.className = 'pool-application-state';
+          state.textContent = application.resolution === 'pending'
+            ? application.state : application.resolution;
+          row.append(applicant, state);
+          const actions = document.createElement('span');
+          actions.className = 'pool-application-actions';
+          if (application.can_withdraw) {
+            const withdraw = document.createElement('button');
+            withdraw.type = 'button';
+            withdraw.textContent = 'Withdraw';
+            withdraw.onclick = async () => {
+              try {
+                await api('/api/team/pool/applications/withdraw', {
+                  pool_uuid: currentPool.uuid,
+                  application_uuid: application.uuid,
+                });
+                await load();
+              } catch (error) { showToast(error.message, true); }
+            };
+            actions.append(withdraw);
+          }
+          if (application.can_resolve) {
+            for (const [outcome, text] of [['accepted', 'Accept'], ['rejected', 'Reject']]) {
+              const decide = document.createElement('button');
+              decide.type = 'button';
+              decide.textContent = text;
+              decide.onclick = async () => {
+                try {
+                  const context = await requestDecisionContext(`${text} Pool application`);
+                  if (!context) return;
+                  await api('/api/team/pool/applications/resolve', {
+                    pool_uuid: currentPool.uuid,
+                    application_uuid: application.uuid,
+                    outcome,
+                    ...context,
+                  });
+                  await load();
+                } catch (error) { showToast(error.message, true); }
+              };
+              actions.append(decide);
+            }
+          }
+          if (application.can_mount) {
+            const mount = document.createElement('button');
+            mount.type = 'button';
+            mount.textContent = 'Join Team channel';
+            mount.onclick = async () => {
+              try {
+                await api('/api/team/pool/team/mount', {
+                  pool_uuid: currentPool.uuid,
+                  application_uuid: application.uuid,
+                });
+                showToast('Team channel connected');
+                await load();
+              } catch (error) { showToast(error.message, true); }
+            };
+            actions.append(mount);
+          }
+          row.append(actions);
+          card.append(row);
+        }
+        article.append(card);
+      }
+
+      const expired = (currentPool.history || []).filter(item => item.expired);
+      if (expired.length) {
+        const history = document.createElement('details');
+        history.className = 'pool-history';
+        const summary = document.createElement('summary');
+        summary.textContent = `History (${expired.length})`;
+        history.append(summary);
+        for (const invitation of expired) {
+          const line = document.createElement('p');
+          line.textContent = `${invitation.team_title} · expired ${new Date(invitation.expires_at).toLocaleString()}`;
+          history.append(line);
+        }
+        article.append(history);
+      }
+      SovereignShell.refresh();
+    };
+
     const render = (payload) => {
       const encoded = JSON.stringify(payload);
       if (encoded === renderedPayloadJson) { SovereignShell.refresh(); return; }
+      if (payload.view === 'pool') {
+        renderPool(payload, encoded);
+        return;
+      }
       payloadState = payload;
       current = payload.team;
+      currentPool = null;
       currentInteractionAllowed = Boolean(payload.interaction?.allowed);
+      document.querySelector('.organization-header h2').textContent = 'Organization';
       renderOrganization(payload.organization);
       SovereignShell.setTopicSelector({
-        label: 'Team',
+        label: payload.is_organization ? 'Organization' : 'Team',
         topics: payload.teams.map(item => ({
           uuid: item.uuid,
           title: item.data.title || 'Untitled team',
@@ -1615,7 +2258,18 @@
 
       const actorsPart = disclosure('Actors', 'actors');
       actorsPart.content.append(renderParticipants(
-        payload.participants, payload.identity, currentInteractionAllowed,
+        payload.participants, payload.trusteeships, currentInteractionAllowed,
+      ));
+      actorsPart.content.append(renderMembership(
+        payload.membership || {openings: []}, currentInteractionAllowed,
+      ));
+      actorsPart.content.append(renderTrusteeElections(
+        payload.trustee_elections || [],
+        payload.membership || {is_member: false},
+        currentInteractionAllowed,
+      ));
+      actorsPart.content.append(renderTrusteeActions(
+        payload.trustee_actions || [], currentInteractionAllowed,
       ));
       // Identity normally reads as a badge on whoever holds it, so the line
       // only appears separately when it needs attention.
@@ -1637,13 +2291,21 @@
       SovereignShell.refresh();
     };
 
-    const load = async () => render(await api('/api/team/document'));
+    const load = async () => {
+      const poolUuid = new URLSearchParams(window.location.search).get('pool');
+      const path = poolUuid
+        ? `/api/team/document?pool_uuid=${encodeURIComponent(poolUuid)}`
+        : '/api/team/document';
+      render(await api(path));
+    };
 
     SovereignShell.mount({
       container: document.querySelector('#shell'),
       applicationId: 'team',
       topicUuid: () => (
-        currentInteractionAllowed ? (current?.uuid || '') : ''
+        currentInteractionAllowed
+          ? (currentPool?.uuid || current?.uuid || '')
+          : ''
       ),
       state: () => payloadState,
       onChanged: () => load(),

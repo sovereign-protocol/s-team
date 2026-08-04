@@ -15,21 +15,152 @@ import hashlib
 import json
 import re
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sovereign import ApplicationRegistration, ProtocolNode, Session, SessionResult
 
 
 TEAM_APPLICATION_ID = "team"
 TEAM_APP_NAME = "S-Team"
+FLOW_APPLICATION_ID = "flow"
+FLOW_FACADE_API_VERSION = 1
+FLOW_DECISION_RESULT_CONTRACT_ID = "s-flow.decision-result"
+FLOW_DECISION_RESULT_CONTRACT_VERSION = 1
 
 
 class TeamLogic:
+    GOVERNANCE_RECORD_TYPES = frozenset({
+        "team_trustee_state",
+        "team_member_opening",
+        "team_member_application",
+        "team_member_resolution",
+        "team_trustee_election",
+        "team_trustee_candidacy",
+        "team_trustee_action",
+        "team_trustee_reality",
+        "team_external_member_resolution",
+    })
+    POOL_RECORD_TYPES = frozenset({
+        "team_pool_invitation",
+        "team_pool_application",
+        "team_pool_resolution",
+    })
+    TRUSTS = frozenset({"identity", "trust"})
+    TRUSTEE_CAUSES = frozenset({
+        "genesis", "election", "resignation", "resolution",
+    })
+    ACTION_KINDS = frozenset({
+        "member_opening", "member_resolution", "trustee_resignation",
+        "election_implementation", "domain_action",
+    })
+    GOVERNANCE_FIELDS = {
+        "team_trustee_state": (
+            frozenset({
+                "type", "trust", "holder_actor_uuid", "previous_state_uuid",
+                "cause", "acted_by", "acted_at", "authority_basis_uuid",
+                "signals", "consideration", "expectation",
+            }),
+            frozenset({"process_uuid", "process_result_hash"}),
+        ),
+        "team_member_opening": (
+            frozenset({
+                "type", "member_role_uuid", "previous_opening_uuid", "state",
+                "opened_by", "opened_at", "authority_basis_uuid",
+            }),
+            frozenset({"closed_at"}),
+        ),
+        "team_member_application": (
+            frozenset({
+                "type", "opening_uuid", "previous_application_uuid",
+                "actor_uuid", "submitted_at", "state",
+            }),
+            frozenset({"withdrawn_at"}),
+        ),
+        "team_member_resolution": (
+            frozenset({
+                "type", "opening_uuid", "application_uuid", "actor_uuid",
+                "outcome", "resolved_by", "resolved_at",
+                "authority_basis_uuid", "signals", "consideration", "expectation",
+            }),
+            frozenset(),
+        ),
+        "team_trustee_election": (
+            frozenset({
+                "type", "trust", "process_uuid", "process_definition_id",
+                "process_definition_version", "electorate_actor_uuids",
+                "triggered_by", "triggered_at", "target_state_uuid",
+                "facilitator_trust", "facilitator_actor_uuid",
+                "facilitator_authority_basis_uuid",
+            }),
+            frozenset(),
+        ),
+        "team_trustee_candidacy": (
+            frozenset({
+                "type", "trust", "actor_uuid", "vacant_state_uuid",
+                "previous_candidacy_uuid", "submitted_at", "state",
+            }),
+            frozenset({"withdrawn_at"}),
+        ),
+        "team_trustee_action": (
+            frozenset({
+                "type", "trust", "action_kind", "subject_uuid", "acted_by",
+                "acted_at", "authority_basis_uuid", "signals", "consideration",
+                "expectation", "payload",
+            }),
+            frozenset(),
+        ),
+        "team_trustee_reality": (
+            frozenset({
+                "type", "action_uuid", "observed_by", "observed_at", "reality",
+                "authority_basis_uuid",
+            }),
+            frozenset(),
+        ),
+        "team_external_member_resolution": (
+            frozenset({
+                "type", "pool_uuid", "pool_invitation_uuid",
+                "pool_application_uuid", "opening_uuid", "actor_uuid",
+                "outcome", "resolved_by", "resolved_at",
+                "authority_basis_uuid", "application_evidence_hash",
+                "signals", "consideration", "expectation",
+            }),
+            frozenset(),
+        ),
+    }
+    POOL_FIELDS = {
+        "team_pool_invitation": (
+            frozenset({
+                "type", "team_uuid", "team_title", "opening_uuid",
+                "published_by", "published_at", "expires_at",
+                "authority_basis_uuid",
+            }),
+            frozenset(),
+        ),
+        "team_pool_application": (
+            frozenset({
+                "type", "invitation_uuid", "team_uuid", "opening_uuid",
+                "actor_uuid", "submitted_at", "state",
+                "previous_application_uuid",
+            }),
+            frozenset({"withdrawn_at"}),
+        ),
+        "team_pool_resolution": (
+            frozenset({
+                "type", "invitation_uuid", "application_uuid",
+                "team_uuid", "opening_uuid", "actor_uuid", "outcome",
+                "resolved_by", "resolved_at", "authority_basis_uuid",
+                "signals", "consideration", "expectation",
+            }),
+            frozenset({"team_invitation_token"}),
+        ),
+    }
+
     def __init__(self, session: Session, config: dict | None = None,
-                 collaboration=None):
+                 collaboration=None, facades=None):
         self.session = session
         self.config = config or {}
         self.collaboration = collaboration
+        self.facades = facades
         # Reading Session.identity snapshots the whole protocol tree, and
         # building one payload asked for it hundreds of times - once per
         # role, per holder, per member list - which cost over a second per
@@ -71,12 +202,16 @@ class TeamLogic:
     def application_registration(self) -> ApplicationRegistration:
         return ApplicationRegistration(
             TEAM_APPLICATION_ID,
-            frozenset({"team"}),
-            self.teams,
-            self.accept_team_invitation,
+            frozenset({"team", "team_pool"}),
+            self.shared_topics,
+            self.accept_team_topic_invitation,
             assignment_scoped=True,
             mount_invitation=True,
+            on_peer_update=self.reconcile_governance_updates,
         )
+
+    def shared_topics(self) -> list[ProtocolNode]:
+        return [*self.teams(), *self.pools()]
 
     def teams(self) -> list[ProtocolNode]:
         container = self._find_team_container()
@@ -89,6 +224,41 @@ class TeamLogic:
         return sorted(found, key=lambda node: (
             str(node.data.get("title", "")), node.created_at,
         ))
+
+    def pools(self) -> list[ProtocolNode]:
+        container = self._find_team_container()
+        if not container:
+            return []
+        return sorted(
+            [
+                child for child in container.live_children()
+                if child.data.get("type") == "team_pool"
+            ],
+            key=lambda node: (
+                str(node.data.get("team_title") or ""), node.created_at,
+            ),
+        )
+
+    def pool_for_team(self, team: ProtocolNode) -> ProtocolNode | None:
+        matches = [
+            pool for pool in self.pools()
+            if pool.data.get("team_uuid") == team.uuid
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    def _create_pool(self, team: ProtocolNode) -> SessionResult:
+        return self.session.create_child(
+            self._team_container().uuid,
+            {
+                "type": "team_pool",
+                "team_uuid": team.uuid,
+                "team_title": str(team.data.get("title") or "Untitled team"),
+                "title": f"{team.data.get('title') or 'Untitled team'} Pool",
+                "created_by": self._identity_uuid,
+                "created_at": self._now(),
+            },
+            {},
+        )
 
     # A name is the whole of how a role or a team is referred to: a
     # badge, an offer, a seat in a parent, a line in the organization tree.
@@ -152,6 +322,18 @@ class TeamLogic:
     def parent_holdings(self, team: ProtocolNode) -> list[ProtocolNode]:
         """This team's roles in other teams, in declared order."""
         return self._ordered(team, "team_role_holding")
+
+    def is_organization(self, team: ProtocolNode) -> bool:
+        """Whether this Team is a root body rather than a subteam.
+
+        Organization is contextual vocabulary, not stored state or another
+        Actor kind. An unmounted or no-longer-accepted parent claim is not a
+        live holding, so it does not turn a root body into a subteam.
+        """
+        return not any(
+            self._holding_is_live(team, holding)
+            for holding in self.parent_holdings(team)
+        )
 
     def child_teams(
         self, team: ProtocolNode,
@@ -239,15 +421,17 @@ class TeamLogic:
             {},
         )
         if result.status == "ok":
-            identity = self._create_identity(result.value)
-            participant = self._create_default_participant(result.value)
+            member = self._create_default_member(result.value)
+            identity = self._create_trusteeship(result.value, "identity")
+            trust = self._create_trusteeship(result.value, "trust")
+            pool = self._create_pool(result.value)
             self._remember_team(result.value.uuid)
             return SessionResult(
                 "ok",
                 value=result.value.uuid,
                 effects=[
-                    *result.effects, *identity.effects,
-                    *participant.effects,
+                    *result.effects, *member.effects, *identity.effects,
+                    *trust.effects, *pool.effects,
                 ],
             )
         return result
@@ -305,8 +489,10 @@ class TeamLogic:
         if created.status != "ok":
             return created
         child = created.value
-        identity = self._create_identity(child)
-        participant = self._create_default_participant(child)
+        member = self._create_default_member(child)
+        identity = self._create_trusteeship(child, "identity")
+        trust = self._create_trusteeship(child, "trust")
+        pool = self._create_pool(child)
         offered = self.offer_role(role.uuid, child.uuid)
         if offered.status != "ok":
             self.session.delete(child.uuid)
@@ -320,7 +506,8 @@ class TeamLogic:
             "ok",
             value=child.uuid,
             effects=[
-                *created.effects, *identity.effects, *participant.effects,
+                *created.effects, *identity.effects, *member.effects,
+                *trust.effects, *pool.effects,
                 *offered.effects, *seated.effects,
             ],
         )
@@ -344,7 +531,7 @@ class TeamLogic:
         count here. Nothing is stripped afterwards - the records of taking
         part are simply never copied - so the copy lands at zero actors,
         which is what a template is (2.8). No Identity and no default
-        Participant either: taking Identity is how somebody starts using it.
+        Member either: taking Identity is how somebody starts using it.
 
         Not gated on holding a role in the source. Copying reads that
         team and writes only a new one of this session's own, so an
@@ -559,6 +746,13 @@ class TeamLogic:
         # the holdings are inside the subtree about to go.
         for holding in self.parent_holdings(team):
             effects.extend(self._release_seat(team, holding))
+        pool = self.pool_for_team(team)
+        if pool:
+            pool_release = self.session.end_topic_sharing(pool.uuid)
+            pool_deleted = self.session.delete(pool.uuid)
+            effects.extend(pool_release.effects)
+            if pool_deleted.status == "ok":
+                effects.extend(pool_deleted.effects)
         release = self.session.end_topic_sharing(team.uuid)
         result = self.session.delete(team.uuid)
         if result.status != "ok":
@@ -606,28 +800,30 @@ class TeamLogic:
             return allowed
         return self.session.move_child_to_index(clause_uuid, index)
 
-    # Identity is the one role whose holding is a single node rather than an
-    # offer plus a self-reported decision. It can be, because it is singular:
-    # everybody writes the holder into the same node, so the protocol's own
-    # semantics carry the consent. Both replicas naming the same holder is
-    # team; naming different holders is a divergence. Handover and a
-    # contested claim are therefore the same event, settled with the same
-    # adopt/rollback buttons every other node already has.
-    #
-    # It stays out of team_reference_hash deliberately: a handover
-    # changes who holds a role, not what the team says, and must not
-    # re-open everybody's acceptance.
-
     def identity_holder(self, team: ProtocolNode) -> str:
-        """The actor this replica currently sees holding Identity."""
-        nodes = self._identity_nodes(team)
-        if len(nodes) != 1:
-            return ""
-        return str(nodes[0].data.get("holder_actor_uuid") or "").strip()
+        """The settled incumbent, including while successors are contested."""
+        return str(
+            self.trustee_projection(team, "identity").get(
+                "holder_actor_uuid",
+            ) or ""
+        ).strip()
+
+    def trust_holder(self, team: ProtocolNode) -> str:
+        return str(
+            self.trustee_projection(team, "trust").get(
+                "holder_actor_uuid",
+            ) or ""
+        ).strip()
 
     def holds_identity(self, team: ProtocolNode) -> bool:
         return bool(
             (holder := self.identity_holder(team))
+            and holder == self._identity_uuid
+        )
+
+    def holds_trust(self, team: ProtocolNode) -> bool:
+        return bool(
+            (holder := self.trust_holder(team))
             and holder == self._identity_uuid
         )
 
@@ -638,84 +834,84 @@ class TeamLogic:
         return bool(team and self.holds_identity(team))
 
     def take_identity(self, team_uuid: str) -> SessionResult:
-        """Install this participant as Identity.
-
-        Deliberately not gated on the seat being free. Somebody has to be
-        able to act when a holder is gone, and no rule evaluated against an
-        observer-relative view can tell "vacant" from "I do not sync with the
-        holder". Taking an occupied seat writes a competing holder into the
-        same node, which surfaces as a divergence for both sides to settle.
-        The warning belongs in the interface, not in a refusal here.
-        """
-        return self._write_identity(team_uuid, self._identity_uuid)
-
-    def offer_identity(
-        self, team_uuid: str, actor_uuid: str,
-    ) -> SessionResult:
-        """Hand Identity on. It is theirs once they adopt the node."""
-        team = self._node(team_uuid, "team")
-        if not team:
-            return SessionResult("error", reason="team not found")
-        if not self.holds_identity(team):
-            return SessionResult(
-                "error", reason="only the Identity holder can hand it over",
-            )
-        normalized = str(actor_uuid or "").strip()
-        if not normalized:
-            return SessionResult("error", reason="an actor is required")
-        if normalized == self._identity_uuid:
-            return SessionResult("error", reason="Identity is already yours")
-        return self._write_identity(team_uuid, normalized)
-
-    def resign_identity(self, team_uuid: str) -> SessionResult:
-        """Step out of Identity, leaving the seat vacant.
-
-        The one way Identity becomes vacant outside a template (2.2). The
-        record stays and is emptied rather than deleted: it is the node both
-        sides compare, so removing it would make "nobody holds this" and "I
-        have not been told who holds this" the same observation.
-        """
-        team = self._node(team_uuid, "team")
-        if not team:
-            return SessionResult("error", reason="team not found")
-        if not self.holds_identity(team):
-            return SessionResult(
-                "error", reason="only the Identity holder can step out of it",
-            )
-        return self._write_identity(team_uuid, "")
-
-    def _write_identity(
-        self, team_uuid: str, actor_uuid: str,
-    ) -> SessionResult:
+        """Instantiate an empty template; occupied trusteeships are elected."""
         team = self._node(team_uuid, "team")
         if not team:
             return SessionResult("error", reason="team not found")
         allowed = self._interaction_guard(team)
         if allowed.status != "ok":
             return allowed
-        nodes = self._identity_nodes(team)
-        # Two records is the one case the single-node encoding cannot settle
-        # by itself, because two distinct nodes never diverge against each
-        # other. It is reachable only for a team that predates Identity
-        # and was then claimed on two sides at once, so it is surfaced rather
-        # than guessed at.
-        if len(nodes) > 1:
+        if any(self.governance_records(team, "team_trustee_state")):
             return SessionResult(
                 "error",
-                reason=(
-                    "This team has more than one Identity record. "
-                    "Settle that before changing it."
-                ),
+                reason="Identity changes require a facilitated decision",
             )
-        if not nodes:
-            return self._create_identity(team, actor_uuid)
-        node = nodes[0]
-        data = dict(node.data)
-        data["holder_actor_uuid"] = actor_uuid
-        data["held_since"] = self._now()
-        return self.session.modify(node.uuid, data, node.weights)
+        member = self._create_default_member(team)
+        identity = self._create_trusteeship(team, "identity")
+        trust = self._create_trusteeship(team, "trust")
+        pool = self._create_pool(team)
+        return SessionResult(
+            "ok",
+            value=identity.value,
+            effects=[
+                *member.effects, *identity.effects, *trust.effects,
+                *pool.effects,
+            ],
+        )
 
-    def _create_default_participant(
+    def offer_identity(
+        self, team_uuid: str, actor_uuid: str,
+    ) -> SessionResult:
+        """Direct handover is not part of the append-only authority model."""
+        team = self._node(team_uuid, "team")
+        if not team:
+            return SessionResult("error", reason="team not found")
+        allowed = self._interaction_guard(team)
+        if allowed.status != "ok":
+            return allowed
+        return SessionResult(
+            "error", reason="Identity changes require a facilitated decision",
+        )
+
+    def resign_identity(self, team_uuid: str) -> SessionResult:
+        """Append an explicit vacancy after the current Identity state."""
+        return self.resign_trusteeship(team_uuid, "identity")
+
+    def resign_trusteeship(
+        self, team_uuid: str, trust: str,
+        signals: str = "", consideration: str = "", expectation: str = "",
+    ) -> SessionResult:
+        team = self._node(team_uuid, "team")
+        if not team:
+            return SessionResult("error", reason="team not found")
+        if trust not in self.TRUSTS:
+            return SessionResult("error", reason="unknown trusteeship")
+        holder = (
+            self.identity_holder(team) if trust == "identity"
+            else self.trust_holder(team)
+        )
+        if holder != self._identity_uuid:
+            return SessionResult(
+                "error",
+                reason=f"only the {trust.title()} holder can step out of it",
+            )
+        current = self.trustee_projection(team, trust)
+        current_uuid = current.get("current_state_uuid") or ""
+        return self.append_governance_record(team.uuid, {
+            "type": "team_trustee_state",
+            "trust": trust,
+            "holder_actor_uuid": "",
+            "previous_state_uuid": current_uuid,
+            "cause": "resignation",
+            "acted_by": self._identity_uuid,
+            "acted_at": self._now(),
+            "authority_basis_uuid": current_uuid,
+            "signals": str(signals or "").strip(),
+            "consideration": str(consideration or "").strip(),
+            "expectation": str(expectation or "").strip(),
+        })
+
+    def _create_default_member(
         self, team: ProtocolNode,
     ) -> SessionResult:
         """Every team starts with one role, taken by its creator.
@@ -724,19 +920,24 @@ class TeamLogic:
         mean first inventing the role to take. The name and purpose are
         ordinary editable content - this is a starting point, not a fixture.
         """
-        created = self.session.create_child(
-            team.uuid,
-            {
-                "type": "team_role",
-                "name": "Participant",
-                "purpose": "Take part in this team",
-                "order": 0.0,
-            },
-            {},
-        )
-        if created.status != "ok":
-            return created
-        role = created.value
+        role = self.member_role(team)
+        effects = []
+        if role is None:
+            created = self.session.create_child(
+                team.uuid,
+                {
+                    "type": "team_role",
+                    "name": "Member",
+                    "purpose": "Belong to this team",
+                    "system_key": "member",
+                    "order": 0.0,
+                },
+                {},
+            )
+            if created.status != "ok":
+                return created
+            role = created.value
+            effects.extend(created.effects)
         offered = self.session.create_child(
             role.uuid,
             {
@@ -745,6 +946,7 @@ class TeamLogic:
                 "actor_kind": "individual",
                 "offered_by": self._identity_uuid,
                 "offered_at": self._now(),
+                "system_genesis": True,
             },
             {},
         )
@@ -754,133 +956,91 @@ class TeamLogic:
         return SessionResult(
             "ok",
             value=role.uuid,
-            effects=[*created.effects, *offered.effects, *decided.effects],
+            effects=[*effects, *offered.effects, *decided.effects],
         )
 
-    # A trusteeship is a role held on behalf of the team rather than for the
-    # holder's own part in it: one holder, carrying an authority *for* the
-    # body. Identity is the first of them, and one node type carries them
-    # all - `trust` names which. A second trusteeship then inherits the
-    # encoding, the resolution mechanism and the authority guard rather than
-    # arriving as a second node type with its own copy of each.
-    IDENTITY_TRUST = "identity"
-
-    def _create_identity(
-        self, team: ProtocolNode, actor_uuid: str | None = None,
+    def _create_trusteeship(
+        self, team: ProtocolNode, trust: str,
+        actor_uuid: str | None = None,
     ) -> SessionResult:
+        actor = actor_uuid or self._identity_uuid
         return self.session.create_child(
             team.uuid,
             {
-                "type": "team_trustee",
-                "trust": self.IDENTITY_TRUST,
-                "holder_actor_uuid": actor_uuid or self._identity_uuid,
-                "held_since": self._now(),
+                "type": "team_trustee_state",
+                "trust": trust,
+                "holder_actor_uuid": actor,
+                "previous_state_uuid": "",
+                "cause": "genesis",
+                "acted_by": actor,
+                "acted_at": self._now(),
+                "authority_basis_uuid": "",
+                "signals": "",
+                "consideration": "",
+                "expectation": "",
             },
             {},
         )
 
-    @classmethod
-    def _trustee_nodes(
-        cls, team: ProtocolNode, trust: str,
-    ) -> list[ProtocolNode]:
-        return [
-            child for child in team.live_children()
-            if child.data.get("type") == "team_trustee"
-            and child.data.get("trust") == trust
-        ]
-
-    @classmethod
-    def _identity_nodes(cls, team: ProtocolNode) -> list[ProtocolNode]:
-        return cls._trustee_nodes(team, cls.IDENTITY_TRUST)
-
     def identity_payload(self, team: ProtocolNode) -> dict:
-        """Who holds Identity here, and what any peer says instead."""
+        return self.trusteeship_payload(team, "identity")
+
+    def trust_payload(self, team: ProtocolNode) -> dict:
+        return self.trusteeship_payload(team, "trust")
+
+    def trusteeship_payload(self, team: ProtocolNode, trust: str) -> dict:
+        """Render one append-only trusteeship and any successor contest."""
         blank = {
+            "trust": trust,
             "node_uuid": "",
             "holder_actor_uuid": "",
             "holder_name": "",
             "is_self": False,
             "held_since": None,
             "claims": [],
+            "candidates": [],
+            "can_enter_candidacy": False,
+            "can_act": False,
         }
-        nodes = self._identity_nodes(team)
-        if len(nodes) > 1:
-            return {**blank, "state": "ambiguous"}
-        if not nodes:
-            return {**blank, "state": "vacant"}
-
+        projection = self.trustee_projection(team, trust)
+        current_uuid = projection.get("current_state_uuid") or ""
+        current = self._governance_node(
+            team, current_uuid, "team_trustee_state",
+        )
         people = self._topic_members(team.uuid)
         members = {member["uuid"]: member for member in people}
-        uuid_for_address = {
-            address: member["uuid"]
-            for member in people
-            for address in member.get("addresses") or [member.get("address")]
-            if address
-        }
-
-        def describe(actor_uuid: str) -> str:
-            return (
-                (members.get(actor_uuid) or {}).get("name")
-                or "Someone you have not met"
-            )
-
-        node = nodes[0]
-        holder = str(node.data.get("holder_actor_uuid") or "").strip()
-        # An emptied record is the seat standing open, not a holder this
-        # session cannot name: somebody stepped out of it (resign_identity).
-        # The node uuid still travels, because that record is what a peer
-        # taking the seat diverges against.
-        if not holder:
-            return {**blank, "state": "vacant", "node_uuid": node.uuid}
-        # What each peer's own copy of this node says. The view needs it to
-        # tell a handover - where the peer naming a new holder *is* that new
-        # holder - from a claim staked over somebody still in the seat.
-        claims = []
-        for address in self.session.peer_addresses(team.uuid):
-            peer_topic = self.session.get_cached_peer_subtree(
-                address, team.uuid,
-            )
-            if not peer_topic:
-                continue
-            peer_node = next(
-                (
-                    child for child in peer_topic.live_children()
-                    if child.uuid == node.uuid
-                ),
-                None,
-            )
-            if not peer_node:
-                continue
-            peer_holder = str(
-                peer_node.data.get("holder_actor_uuid") or "",
-            ).strip()
-            if peer_holder == holder:
-                continue
-            claims.append({
-                "peer_addr": address,
-                "holder_actor_uuid": peer_holder,
-                "holder_name": describe(peer_holder) if peer_holder else "",
-                # The same divergence means three different things. A peer
-                # naming *itself* is accepting a handover; a peer naming
-                # somebody else is staking a claim over whoever is still in
-                # the seat; a peer naming nobody is the holder having
-                # stepped out of it. That last one used to be dropped here
-                # for having no name to report, which left the one side that
-                # had to answer it with nothing on screen to answer.
-                "is_vacancy": not peer_holder,
-                "is_handover": (
-                    bool(peer_holder)
-                    and uuid_for_address.get(address) == peer_holder
-                ),
-            })
+        holder = str(projection.get("holder_actor_uuid") or "").strip()
+        claims = [
+            {"state_uuid": contender_uuid}
+            for contender_uuid in projection.get("contenders") or []
+        ]
+        candidates = self.active_trustee_candidates_payload(team, trust)
+        own_candidate = next(
+            (candidate for candidate in candidates if candidate["is_self"]),
+            None,
+        )
         return {
-            "node_uuid": node.uuid,
-            "state": "held",
+            **blank,
+            "trust": trust,
+            "node_uuid": current_uuid,
+            "state": projection.get("state") or "unconfigured",
             "holder_actor_uuid": holder,
-            "holder_name": describe(holder),
+            "holder_name": (
+                (members.get(holder) or {}).get("name")
+                or ("Someone you have not met" if holder else "")
+            ),
             "is_self": holder == self._identity_uuid,
-            "held_since": node.data.get("held_since"),
+            "held_since": current.data.get("acted_at") if current else None,
             "claims": claims,
+            "candidates": candidates,
+            "can_enter_candidacy": bool(
+                projection.get("state") == "vacant"
+                and self._is_current_member(team, self._identity_uuid)
+                and own_candidate is None
+            ),
+            "can_act": bool(self._authority_basis_for_actor(
+                team, trust, self._identity_uuid,
+            )),
         }
 
     # Roles are document content: a role is part of what people agree to,
@@ -898,6 +1058,2357 @@ class TeamLogic:
 
     def roles(self, team: ProtocolNode) -> list[ProtocolNode]:
         return self._ordered(team, "team_role")
+
+    MEMBER_ROLE_SYSTEM_KEY = "member"
+
+    def member_role(self, team: ProtocolNode) -> ProtocolNode | None:
+        """Return the uniquely marked constitutional Member role."""
+        marked = [
+            role for role in self.roles(team)
+            if role.data.get("system_key") == self.MEMBER_ROLE_SYSTEM_KEY
+        ]
+        return marked[0] if len(marked) == 1 else None
+
+    def governance_records(
+        self, team: ProtocolNode, node_type: str | None = None,
+    ) -> list[ProtocolNode]:
+        return sorted(
+            [
+                child for child in team.live_children()
+                if child.data.get("type") in self.GOVERNANCE_RECORD_TYPES
+                and (node_type is None or child.data.get("type") == node_type)
+            ],
+            key=lambda node: (node.created_at, node.uuid),
+        )
+
+    def governance_schema_error(self, node: ProtocolNode) -> str | None:
+        node_type = node.data.get("type")
+        contract = self.GOVERNANCE_FIELDS.get(node_type)
+        if contract is None:
+            return "not a governance record"
+        if node.children:
+            return "governance records cannot contain children"
+        required, optional = contract
+        fields = set(node.data)
+        missing = sorted(required - fields)
+        extra = sorted(fields - required - optional)
+        if missing:
+            return "missing governance fields: " + ", ".join(missing)
+        if extra:
+            return "unsupported governance fields: " + ", ".join(extra)
+
+        data = node.data
+        scalar_exceptions = {
+            "electorate_actor_uuids", "payload", "process_definition_version",
+        }
+        for field in required - {"type"} - scalar_exceptions:
+            if not isinstance(data.get(field), str):
+                return f"{field} must be a string"
+        for field in optional:
+            if field in data and not isinstance(data[field], str):
+                return f"{field} must be a string"
+        if node_type in {"team_trustee_state", "team_trustee_election",
+                         "team_trustee_candidacy", "team_trustee_action"}:
+            if data.get("trust") not in self.TRUSTS:
+                return "trust must be identity or trust"
+        if node_type == "team_trustee_state":
+            if data.get("cause") not in self.TRUSTEE_CAUSES:
+                return "unsupported trustee-state cause"
+            if data.get("cause") == "genesis" and (
+                data.get("previous_state_uuid") or data.get("authority_basis_uuid")
+            ):
+                return "genesis cannot name previous state or authority basis"
+            if data.get("cause") != "genesis" and not data.get("previous_state_uuid"):
+                return "non-genesis trustee state requires previous_state_uuid"
+            if data.get("cause") in {"election", "resolution"} and (
+                not data.get("process_uuid") or not data.get("process_result_hash")
+            ):
+                return "election state requires process evidence"
+        elif node_type == "team_member_opening":
+            if data.get("state") not in {"open", "closed"}:
+                return "opening state must be open or closed"
+            if data.get("state") == "open" and data.get("previous_opening_uuid"):
+                return "initial opening cannot name a predecessor"
+            if data.get("state") == "closed" and (
+                not data.get("closed_at") or not data.get("previous_opening_uuid")
+            ):
+                return "closed opening requires closed_at and a predecessor"
+        elif node_type == "team_member_application":
+            if data.get("state") not in {"submitted", "withdrawn"}:
+                return "application state must be submitted or withdrawn"
+            if data.get("state") == "submitted" and data.get("previous_application_uuid"):
+                return "initial application cannot name a predecessor"
+            if data.get("state") == "withdrawn" and (
+                not data.get("withdrawn_at")
+                or not data.get("previous_application_uuid")
+            ):
+                return "withdrawn application requires withdrawn_at and a predecessor"
+        elif node_type == "team_member_resolution":
+            if data.get("outcome") not in {"accepted", "rejected"}:
+                return "resolution outcome must be accepted or rejected"
+        elif node_type == "team_trustee_election":
+            electorate = data.get("electorate_actor_uuids")
+            if not isinstance(electorate, list) or not all(
+                isinstance(actor, str) and actor for actor in electorate
+            ):
+                return "electorate_actor_uuids must be a list of actor UUIDs"
+            if not electorate or len(electorate) != len(set(electorate)):
+                return "electorate_actor_uuids must be non-empty and unique"
+            version = data.get("process_definition_version")
+            if isinstance(version, bool) or not isinstance(version, (str, int)):
+                return "process_definition_version must be a string or integer"
+            expected_facilitator = (
+                "trust" if data.get("trust") == "identity" else "identity"
+            )
+            if data.get("facilitator_trust") != expected_facilitator:
+                return "the counterpart trusteeship must facilitate the election"
+        elif node_type == "team_trustee_candidacy":
+            if data.get("state") not in {"active", "withdrawn"}:
+                return "candidacy state must be active or withdrawn"
+            if data.get("state") == "active" and data.get("previous_candidacy_uuid"):
+                return "initial candidacy cannot name a predecessor"
+            if data.get("state") == "withdrawn" and (
+                not data.get("withdrawn_at")
+                or not data.get("previous_candidacy_uuid")
+            ):
+                return "withdrawn candidacy requires withdrawn_at and a predecessor"
+        elif node_type == "team_trustee_action":
+            if data.get("action_kind") not in self.ACTION_KINDS:
+                return "unsupported trustee action kind"
+            if not isinstance(data.get("payload"), dict):
+                return "trustee action payload must be an object"
+        elif node_type == "team_external_member_resolution":
+            if data.get("outcome") != "accepted":
+                return "external Team resolution must be accepted"
+        return None
+
+    def pool_schema_error(self, node: ProtocolNode) -> str | None:
+        node_type = node.data.get("type")
+        contract = self.POOL_FIELDS.get(node_type)
+        if contract is None:
+            return "not a Pool record"
+        if node.children:
+            return "Pool records cannot contain children"
+        required, optional = contract
+        fields = set(node.data)
+        missing = sorted(required - fields)
+        extra = sorted(fields - required - optional)
+        if missing:
+            return "missing Pool fields: " + ", ".join(missing)
+        if extra:
+            return "unsupported Pool fields: " + ", ".join(extra)
+        data = node.data
+        for field in required - {"type"}:
+            if not isinstance(data.get(field), str):
+                return f"{field} must be a string"
+        if "withdrawn_at" in data and not isinstance(data["withdrawn_at"], str):
+            return "withdrawn_at must be a string"
+        if "team_invitation_token" in data and not isinstance(
+            data["team_invitation_token"], dict,
+        ):
+            return "team_invitation_token must be an object"
+        if node_type == "team_pool_application":
+            if data.get("state") not in {"submitted", "withdrawn"}:
+                return "Pool application state must be submitted or withdrawn"
+            if data.get("state") == "submitted" and data.get(
+                "previous_application_uuid",
+            ):
+                return "initial Pool application cannot name a predecessor"
+            if data.get("state") == "withdrawn" and (
+                not data.get("previous_application_uuid")
+                or not data.get("withdrawn_at")
+            ):
+                return "withdrawn Pool application requires its predecessor"
+        elif node_type == "team_pool_resolution":
+            if data.get("outcome") not in {"accepted", "rejected"}:
+                return "Pool resolution outcome must be accepted or rejected"
+            token = data.get("team_invitation_token")
+            if data.get("outcome") == "accepted" and not token:
+                return "accepted Pool resolution requires Team coordinates"
+            if data.get("outcome") == "rejected" and token is not None:
+                return "rejected Pool resolution cannot expose Team coordinates"
+        return None
+
+    def trustee_projection(self, team: ProtocolNode, trust: str) -> dict:
+        states = [
+            state for state in self.governance_records(team, "team_trustee_state")
+            if state.data.get("trust") == trust
+            and self.governance_schema_error(state) is None
+        ]
+        by_previous: dict[str, list[ProtocolNode]] = {}
+        for state in states:
+            by_previous.setdefault(
+                str(state.data.get("previous_state_uuid") or ""), [],
+            ).append(state)
+        roots = by_previous.get("", [])
+        blank = {
+            "trust": trust, "state": "unconfigured", "current_state_uuid": "",
+            "holder_actor_uuid": "", "contenders": [],
+        }
+        if not roots:
+            return blank
+        if len(roots) > 1:
+            return {
+                **blank, "state": "contested",
+                "contenders": [state.uuid for state in roots],
+            }
+        current = roots[0]
+        seen = {current.uuid}
+        while True:
+            successors = [
+                state for state in by_previous.get(current.uuid, [])
+                if state.uuid not in seen
+            ]
+            if not successors:
+                holder = str(current.data.get("holder_actor_uuid") or "")
+                return {
+                    **blank,
+                    "state": "held" if holder else "vacant",
+                    "current_state_uuid": current.uuid,
+                    "holder_actor_uuid": holder,
+                }
+            if len(successors) > 1:
+                holder = str(current.data.get("holder_actor_uuid") or "")
+                return {
+                    **blank,
+                    "state": "contested",
+                    "current_state_uuid": current.uuid,
+                    "holder_actor_uuid": holder,
+                    "contenders": [state.uuid for state in successors],
+                }
+            current = successors[0]
+            seen.add(current.uuid)
+
+    def _record_chain_projection(
+        self, team: ProtocolNode, node_type: str, root_uuid: str,
+        predecessor_field: str,
+    ) -> dict:
+        records = self.governance_records(team, node_type)
+        by_uuid = {record.uuid: record for record in records}
+        root = by_uuid.get(root_uuid)
+        blank = {
+            "root_uuid": root_uuid,
+            "current_uuid": "",
+            "state": "missing",
+            "contenders": [],
+        }
+        if root is None or root.data.get(predecessor_field):
+            return blank
+        by_previous: dict[str, list[ProtocolNode]] = {}
+        for record in records:
+            previous = str(record.data.get(predecessor_field) or "")
+            if previous:
+                by_previous.setdefault(previous, []).append(record)
+        current = root
+        seen = {root.uuid}
+        while True:
+            successors = [
+                record for record in by_previous.get(current.uuid, [])
+                if record.uuid not in seen
+            ]
+            if not successors:
+                return {
+                    **blank,
+                    "current_uuid": current.uuid,
+                    "state": str(current.data.get("state") or ""),
+                }
+            if len(successors) > 1:
+                return {
+                    **blank,
+                    "current_uuid": current.uuid,
+                    "state": "contested",
+                    "effective_state": str(current.data.get("state") or ""),
+                    "contenders": [record.uuid for record in successors],
+                }
+            current = successors[0]
+            seen.add(current.uuid)
+
+    def member_opening_projection(
+        self, team: ProtocolNode, opening_uuid: str,
+    ) -> dict:
+        return self._record_chain_projection(
+            team, "team_member_opening", opening_uuid,
+            "previous_opening_uuid",
+        )
+
+    def member_application_projection(
+        self, team: ProtocolNode, application_uuid: str,
+    ) -> dict:
+        return self._record_chain_projection(
+            team, "team_member_application", application_uuid,
+            "previous_application_uuid",
+        )
+
+    def trustee_candidacy_projection(
+        self, team: ProtocolNode, candidacy_uuid: str,
+    ) -> dict:
+        return self._record_chain_projection(
+            team, "team_trustee_candidacy", candidacy_uuid,
+            "previous_candidacy_uuid",
+        )
+
+    def trustee_candidacy_roots(
+        self, team: ProtocolNode, trust: str | None = None,
+    ) -> list[ProtocolNode]:
+        return [
+            record
+            for record in self.governance_records(
+                team, "team_trustee_candidacy",
+            )
+            if not record.data.get("previous_candidacy_uuid")
+            and (trust is None or record.data.get("trust") == trust)
+        ]
+
+    def active_trustee_candidates(
+        self, team: ProtocolNode, trust: str,
+    ) -> list[ProtocolNode]:
+        projection = self.trustee_projection(team, trust)
+        vacancy_uuid = str(projection.get("current_state_uuid") or "")
+        if projection.get("state") != "vacant":
+            return []
+        return [
+            candidacy
+            for candidacy in self.trustee_candidacy_roots(team, trust)
+            if candidacy.data.get("vacant_state_uuid") == vacancy_uuid
+            and self.trustee_candidacy_projection(
+                team, candidacy.uuid,
+            ).get("state") == "active"
+            and self._is_current_member(
+                team, str(candidacy.data.get("actor_uuid") or ""),
+            )
+        ]
+
+    def active_trustee_candidates_payload(
+        self, team: ProtocolNode, trust: str,
+    ) -> list[dict]:
+        people = self._known_people()
+        payload = []
+        for candidacy in self.active_trustee_candidates(team, trust):
+            actor_uuid = str(candidacy.data.get("actor_uuid") or "")
+            person = people.get(actor_uuid) or {}
+            payload.append({
+                "uuid": candidacy.uuid,
+                "actor_uuid": actor_uuid,
+                "name": person.get("name") or person.get("address") or "Member",
+                "picture": person.get("picture") or "",
+                "is_self": actor_uuid == self._identity_uuid,
+                "submitted_at": candidacy.data.get("submitted_at"),
+                "can_withdraw": actor_uuid == self._identity_uuid,
+            })
+        return payload
+
+    def member_opening_roots(self, team: ProtocolNode) -> list[ProtocolNode]:
+        return [
+            record
+            for record in self.governance_records(team, "team_member_opening")
+            if not record.data.get("previous_opening_uuid")
+        ]
+
+    def member_application_roots(
+        self, team: ProtocolNode, opening_uuid: str | None = None,
+    ) -> list[ProtocolNode]:
+        return [
+            record
+            for record in self.governance_records(
+                team, "team_member_application",
+            )
+            if not record.data.get("previous_application_uuid")
+            and (
+                opening_uuid is None
+                or record.data.get("opening_uuid") == opening_uuid
+            )
+        ]
+
+    def member_resolution_projection(
+        self, team: ProtocolNode, application_uuid: str,
+    ) -> dict:
+        resolutions = [
+            record
+            for record in self.governance_records(
+                team, "team_member_resolution",
+            )
+            if record.data.get("application_uuid") == application_uuid
+        ]
+        if not resolutions:
+            return {"state": "pending", "records": []}
+        outcomes = {record.data.get("outcome") for record in resolutions}
+        return {
+            "state": (
+                next(iter(outcomes)) if len(outcomes) == 1 else "contested"
+            ),
+            "records": [record.uuid for record in resolutions],
+        }
+
+    def member_standing(self, team: ProtocolNode, actor_uuid: str) -> str:
+        for application in self.member_application_roots(team):
+            if application.data.get("actor_uuid") != actor_uuid:
+                continue
+            resolution = self.member_resolution_projection(
+                team, application.uuid,
+            )
+            if resolution["state"] == "accepted":
+                return "accepted"
+            if resolution["state"] == "contested":
+                return "contested"
+        external = [
+            record for record in self.governance_records(
+                team, "team_external_member_resolution",
+            )
+            if record.data.get("actor_uuid") == actor_uuid
+            and record.data.get("outcome") == "accepted"
+        ]
+        if external:
+            return "accepted"
+        return "observer"
+
+    def membership_payload(self, team: ProtocolNode) -> dict:
+        people = self._known_people()
+
+        def actor_payload(actor_uuid: str) -> dict:
+            person = people.get(actor_uuid) or {}
+            return {
+                "uuid": actor_uuid,
+                "name": person.get("name") or person.get("address") or "Observer",
+                "picture": person.get("picture") or "",
+                "is_self": actor_uuid == self._identity_uuid,
+            }
+
+        openings = []
+        for opening in self.member_opening_roots(team):
+            projection = self.member_opening_projection(team, opening.uuid)
+            applications = []
+            for application in self.member_application_roots(
+                team, opening.uuid,
+            ):
+                actor_uuid = str(application.data.get("actor_uuid") or "")
+                application_state = self.member_application_projection(
+                    team, application.uuid,
+                )
+                applications.append({
+                    "uuid": application.uuid,
+                    "actor": actor_payload(actor_uuid),
+                    "state": application_state["state"],
+                    "current_uuid": application_state["current_uuid"],
+                    "resolution": self.member_resolution_projection(
+                        team, application.uuid,
+                    ),
+                    "submitted_at": application.data.get("submitted_at"),
+                })
+            for resolution in self.governance_records(
+                team, "team_external_member_resolution",
+            ):
+                if resolution.data.get("opening_uuid") != opening.uuid:
+                    continue
+                actor_uuid = str(resolution.data.get("actor_uuid") or "")
+                applications.append({
+                    "uuid": resolution.data.get("pool_application_uuid"),
+                    "actor": actor_payload(actor_uuid),
+                    "state": "submitted",
+                    "current_uuid": resolution.data.get(
+                        "pool_application_uuid",
+                    ),
+                    "resolution": {
+                        "state": "accepted",
+                        "records": [resolution.uuid],
+                    },
+                    "submitted_at": None,
+                    "source": "pool",
+                })
+            openings.append({
+                "uuid": opening.uuid,
+                "state": projection["state"],
+                "current_uuid": projection["current_uuid"],
+                "contenders": projection["contenders"],
+                "opened_at": opening.data.get("opened_at"),
+                "applications": applications,
+            })
+        return {
+            "openings": openings,
+            "can_resolve": bool(self._authority_basis_for_actor(
+                team, "identity", self._identity_uuid,
+            )),
+            "is_member": self._is_current_member(team, self._identity_uuid),
+        }
+
+    def verify_flow_decision_result(
+        self,
+        process_uuid: str,
+        expected_result_hash: str | None = None,
+        expected_definition_id: str = "integrative-election",
+        expected_definition_version: str | None = None,
+    ) -> dict:
+        """Verify S-Flow's public result without reading its protocol nodes."""
+        flow, flow_error = self._flow_facade()
+        if flow is None or not callable(getattr(flow, "decision_result", None)):
+            return self._flow_result_failure(
+                "unavailable",
+                flow_error or "S-Flow decision results are not available",
+            )
+        result = flow.decision_result(process_uuid)
+        if not isinstance(result, dict):
+            return self._flow_result_failure(
+                "invalid", "S-Flow returned no decision result",
+            )
+        required = {
+            "contract_id", "contract_version", "process_uuid",
+            "definition_id", "definition_version", "lifecycle",
+            "current_stage", "last_completed_stage",
+            "terminal_outcome", "selected_candidate_uuid",
+            "participant_snapshot", "facilitator_uuid", "result_hash",
+        }
+        if set(result) != required:
+            return self._flow_result_failure(
+                "invalid", "the decision result contract is incomplete",
+                result,
+            )
+        if (
+            result.get("contract_id") != FLOW_DECISION_RESULT_CONTRACT_ID
+            or result.get("contract_version")
+            != FLOW_DECISION_RESULT_CONTRACT_VERSION
+        ):
+            return self._flow_result_failure(
+                "invalid", "the decision result contract version is unsupported",
+                result,
+            )
+        string_fields = (
+            "process_uuid", "definition_id", "definition_version",
+            "lifecycle", "result_hash",
+        )
+        if any(
+            not isinstance(result.get(field), str) or not result[field]
+            for field in string_fields
+        ):
+            return self._flow_result_failure(
+                "invalid", "the decision result has invalid required fields",
+                result,
+            )
+        if any(
+            not isinstance(result.get(field), str)
+            for field in ("current_stage", "last_completed_stage")
+        ):
+            return self._flow_result_failure(
+                "invalid", "the decision result has invalid progress fields",
+                result,
+            )
+        if result["process_uuid"] != process_uuid:
+            return self._flow_result_failure(
+                "invalid", "the decision result names another process",
+                result,
+            )
+        if (
+            expected_definition_id
+            and result["definition_id"] != expected_definition_id
+        ):
+            return self._flow_result_failure(
+                "invalid", "the process does not use the expected definition",
+                result,
+            )
+        if (
+            expected_definition_version is not None
+            and result["definition_version"] != expected_definition_version
+        ):
+            return self._flow_result_failure(
+                "invalid", "the process definition version changed",
+                result,
+            )
+        participants = result.get("participant_snapshot")
+        if not isinstance(participants, list) or any(
+            not isinstance(item, dict)
+            or set(item) != {"identity_uuid", "role", "required"}
+            or not isinstance(item.get("identity_uuid"), str)
+            or not item.get("identity_uuid")
+            or not isinstance(item.get("role"), str)
+            or not item.get("role")
+            or not isinstance(item.get("required"), bool)
+            for item in participants
+        ):
+            return self._flow_result_failure(
+                "invalid", "the participant snapshot is invalid",
+                result,
+            )
+        facilitator = result.get("facilitator_uuid")
+        if not isinstance(facilitator, str) or not facilitator:
+            return self._flow_result_failure(
+                "incomplete", "the process has no single facilitator",
+                result,
+            )
+        try:
+            computed_hash = self._canonical_flow_result_hash(result)
+        except (TypeError, ValueError):
+            return self._flow_result_failure(
+                "invalid", "the decision result cannot be canonically hashed",
+                result,
+            )
+        if result["result_hash"] != computed_hash:
+            return self._flow_result_failure(
+                "invalid", "the decision result hash is invalid",
+                result,
+                computed_hash,
+            )
+        if expected_result_hash and result["result_hash"] != expected_result_hash:
+            return self._flow_result_failure(
+                "changed", "the decision result changed",
+                result,
+                computed_hash,
+            )
+        outcome = result.get("terminal_outcome")
+        candidate = result.get("selected_candidate_uuid")
+        if result["lifecycle"] != "completed" or not isinstance(outcome, str):
+            return self._flow_result_failure(
+                "incomplete", "the decision process is not complete",
+                result,
+                computed_hash,
+            )
+        if result["definition_id"] == "integrative-election":
+            if outcome not in {"elected", "void"}:
+                return self._flow_result_failure(
+                    "invalid", "the election has an invalid terminal outcome",
+                    result,
+                    computed_hash,
+                )
+            if outcome == "elected" and (
+                not isinstance(candidate, str) or not candidate
+            ):
+                return self._flow_result_failure(
+                    "incomplete", "the election selected no candidate",
+                    result,
+                    computed_hash,
+                )
+            if outcome == "void" and candidate is not None:
+                return self._flow_result_failure(
+                    "invalid", "a void election cannot select a candidate",
+                    result,
+                    computed_hash,
+                )
+        return {
+            "valid": True,
+            "status": "valid",
+            "reason": "",
+            "result": copy.deepcopy(result),
+            "computed_hash": computed_hash,
+        }
+
+    def _flow_facade(self):
+        if self.facades is None:
+            return None, "S-Flow is not active"
+        try:
+            flow = self.facades.find(
+                FLOW_APPLICATION_ID, FLOW_FACADE_API_VERSION,
+            )
+        except ValueError as exc:
+            return None, str(exc)
+        return (
+            (flow, "") if flow is not None
+            else (None, "S-Flow is not active")
+        )
+
+    def current_member_uuids(self, team: ProtocolNode) -> list[str]:
+        candidates = {
+            str(application.data.get("actor_uuid") or "")
+            for application in self.member_application_roots(team)
+        }
+        candidates.update(
+            str(record.data.get("actor_uuid") or "")
+            for record in self.governance_records(
+                team, "team_external_member_resolution",
+            )
+        )
+        member = self.member_role(team)
+        if member is not None:
+            candidates.update(
+                str(offer.data.get("actor_uuid") or "")
+                for offer in self._all_role_offers(member)
+                if offer.data.get("system_genesis")
+            )
+        return sorted(
+            actor_uuid
+            for actor_uuid in candidates
+            if actor_uuid and self._is_current_member(team, actor_uuid)
+        )
+
+    def trustee_election_records(
+        self, team: ProtocolNode, trust: str | None = None,
+    ) -> list[ProtocolNode]:
+        return [
+            election
+            for election in self.governance_records(
+                team, "team_trustee_election",
+            )
+            if trust is None or election.data.get("trust") == trust
+        ]
+
+    def _validated_election_result(
+        self, team: ProtocolNode, election: ProtocolNode,
+        expected_result_hash: str | None = None,
+    ) -> dict:
+        verification = self.verify_flow_decision_result(
+            str(election.data.get("process_uuid") or ""),
+            expected_result_hash,
+            str(election.data.get("process_definition_id") or ""),
+            str(election.data.get("process_definition_version") or ""),
+        )
+        result = verification.get("result")
+        if not isinstance(result, dict):
+            return verification
+        required_participants = {
+            item.get("identity_uuid")
+            for item in result.get("participant_snapshot") or []
+            if item.get("role") == "requiredParticipant"
+            and item.get("required") is True
+        }
+        electorate = set(election.data.get("electorate_actor_uuids") or [])
+        if required_participants != electorate:
+            return self._flow_result_failure(
+                "invalid", "the Flow participant snapshot differs from the electorate",
+                result, verification.get("computed_hash") or "",
+            )
+        if result.get("facilitator_uuid") != election.data.get(
+            "facilitator_actor_uuid",
+        ):
+            return self._flow_result_failure(
+                "invalid", "the Flow facilitator differs from the election record",
+                result, verification.get("computed_hash") or "",
+            )
+        return verification
+
+    def _election_target_predecessor_is_valid(
+        self,
+        team: ProtocolNode,
+        election: ProtocolNode,
+        previous: ProtocolNode,
+    ) -> bool:
+        """Prevent replay after another decision while allowing resignation."""
+        target_uuid = str(election.data.get("target_state_uuid") or "")
+        if previous.uuid == target_uuid:
+            return True
+        cursor = previous
+        seen = set()
+        while cursor.uuid not in seen:
+            seen.add(cursor.uuid)
+            if (
+                cursor.data.get("trust") != election.data.get("trust")
+                or cursor.data.get("cause") != "resignation"
+            ):
+                return False
+            parent_uuid = str(cursor.data.get("previous_state_uuid") or "")
+            if parent_uuid == target_uuid:
+                return True
+            parent = self._governance_node(
+                team, parent_uuid, "team_trustee_state",
+            )
+            if parent is None:
+                return False
+            cursor = parent
+        return False
+
+    def _authority_basis_for_actor(
+        self, team: ProtocolNode, trust: str, actor_uuid: str,
+    ) -> str:
+        projection = self.trustee_projection(team, trust)
+        if projection.get("holder_actor_uuid") == actor_uuid:
+            return str(projection.get("current_state_uuid") or "")
+        if projection.get("state") != "vacant":
+            return ""
+        for candidacy in self.active_trustee_candidates(team, trust):
+            if candidacy.data.get("actor_uuid") == actor_uuid:
+                return candidacy.uuid
+        return ""
+
+    def enter_trustee_candidacy(
+        self, team_uuid: str, trust: str,
+    ) -> SessionResult:
+        team = self._node(team_uuid, "team")
+        normalized_trust = str(trust or "").strip().lower()
+        if not team:
+            return SessionResult("error", reason="team not found")
+        if normalized_trust not in self.TRUSTS:
+            return SessionResult("error", reason="unknown trusteeship")
+        if not self._is_current_member(team, self._identity_uuid):
+            return SessionResult(
+                "error", reason="only a current Member may become a candidate",
+            )
+        vacancy = self.trustee_projection(team, normalized_trust)
+        if vacancy.get("state") != "vacant":
+            return SessionResult(
+                "error", reason="the trusteeship is not vacant",
+            )
+        if any(
+            candidate.data.get("actor_uuid") == self._identity_uuid
+            for candidate in self.active_trustee_candidates(
+                team, normalized_trust,
+            )
+        ):
+            return SessionResult("error", reason="you are already a candidate")
+        return self.append_governance_record(team.uuid, {
+            "type": "team_trustee_candidacy",
+            "trust": normalized_trust,
+            "actor_uuid": self._identity_uuid,
+            "vacant_state_uuid": str(vacancy["current_state_uuid"]),
+            "previous_candidacy_uuid": "",
+            "submitted_at": self._now(),
+            "state": "active",
+        })
+
+    def withdraw_trustee_candidacy(
+        self, team_uuid: str, candidacy_uuid: str,
+    ) -> SessionResult:
+        team = self._node(team_uuid, "team")
+        candidacy = self._governance_node(
+            team, candidacy_uuid, "team_trustee_candidacy",
+        ) if team else None
+        if (
+            not team or not candidacy
+            or candidacy.data.get("previous_candidacy_uuid")
+            or candidacy.data.get("actor_uuid") != self._identity_uuid
+        ):
+            return SessionResult("error", reason="trustee candidacy not found")
+        projection = self.trustee_candidacy_projection(
+            team, candidacy.uuid,
+        )
+        if projection.get("state") != "active":
+            return SessionResult("error", reason="candidacy is not active")
+        return self.append_governance_record(team.uuid, {
+            "type": "team_trustee_candidacy",
+            "trust": candidacy.data["trust"],
+            "actor_uuid": self._identity_uuid,
+            "vacant_state_uuid": candidacy.data["vacant_state_uuid"],
+            "previous_candidacy_uuid": str(projection["current_uuid"]),
+            "submitted_at": candidacy.data["submitted_at"],
+            "state": "withdrawn",
+            "withdrawn_at": self._now(),
+        })
+
+    def start_trustee_election(
+        self, team_uuid: str, trust: str,
+        facilitator_actor_uuid: str = "",
+    ) -> SessionResult:
+        team = self._node(team_uuid, "team")
+        normalized_trust = str(trust or "").strip().lower()
+        if not team:
+            return SessionResult("error", reason="team not found")
+        if normalized_trust not in self.TRUSTS:
+            return SessionResult("error", reason="unknown trusteeship")
+        if not self._is_current_member(team, self._identity_uuid):
+            return SessionResult(
+                "error", reason="only a current Member may start an election",
+            )
+        electorate = self.current_member_uuids(team)
+        if not electorate:
+            return SessionResult("error", reason="the Team has no current Members")
+        target = self.trustee_projection(team, normalized_trust)
+        facilitator_trust = (
+            "trust" if normalized_trust == "identity" else "identity"
+        )
+        facilitator = self.trustee_projection(team, facilitator_trust)
+        requested_facilitator = str(facilitator_actor_uuid or "").strip()
+        settled_facilitator = str(facilitator.get("holder_actor_uuid") or "")
+        facilitator_basis_uuid = str(
+            facilitator.get("current_state_uuid") or ""
+        ) if settled_facilitator else ""
+        if settled_facilitator:
+            facilitator_actor_uuid = settled_facilitator
+            if requested_facilitator and requested_facilitator != settled_facilitator:
+                return SessionResult(
+                    "error",
+                    reason=f"{facilitator_trust.title()} is held by another Actor",
+                )
+        else:
+            candidates = self.active_trustee_candidates(
+                team, facilitator_trust,
+            )
+            candidate_actors = [
+                str(candidate.data.get("actor_uuid") or "")
+                for candidate in candidates
+            ]
+            if requested_facilitator:
+                facilitator_actor_uuid = requested_facilitator
+            elif self._identity_uuid in candidate_actors:
+                facilitator_actor_uuid = self._identity_uuid
+            elif len(candidate_actors) == 1:
+                facilitator_actor_uuid = candidate_actors[0]
+            else:
+                facilitator_actor_uuid = ""
+            facilitator_basis_uuid = self._authority_basis_for_actor(
+                team, facilitator_trust, facilitator_actor_uuid,
+            )
+        if not target.get("current_state_uuid"):
+            return SessionResult(
+                "error", reason="the target trusteeship is not configured",
+            )
+        if not facilitator_actor_uuid or not facilitator_basis_uuid:
+            return SessionResult(
+                "error",
+                reason=(
+                    f"{facilitator_trust.title()} has no facilitator; "
+                    "choose an active candidate"
+                ),
+            )
+        flow, flow_error = self._flow_facade()
+        if flow is None or not callable(
+            getattr(flow, "create_integrative_election", None),
+        ):
+            return SessionResult(
+                "error",
+                reason=flow_error or "S-Flow cannot create elections",
+            )
+        title = (
+            f"Elect {normalized_trust.title()} for "
+            f"{team.data.get('title') or 'Team'}"
+        )
+        created = flow.create_integrative_election(
+            title,
+            electorate,
+            facilitator_actor_uuid,
+            electorate,
+            "0.2.0",
+        )
+        if created.status != "ok":
+            return created
+        process_uuid = str(created.value or "")
+        result = flow.decision_result(process_uuid)
+        if not isinstance(result, dict):
+            if callable(getattr(flow, "delete_process", None)):
+                flow.delete_process(process_uuid)
+            return SessionResult(
+                "error", reason="S-Flow did not expose the created election",
+            )
+        recorded = self.append_governance_record(team.uuid, {
+            "type": "team_trustee_election",
+            "trust": normalized_trust,
+            "target_state_uuid": str(target["current_state_uuid"]),
+            "process_uuid": process_uuid,
+            "process_definition_id": str(result.get("definition_id") or ""),
+            "process_definition_version": str(
+                result.get("definition_version") or ""
+            ),
+            "electorate_actor_uuids": electorate,
+            "facilitator_trust": facilitator_trust,
+            "facilitator_actor_uuid": facilitator_actor_uuid,
+            "facilitator_authority_basis_uuid": facilitator_basis_uuid,
+            "triggered_by": self._identity_uuid,
+            "triggered_at": self._now(),
+        })
+        if recorded.status != "ok":
+            if callable(getattr(flow, "delete_process", None)):
+                flow.delete_process(process_uuid)
+            return recorded
+        recorded.effects = [*created.effects, *recorded.effects]
+        return recorded
+
+    def implement_trustee_election(
+        self, team_uuid: str, election_uuid: str,
+        signals: str = "", consideration: str = "", expectation: str = "",
+    ) -> SessionResult:
+        team = self._node(team_uuid, "team")
+        election = self._governance_node(
+            team, election_uuid, "team_trustee_election",
+        ) if team else None
+        if not team or not election:
+            return SessionResult("error", reason="trustee election not found")
+        existing = [
+            state
+            for state in self.governance_records(team, "team_trustee_state")
+            if state.data.get("cause") == "election"
+            and state.data.get("process_uuid") == election.data.get("process_uuid")
+        ]
+        if existing:
+            return SessionResult(
+                "error", reason="this election has already been implemented",
+            )
+        verified = self._validated_election_result(team, election)
+        if not verified.get("valid"):
+            return SessionResult("error", reason=verified.get("reason") or "invalid election result")
+        result = verified["result"]
+        if result.get("terminal_outcome") != "elected":
+            return SessionResult(
+                "error", reason="the election did not select a trustee",
+            )
+        facilitator_trust = str(election.data["facilitator_trust"])
+        basis_uuid = self._authority_basis_for_actor(
+            team, facilitator_trust, self._identity_uuid,
+        )
+        if not basis_uuid:
+            return SessionResult(
+                "error",
+                reason=(
+                    f"only {facilitator_trust.title()} or an authorised "
+                    "acting candidate may implement this decision"
+                ),
+            )
+        target = self.trustee_projection(team, str(election.data["trust"]))
+        if target.get("state") == "contested":
+            return SessionResult(
+                "error", reason="the target trusteeship is already contested",
+            )
+        return self.append_governance_record(team.uuid, {
+            "type": "team_trustee_state",
+            "trust": str(election.data["trust"]),
+            "holder_actor_uuid": str(result["selected_candidate_uuid"]),
+            "previous_state_uuid": str(target.get("current_state_uuid") or ""),
+            "cause": "election",
+            "acted_by": self._identity_uuid,
+            "acted_at": self._now(),
+            "authority_basis_uuid": basis_uuid,
+            "signals": str(signals or "").strip(),
+            "consideration": str(consideration or "").strip(),
+            "expectation": str(expectation or "").strip(),
+            "process_uuid": str(election.data["process_uuid"]),
+            "process_result_hash": str(result["result_hash"]),
+        })
+
+    def trustee_elections_payload(self, team: ProtocolNode) -> list[dict]:
+        people = self._known_people()
+        payload = []
+        for election in self.trustee_election_records(team):
+            checked = self._validated_election_result(team, election)
+            result = checked.get("result") or {}
+            facilitator_trust = str(election.data.get("facilitator_trust") or "")
+            basis_uuid = self._authority_basis_for_actor(
+                team, facilitator_trust, self._identity_uuid,
+            )
+            implemented = [
+                state for state in self.governance_records(
+                    team, "team_trustee_state",
+                )
+                if state.data.get("cause") == "election"
+                and state.data.get("process_uuid")
+                == election.data.get("process_uuid")
+            ]
+            candidate_uuid = str(result.get("selected_candidate_uuid") or "")
+            candidate = people.get(candidate_uuid) or {}
+            payload.append({
+                "uuid": election.uuid,
+                "trust": election.data.get("trust"),
+                "process_uuid": election.data.get("process_uuid"),
+                "definition_id": election.data.get("process_definition_id"),
+                "definition_version": election.data.get("process_definition_version"),
+                "electorate_actor_uuids": list(
+                    election.data.get("electorate_actor_uuids") or []
+                ),
+                "facilitator_trust": facilitator_trust,
+                "facilitator_actor_uuid": election.data.get("facilitator_actor_uuid"),
+                "lifecycle": result.get("lifecycle") or "unavailable",
+                "current_stage": result.get("current_stage") or "",
+                "last_completed_stage": result.get("last_completed_stage") or "",
+                "outcome": result.get("terminal_outcome"),
+                "selected_candidate_uuid": candidate_uuid,
+                "selected_candidate_name": candidate.get("name") or "",
+                "result_status": checked.get("status"),
+                "result_reason": checked.get("reason"),
+                "result_hash": result.get("result_hash") or "",
+                "implemented": bool(implemented),
+                "implementation_uuids": [state.uuid for state in implemented],
+                "can_implement": bool(
+                    checked.get("valid")
+                    and result.get("terminal_outcome") == "elected"
+                    and basis_uuid
+                    and not implemented
+                ),
+                "triggered_at": election.data.get("triggered_at"),
+            })
+        return payload
+
+    @staticmethod
+    def _canonical_flow_result_hash(result: dict) -> str:
+        unsigned = {
+            key: copy.deepcopy(value)
+            for key, value in result.items()
+            if key != "result_hash"
+        }
+        encoded = json.dumps(
+            unsigned,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+        return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+    @staticmethod
+    def _flow_result_failure(
+        status: str,
+        reason: str,
+        result: dict | None = None,
+        computed_hash: str = "",
+    ) -> dict:
+        return {
+            "valid": False,
+            "status": status,
+            "reason": reason,
+            "result": copy.deepcopy(result),
+            "computed_hash": computed_hash,
+        }
+
+    def _is_current_member(self, team: ProtocolNode, actor_uuid: str) -> bool:
+        if self.member_standing(team, actor_uuid) == "accepted":
+            return True
+        role = self.member_role(team)
+        if role is None or not self._offer_for(role, actor_uuid):
+            return False
+        offer = self._offer_for(role, actor_uuid)
+        if not offer.data.get("system_genesis"):
+            return False
+        decision = self._role_decision_for(role, actor_uuid)
+        return bool(
+            decision
+            and decision.data.get("decision") == "accepted"
+            and not self._is_expired(decision.data.get("expires_at"))
+        )
+
+    def _signed_actor_status(
+        self, node: ProtocolNode, actor_uuid: str,
+    ) -> tuple[str, str]:
+        identity_key = self.session.identity_key_for_actor(actor_uuid)
+        if not identity_key:
+            return ("deferred", "the named Actor's signing identity is not known")
+        if identity_key != node.revision_origin:
+            return ("unauthorized", "the verified signer is not the named Actor")
+        return ("authorized", "")
+
+    def _governance_node(
+        self, team: ProtocolNode, node_uuid: str, node_type: str,
+    ) -> ProtocolNode | None:
+        node = self._node(node_uuid, node_type)
+        if not node:
+            return None
+        owner = self._local_team_topic(node.uuid)
+        return node if owner and owner.uuid == team.uuid else None
+
+    def _trust_authority(
+        self, team: ProtocolNode, trust: str, actor_uuid: str, basis_uuid: str,
+    ) -> tuple[str, str]:
+        projection = self.trustee_projection(team, trust)
+        current_uuid = projection.get("current_state_uuid") or ""
+        if not current_uuid:
+            return ("deferred", f"{trust.title()} trusteeship is not configured")
+        state = self._governance_node(
+            team, basis_uuid, "team_trustee_state",
+        )
+        if state:
+            if state.uuid != current_uuid:
+                return ("unauthorized", "the trusteeship authority basis is stale")
+            if projection.get("holder_actor_uuid") != actor_uuid:
+                return ("unauthorized", f"the Actor does not hold {trust.title()}")
+            return ("authorized", "")
+        candidacy = self._governance_node(
+            team, basis_uuid, "team_trustee_candidacy",
+        )
+        if candidacy is None:
+            return ("deferred", "the authority basis is not available")
+        if (
+            projection.get("state") != "vacant"
+            or candidacy.data.get("vacant_state_uuid") != current_uuid
+        ):
+            return ("unauthorized", "the acting-authority vacancy is no longer current")
+        if (
+            candidacy.data.get("trust") != trust
+            or candidacy.data.get("actor_uuid") != actor_uuid
+            or candidacy.data.get("previous_candidacy_uuid")
+            or self.trustee_candidacy_projection(
+                team, candidacy.uuid,
+            ).get("state") != "active"
+        ):
+            return ("unauthorized", "the candidacy does not grant this authority")
+        if not self._is_current_member(team, actor_uuid):
+            return ("unauthorized", "the acting candidate is not a current Member")
+        return ("authorized", "")
+
+    def assess_governance_record(
+        self, team: ProtocolNode, node: ProtocolNode,
+        verification: str | None = None,
+    ) -> dict:
+        verification = verification or self.session.revision_verification(node)
+        if verification == "unknown":
+            return {"status": "deferred", "reason": "the signing key is not known"}
+        if verification != "valid":
+            return {"status": "invalid", "reason": "authorship signature is invalid"}
+        schema_error = self.governance_schema_error(node)
+        if schema_error:
+            return {"status": "invalid", "reason": schema_error}
+        if node.parent_uuid != team.uuid:
+            return {
+                "status": "invalid",
+                "reason": "Governance records must be direct children of their Team.",
+            }
+        data = node.data
+        node_type = data["type"]
+        actor_field = {
+            "team_trustee_state": "acted_by",
+            "team_member_opening": "opened_by",
+            "team_member_application": "actor_uuid",
+            "team_member_resolution": "resolved_by",
+            "team_trustee_election": "triggered_by",
+            "team_trustee_candidacy": "actor_uuid",
+            "team_trustee_action": "acted_by",
+            "team_trustee_reality": "observed_by",
+            "team_external_member_resolution": "resolved_by",
+        }[node_type]
+        actor_uuid = data.get(actor_field) or ""
+        status, reason = self._signed_actor_status(node, actor_uuid)
+        if status != "authorized":
+            return {"status": status, "reason": reason}
+
+        if node_type == "team_trustee_state":
+            trust = data["trust"]
+            existing = self.governance_records(team, "team_trustee_state")
+            same_trust = [state for state in existing if state.data.get("trust") == trust]
+            if data["cause"] == "genesis":
+                if same_trust:
+                    return {"status": "unauthorized", "reason": "trusteeship genesis already exists"}
+                if data["holder_actor_uuid"] != actor_uuid:
+                    return {"status": "unauthorized", "reason": "genesis must be authored by its holder"}
+            else:
+                previous = self._governance_node(
+                    team, data["previous_state_uuid"], "team_trustee_state",
+                )
+                if previous is None or previous.data.get("trust") != trust:
+                    return {"status": "deferred", "reason": "previous trustee state is not available"}
+                projection = self.trustee_projection(team, trust)
+                if previous.uuid != projection.get("current_state_uuid"):
+                    competing = any(
+                        state.data.get("previous_state_uuid") == previous.uuid
+                        for state in same_trust
+                    )
+                    if not competing:
+                        return {"status": "unauthorized", "reason": "previous trustee state is stale"}
+                if data["cause"] == "resignation":
+                    if data["authority_basis_uuid"] != previous.uuid:
+                        return {"status": "unauthorized", "reason": "resignation basis must be the previous state"}
+                    if previous.data.get("holder_actor_uuid") != actor_uuid:
+                        return {"status": "unauthorized", "reason": "only the incumbent may resign"}
+                    if data["holder_actor_uuid"]:
+                        return {"status": "invalid", "reason": "resignation must leave the trusteeship vacant"}
+                else:
+                    if data["cause"] == "election":
+                        elections = [
+                            election
+                            for election in self.trustee_election_records(
+                                team, trust,
+                            )
+                            if election.data.get("process_uuid")
+                            == data.get("process_uuid")
+                        ]
+                        if not elections:
+                            return {"status": "deferred", "reason": "the trustee election record is not available"}
+                        if len(elections) != 1:
+                            return {"status": "invalid", "reason": "the process is named by competing election records"}
+                        election = elections[0]
+                        if not self._election_target_predecessor_is_valid(
+                            team, election, previous,
+                        ):
+                            return {"status": "unauthorized", "reason": "the election targets an obsolete trusteeship state"}
+                        checked = self._validated_election_result(
+                            team,
+                            election,
+                            str(data.get("process_result_hash") or ""),
+                        )
+                        if not checked.get("valid"):
+                            deferred = checked.get("status") in {
+                                "unavailable", "incomplete",
+                            }
+                            return {
+                                "status": "deferred" if deferred else "invalid",
+                                "reason": checked.get("reason") or "the election result is invalid",
+                            }
+                        result = checked["result"]
+                        if (
+                            result.get("terminal_outcome") != "elected"
+                            or result.get("selected_candidate_uuid")
+                            != data.get("holder_actor_uuid")
+                        ):
+                            return {"status": "invalid", "reason": "the trustee state does not implement the election result"}
+                    facilitator = "trust" if trust == "identity" else "identity"
+                    status, reason = self._trust_authority(
+                        team, facilitator, actor_uuid, data["authority_basis_uuid"],
+                    )
+                    if status != "authorized":
+                        return {"status": status, "reason": reason}
+        elif node_type == "team_member_opening":
+            member = self.member_role(team)
+            if member is None or data["member_role_uuid"] != member.uuid:
+                return {"status": "invalid", "reason": "opening does not name the system Member role"}
+            if data["state"] == "closed":
+                previous = self._governance_node(
+                    team, data["previous_opening_uuid"],
+                    "team_member_opening",
+                )
+                if previous is None:
+                    return {"status": "deferred", "reason": "previous Member opening is not available"}
+                if (
+                    previous.data.get("state") != "open"
+                    or previous.data.get("member_role_uuid") != member.uuid
+                ):
+                    return {"status": "invalid", "reason": "opening closure does not match an open Member opening"}
+            status, reason = self._trust_authority(
+                team, "identity", actor_uuid, data["authority_basis_uuid"],
+            )
+            if status != "authorized":
+                return {"status": status, "reason": reason}
+        elif node_type == "team_member_application":
+            opening = self._governance_node(
+                team, data["opening_uuid"], "team_member_opening",
+            )
+            if opening is None:
+                return {"status": "deferred", "reason": "Member opening is not available"}
+            if data["state"] == "submitted":
+                projection = self.member_opening_projection(
+                    team, opening.uuid,
+                )
+                if projection.get("state") != "open":
+                    return {"status": "unauthorized", "reason": "Member opening is closed or contested"}
+            else:
+                previous = self._governance_node(
+                    team, data["previous_application_uuid"],
+                    "team_member_application",
+                )
+                if previous is None:
+                    return {"status": "deferred", "reason": "previous application is not available"}
+                if (
+                    previous.data.get("actor_uuid") != actor_uuid
+                    or previous.data.get("opening_uuid") != opening.uuid
+                    or previous.data.get("state") != "submitted"
+                ):
+                    return {"status": "invalid", "reason": "withdrawal does not match the submitted application"}
+                if self.member_resolution_projection(
+                    team, previous.uuid,
+                )["state"] != "pending":
+                    return {"status": "unauthorized", "reason": "a resolved application cannot be withdrawn"}
+        elif node_type == "team_member_resolution":
+            opening = self._governance_node(
+                team, data["opening_uuid"], "team_member_opening",
+            )
+            application = self._governance_node(
+                team, data["application_uuid"], "team_member_application",
+            )
+            if opening is None or application is None:
+                return {"status": "deferred", "reason": "application prerequisites are not available"}
+            if (
+                application.data.get("opening_uuid") != opening.uuid
+                or application.data.get("actor_uuid") != data["actor_uuid"]
+            ):
+                return {"status": "invalid", "reason": "resolution does not match its application"}
+            application_state = self.member_application_projection(
+                team, application.uuid,
+            )["state"]
+            if application_state != "submitted":
+                return {"status": "unauthorized", "reason": "only a pending application can be resolved"}
+            status, reason = self._trust_authority(
+                team, "identity", actor_uuid, data["authority_basis_uuid"],
+            )
+            if status != "authorized":
+                return {"status": status, "reason": reason}
+        elif node_type == "team_external_member_resolution":
+            opening = self._governance_node(
+                team, data["opening_uuid"], "team_member_opening",
+            )
+            if opening is None or opening.data.get("previous_opening_uuid"):
+                return {"status": "deferred", "reason": "Member opening is not available"}
+            if not all((
+                data.get("pool_uuid"), data.get("pool_invitation_uuid"),
+                data.get("pool_application_uuid"), data.get("actor_uuid"),
+                data.get("application_evidence_hash"),
+            )):
+                return {"status": "invalid", "reason": "external application evidence is incomplete"}
+            status, reason = self._trust_authority(
+                team, "identity", actor_uuid, data["authority_basis_uuid"],
+            )
+            if status != "authorized":
+                return {"status": status, "reason": reason}
+        elif node_type == "team_trustee_election":
+            if not self._is_current_member(team, actor_uuid):
+                return {"status": "unauthorized", "reason": "only a current Member may trigger an election"}
+            if data.get("process_definition_id") != "integrative-election":
+                return {"status": "invalid", "reason": "trustee elections require Integrative Election"}
+            target = self._governance_node(
+                team, data["target_state_uuid"], "team_trustee_state",
+            )
+            if target is None:
+                return {"status": "deferred", "reason": "the election trusteeship snapshots are not available"}
+            target_projection = self.trustee_projection(team, data["trust"])
+            if (
+                target.data.get("trust") != data["trust"]
+                or target_projection.get("current_state_uuid") != target.uuid
+            ):
+                return {"status": "unauthorized", "reason": "the target trusteeship snapshot is stale"}
+            status, reason = self._trust_authority(
+                team,
+                data["facilitator_trust"],
+                data["facilitator_actor_uuid"],
+                data["facilitator_authority_basis_uuid"],
+            )
+            if status != "authorized":
+                return {"status": status, "reason": reason}
+            if actor_uuid not in data["electorate_actor_uuids"]:
+                return {"status": "invalid", "reason": "the triggering Member is absent from the electorate"}
+            if set(data["electorate_actor_uuids"]) != set(
+                self.current_member_uuids(team),
+            ):
+                return {"status": "unauthorized", "reason": "the electorate does not snapshot current Members"}
+        elif node_type == "team_trustee_candidacy":
+            vacancy = self._governance_node(
+                team, data["vacant_state_uuid"], "team_trustee_state",
+            )
+            projection = self.trustee_projection(team, data["trust"])
+            if vacancy is None:
+                return {"status": "deferred", "reason": "vacant trustee state is not available"}
+            if (
+                projection.get("state") != "vacant"
+                or projection.get("current_state_uuid") != vacancy.uuid
+                or vacancy.data.get("trust") != data["trust"]
+            ):
+                return {"status": "unauthorized", "reason": "trusteeship is not currently vacant"}
+            if data["state"] == "withdrawn":
+                previous = self._governance_node(
+                    team,
+                    data["previous_candidacy_uuid"],
+                    "team_trustee_candidacy",
+                )
+                if previous is None:
+                    return {"status": "deferred", "reason": "previous candidacy is not available"}
+                root = next((
+                    candidate
+                    for candidate in self.trustee_candidacy_roots(
+                        team, data["trust"],
+                    )
+                    if candidate.uuid == previous.uuid
+                    or self.trustee_candidacy_projection(
+                        team, candidate.uuid,
+                    ).get("current_uuid") == previous.uuid
+                ), None)
+                if (
+                    root is None
+                    or root.data.get("actor_uuid") != actor_uuid
+                    or root.data.get("vacant_state_uuid")
+                    != data["vacant_state_uuid"]
+                    or self.trustee_candidacy_projection(
+                        team, root.uuid,
+                    ).get("current_uuid") != previous.uuid
+                    or previous.data.get("state") != "active"
+                ):
+                    return {"status": "invalid", "reason": "withdrawal does not match the active candidacy"}
+            elif any(
+                candidate.data.get("actor_uuid") == actor_uuid
+                and candidate.data.get("vacant_state_uuid") == vacancy.uuid
+                and self.trustee_candidacy_projection(
+                    team, candidate.uuid,
+                ).get("state") == "active"
+                for candidate in self.trustee_candidacy_roots(
+                    team, data["trust"],
+                )
+            ):
+                return {"status": "unauthorized", "reason": "the Actor is already a candidate"}
+            if not self._is_current_member(team, actor_uuid):
+                return {"status": "unauthorized", "reason": "only a current Member may become a candidate"}
+        elif node_type == "team_trustee_action":
+            status, reason = self._trust_authority(
+                team, data["trust"], actor_uuid, data["authority_basis_uuid"],
+            )
+            if status != "authorized":
+                return {"status": status, "reason": reason}
+        elif node_type == "team_trustee_reality":
+            action = self._governance_node(
+                team, data["action_uuid"], "team_trustee_action",
+            )
+            if action is None:
+                return {"status": "deferred", "reason": "observed trustee action is not available"}
+            facilitator = "trust" if action.data.get("trust") == "identity" else "identity"
+            status, reason = self._trust_authority(
+                team, facilitator, actor_uuid, data["authority_basis_uuid"],
+            )
+            if status != "authorized":
+                return {"status": status, "reason": reason}
+        return {"status": "authorized", "reason": ""}
+
+    def append_governance_record(
+        self, team_uuid: str, data: dict,
+    ) -> SessionResult:
+        team = self._node(team_uuid, "team")
+        if not team:
+            return SessionResult("error", reason="team not found")
+        allowed = self._interaction_guard(team)
+        if allowed.status != "ok":
+            return allowed
+        candidate = ProtocolNode(
+            copy.deepcopy(data), parent_uuid=team.uuid,
+            revision_origin=self.session.identity.data["identity_key"],
+        )
+        assessment = self.assess_governance_record(
+            team, candidate, verification="valid",
+        )
+        if assessment["status"] != "authorized":
+            return SessionResult("error", reason=assessment["reason"])
+        return self.session.create_child(team.uuid, data, {})
+
+    def open_member_opening(self, team_uuid: str) -> SessionResult:
+        team = self._node(team_uuid, "team")
+        if not team:
+            return SessionResult("error", reason="team not found")
+        member = self.member_role(team)
+        if member is None:
+            return SessionResult("error", reason="Member role not found")
+        authority_basis_uuid = self._authority_basis_for_actor(
+            team, "identity", self._identity_uuid,
+        )
+        return self.append_governance_record(team.uuid, {
+            "type": "team_member_opening",
+            "member_role_uuid": member.uuid,
+            "previous_opening_uuid": "",
+            "state": "open",
+            "opened_by": self._identity_uuid,
+            "opened_at": self._now(),
+            "authority_basis_uuid": authority_basis_uuid,
+        })
+
+    def close_member_opening(
+        self, team_uuid: str, opening_uuid: str,
+    ) -> SessionResult:
+        team = self._node(team_uuid, "team")
+        opening = self._governance_node(
+            team, opening_uuid, "team_member_opening",
+        ) if team else None
+        if not team or not opening or opening.data.get("previous_opening_uuid"):
+            return SessionResult("error", reason="Member opening not found")
+        projection = self.member_opening_projection(team, opening.uuid)
+        if projection["state"] != "open":
+            return SessionResult("error", reason="Member opening is not open")
+        authority_basis_uuid = self._authority_basis_for_actor(
+            team, "identity", self._identity_uuid,
+        )
+        now = self._now()
+        return self.append_governance_record(team.uuid, {
+            "type": "team_member_opening",
+            "member_role_uuid": opening.data["member_role_uuid"],
+            "previous_opening_uuid": projection["current_uuid"],
+            "state": "closed",
+            "opened_by": self._identity_uuid,
+            "opened_at": opening.data["opened_at"],
+            "authority_basis_uuid": authority_basis_uuid,
+            "closed_at": now,
+        })
+
+    def submit_member_application(
+        self, team_uuid: str, opening_uuid: str,
+    ) -> SessionResult:
+        team = self._node(team_uuid, "team")
+        opening = self._governance_node(
+            team, opening_uuid, "team_member_opening",
+        ) if team else None
+        if not team or not opening or opening.data.get("previous_opening_uuid"):
+            return SessionResult("error", reason="Member opening not found")
+        if self._is_current_member(team, self._identity_uuid):
+            return SessionResult("error", reason="you are already a Member")
+        for application in self.member_application_roots(team, opening.uuid):
+            if application.data.get("actor_uuid") != self._identity_uuid:
+                continue
+            if (
+                self.member_application_projection(
+                    team, application.uuid,
+                )["state"] == "submitted"
+                and self.member_resolution_projection(
+                    team, application.uuid,
+                )["state"] == "pending"
+            ):
+                return SessionResult("error", reason="you already have a pending application")
+        return self.append_governance_record(team.uuid, {
+            "type": "team_member_application",
+            "opening_uuid": opening.uuid,
+            "previous_application_uuid": "",
+            "actor_uuid": self._identity_uuid,
+            "submitted_at": self._now(),
+            "state": "submitted",
+        })
+
+    def withdraw_member_application(
+        self, team_uuid: str, application_uuid: str,
+    ) -> SessionResult:
+        team = self._node(team_uuid, "team")
+        application = self._governance_node(
+            team, application_uuid, "team_member_application",
+        ) if team else None
+        if (
+            not team or not application
+            or application.data.get("previous_application_uuid")
+            or application.data.get("actor_uuid") != self._identity_uuid
+        ):
+            return SessionResult("error", reason="Member application not found")
+        projection = self.member_application_projection(
+            team, application.uuid,
+        )
+        if projection["state"] != "submitted":
+            return SessionResult("error", reason="application is not pending")
+        return self.append_governance_record(team.uuid, {
+            "type": "team_member_application",
+            "opening_uuid": application.data["opening_uuid"],
+            "previous_application_uuid": projection["current_uuid"],
+            "actor_uuid": self._identity_uuid,
+            "submitted_at": application.data["submitted_at"],
+            "state": "withdrawn",
+            "withdrawn_at": self._now(),
+        })
+
+    def resolve_member_application(
+        self, team_uuid: str, application_uuid: str, outcome: str,
+        signals: str = "", consideration: str = "", expectation: str = "",
+    ) -> SessionResult:
+        team = self._node(team_uuid, "team")
+        application = self._governance_node(
+            team, application_uuid, "team_member_application",
+        ) if team else None
+        normalized = str(outcome or "").strip().lower()
+        if not team or not application or application.data.get(
+            "previous_application_uuid",
+        ):
+            return SessionResult("error", reason="Member application not found")
+        if normalized not in {"accepted", "rejected"}:
+            return SessionResult("error", reason="outcome must be accepted or rejected")
+        if self.member_application_projection(
+            team, application.uuid,
+        )["state"] != "submitted":
+            return SessionResult("error", reason="application is no longer pending")
+        if self.member_resolution_projection(
+            team, application.uuid,
+        )["state"] != "pending":
+            return SessionResult("error", reason="application is already resolved")
+        authority_basis_uuid = self._authority_basis_for_actor(
+            team, "identity", self._identity_uuid,
+        )
+        return self.append_governance_record(team.uuid, {
+            "type": "team_member_resolution",
+            "opening_uuid": application.data["opening_uuid"],
+            "application_uuid": application.uuid,
+            "actor_uuid": application.data["actor_uuid"],
+            "outcome": normalized,
+            "resolved_by": self._identity_uuid,
+            "resolved_at": self._now(),
+            "authority_basis_uuid": authority_basis_uuid,
+            "signals": str(signals or "").strip(),
+            "consideration": str(consideration or "").strip(),
+            "expectation": str(expectation or "").strip(),
+        })
+
+    def record_trustee_action(
+        self,
+        team_uuid: str,
+        trust: str,
+        subject_uuid: str,
+        payload: dict | None = None,
+        signals: str = "",
+        consideration: str = "",
+        expectation: str = "",
+        action_kind: str = "domain_action",
+    ) -> SessionResult:
+        team = self._node(team_uuid, "team")
+        normalized_trust = str(trust or "").strip().lower()
+        normalized_kind = str(action_kind or "").strip()
+        normalized_subject = str(subject_uuid or "").strip()
+        if not team:
+            return SessionResult("error", reason="team not found")
+        if normalized_trust not in self.TRUSTS:
+            return SessionResult("error", reason="unknown trusteeship")
+        if normalized_kind not in self.ACTION_KINDS:
+            return SessionResult("error", reason="unsupported trustee action kind")
+        if not normalized_subject:
+            return SessionResult("error", reason="action subject is required")
+        if payload is not None and not isinstance(payload, dict):
+            return SessionResult("error", reason="action payload must be an object")
+        basis_uuid = self._authority_basis_for_actor(
+            team, normalized_trust, self._identity_uuid,
+        )
+        return self.append_governance_record(team.uuid, {
+            "type": "team_trustee_action",
+            "trust": normalized_trust,
+            "action_kind": normalized_kind,
+            "subject_uuid": normalized_subject,
+            "acted_by": self._identity_uuid,
+            "acted_at": self._now(),
+            "authority_basis_uuid": basis_uuid,
+            "signals": str(signals or "").strip(),
+            "consideration": str(consideration or "").strip(),
+            "expectation": str(expectation or "").strip(),
+            "payload": copy.deepcopy(payload or {}),
+        })
+
+    def append_trustee_reality(
+        self, team_uuid: str, action_uuid: str, reality: str,
+    ) -> SessionResult:
+        team = self._node(team_uuid, "team")
+        action = self._governance_node(
+            team, action_uuid, "team_trustee_action",
+        ) if team else None
+        normalized_reality = str(reality or "").strip()
+        if not team or not action:
+            return SessionResult("error", reason="trustee action not found")
+        if not normalized_reality:
+            return SessionResult("error", reason="Reality is required")
+        facilitator_trust = (
+            "trust" if action.data.get("trust") == "identity" else "identity"
+        )
+        basis_uuid = self._authority_basis_for_actor(
+            team, facilitator_trust, self._identity_uuid,
+        )
+        return self.append_governance_record(team.uuid, {
+            "type": "team_trustee_reality",
+            "action_uuid": action.uuid,
+            "observed_by": self._identity_uuid,
+            "observed_at": self._now(),
+            "reality": normalized_reality,
+            "authority_basis_uuid": basis_uuid,
+        })
+
+    def trustee_actions_payload(self, team: ProtocolNode) -> list[dict]:
+        people = self._known_people()
+        actions = self.governance_records(team, "team_trustee_action")
+        realities = self.governance_records(team, "team_trustee_reality")
+        groups: dict[tuple[str, str, str], list[ProtocolNode]] = {}
+        for action in actions:
+            key = (
+                str(action.data.get("trust") or ""),
+                str(action.data.get("action_kind") or ""),
+                str(action.data.get("subject_uuid") or ""),
+            )
+            groups.setdefault(key, []).append(action)
+        payload = []
+        for action in actions:
+            actor_uuid = str(action.data.get("acted_by") or "")
+            actor = people.get(actor_uuid) or {}
+            key = (
+                str(action.data.get("trust") or ""),
+                str(action.data.get("action_kind") or ""),
+                str(action.data.get("subject_uuid") or ""),
+            )
+            facilitator_trust = (
+                "trust" if key[0] == "identity" else "identity"
+            )
+            observations = []
+            for observation in realities:
+                if observation.data.get("action_uuid") != action.uuid:
+                    continue
+                observer_uuid = str(observation.data.get("observed_by") or "")
+                observer = people.get(observer_uuid) or {}
+                observations.append({
+                    "uuid": observation.uuid,
+                    "reality": observation.data.get("reality") or "",
+                    "observed_at": observation.data.get("observed_at"),
+                    "observed_by": observer_uuid,
+                    "observer_name": observer.get("name") or "Trustee",
+                })
+            signals = str(action.data.get("signals") or "")
+            payload.append({
+                "uuid": action.uuid,
+                "trust": key[0],
+                "action_kind": key[1],
+                "subject_uuid": key[2],
+                "acted_by": actor_uuid,
+                "actor_name": actor.get("name") or "Trustee",
+                "acted_at": action.data.get("acted_at"),
+                "signals": signals,
+                "signals_missing": not bool(signals.strip()),
+                "consideration": action.data.get("consideration") or "",
+                "expectation": action.data.get("expectation") or "",
+                "payload": copy.deepcopy(action.data.get("payload") or {}),
+                "contested": len(groups[key]) > 1,
+                "peer_action_uuids": [
+                    peer.uuid for peer in groups[key] if peer.uuid != action.uuid
+                ],
+                "realities": observations,
+                "can_observe": bool(self._authority_basis_for_actor(
+                    team, facilitator_trust, self._identity_uuid,
+                )),
+            })
+        return payload
+
+    def _pool_node(self, pool_uuid: str | None) -> ProtocolNode | None:
+        if not pool_uuid:
+            return None
+        node = self.session.protocol.index.get(pool_uuid)
+        container = self._find_team_container()
+        return node if (
+            node
+            and node.data.get("type") == "team_pool"
+            and container
+            and node.parent_uuid == container.uuid
+        ) else None
+
+    def pool_records(
+        self, pool: ProtocolNode, node_type: str | None = None,
+    ) -> list[ProtocolNode]:
+        return sorted(
+            [
+                child for child in pool.live_children()
+                if child.data.get("type") in self.POOL_RECORD_TYPES
+                and (node_type is None or child.data.get("type") == node_type)
+            ],
+            key=lambda node: (node.created_at, node.uuid),
+        )
+
+    def pool_application_projection(
+        self, pool: ProtocolNode, application_uuid: str,
+    ) -> dict:
+        records = self.pool_records(pool, "team_pool_application")
+        by_uuid = {record.uuid: record for record in records}
+        root = by_uuid.get(application_uuid)
+        blank = {
+            "root_uuid": application_uuid, "current_uuid": "",
+            "state": "missing", "contenders": [],
+        }
+        if root is None or root.data.get("previous_application_uuid"):
+            return blank
+        by_previous: dict[str, list[ProtocolNode]] = {}
+        for record in records:
+            previous = str(record.data.get("previous_application_uuid") or "")
+            if previous:
+                by_previous.setdefault(previous, []).append(record)
+        current = root
+        seen = {root.uuid}
+        while True:
+            successors = [
+                record for record in by_previous.get(current.uuid, [])
+                if record.uuid not in seen
+            ]
+            if not successors:
+                return {
+                    **blank, "current_uuid": current.uuid,
+                    "state": str(current.data.get("state") or ""),
+                }
+            if len(successors) > 1:
+                return {
+                    **blank, "current_uuid": current.uuid,
+                    "state": "contested",
+                    "contenders": [record.uuid for record in successors],
+                }
+            current = successors[0]
+            seen.add(current.uuid)
+
+    def pool_application_roots(
+        self, pool: ProtocolNode, invitation_uuid: str | None = None,
+    ) -> list[ProtocolNode]:
+        return [
+            record for record in self.pool_records(
+                pool, "team_pool_application",
+            )
+            if not record.data.get("previous_application_uuid")
+            and (
+                invitation_uuid is None
+                or record.data.get("invitation_uuid") == invitation_uuid
+            )
+        ]
+
+    def pool_resolution_for(
+        self, pool: ProtocolNode, application_uuid: str,
+    ) -> list[ProtocolNode]:
+        return [
+            record for record in self.pool_records(
+                pool, "team_pool_resolution",
+            )
+            if record.data.get("application_uuid") == application_uuid
+        ]
+
+    @staticmethod
+    def _timestamp(value: str) -> datetime | None:
+        normalized = TeamLogic._normalize_expiry(value)
+        return (
+            datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+            if normalized else None
+        )
+
+    def assess_pool_record(
+        self, pool: ProtocolNode, node: ProtocolNode,
+        verification: str | None = None,
+    ) -> dict:
+        verification = verification or self.session.revision_verification(node)
+        if verification == "unknown":
+            return {"status": "deferred", "reason": "the signing key is not known"}
+        if verification != "valid":
+            return {"status": "invalid", "reason": "authorship signature is invalid"}
+        schema_error = self.pool_schema_error(node)
+        if schema_error:
+            return {"status": "invalid", "reason": schema_error}
+        if node.parent_uuid != pool.uuid:
+            return {"status": "invalid", "reason": "Pool records must be direct children"}
+        data = node.data
+        actor_field = {
+            "team_pool_invitation": "published_by",
+            "team_pool_application": "actor_uuid",
+            "team_pool_resolution": "resolved_by",
+        }[data["type"]]
+        actor_uuid = str(data.get(actor_field) or "")
+        status, reason = self._signed_actor_status(node, actor_uuid)
+        if status != "authorized":
+            return {"status": status, "reason": reason}
+        if data.get("team_uuid") != pool.data.get("team_uuid"):
+            return {"status": "invalid", "reason": "record names another Team"}
+
+        team = self._node(str(pool.data.get("team_uuid") or ""), "team")
+        if data["type"] == "team_pool_invitation":
+            published = self._timestamp(data["published_at"])
+            expires = self._timestamp(data["expires_at"])
+            if not published or not expires or expires <= published:
+                return {"status": "invalid", "reason": "invitation expiry is invalid"}
+            if data.get("team_title") != pool.data.get("team_title"):
+                return {"status": "invalid", "reason": "invitation Team title does not match the Pool"}
+            if team:
+                opening = self._governance_node(
+                    team, data["opening_uuid"], "team_member_opening",
+                )
+                if opening is None:
+                    return {"status": "deferred", "reason": "Member opening is not available"}
+                status, reason = self._trust_authority(
+                    team, "identity", actor_uuid,
+                    data["authority_basis_uuid"],
+                )
+                if status != "authorized":
+                    return {"status": status, "reason": reason}
+        elif data["type"] == "team_pool_application":
+            invitation = next((
+                record for record in self.pool_records(
+                    pool, "team_pool_invitation",
+                )
+                if record.uuid == data["invitation_uuid"]
+            ), None)
+            if invitation is None:
+                return {"status": "deferred", "reason": "Pool invitation is not available"}
+            if (
+                data.get("opening_uuid") != invitation.data.get("opening_uuid")
+                or data.get("team_uuid") != invitation.data.get("team_uuid")
+            ):
+                return {"status": "invalid", "reason": "application does not match its invitation"}
+            submitted = self._timestamp(data["submitted_at"])
+            published = self._timestamp(str(invitation.data.get("published_at") or ""))
+            expires = self._timestamp(str(invitation.data.get("expires_at") or ""))
+            if not submitted or not published or not expires or not (
+                published <= submitted < expires
+            ):
+                return {"status": "unauthorized", "reason": "invitation was not active when the application was submitted"}
+            if data["state"] == "withdrawn":
+                previous = next((
+                    record for record in self.pool_records(
+                        pool, "team_pool_application",
+                    )
+                    if record.uuid == data["previous_application_uuid"]
+                ), None)
+                root = next((
+                    record for record in self.pool_application_roots(pool)
+                    if record.uuid == (previous.uuid if previous else "")
+                ), None)
+                if (
+                    not previous or not root
+                    or previous.data.get("actor_uuid") != actor_uuid
+                    or previous.data.get("state") != "submitted"
+                    or self.pool_application_projection(
+                        pool, root.uuid,
+                    ).get("current_uuid") != previous.uuid
+                    or self.pool_resolution_for(pool, root.uuid)
+                ):
+                    return {"status": "unauthorized", "reason": "withdrawal does not match a pending application"}
+            elif any(
+                root.data.get("actor_uuid") == actor_uuid
+                and root.data.get("invitation_uuid") == data["invitation_uuid"]
+                and self.pool_application_projection(
+                    pool, root.uuid,
+                ).get("state") == "submitted"
+                and not self.pool_resolution_for(pool, root.uuid)
+                for root in self.pool_application_roots(pool)
+            ):
+                return {"status": "unauthorized", "reason": "the Actor already applied through this invitation"}
+        else:
+            application = next((
+                record for record in self.pool_application_roots(pool)
+                if record.uuid == data["application_uuid"]
+            ), None)
+            invitation = next((
+                record for record in self.pool_records(
+                    pool, "team_pool_invitation",
+                )
+                if record.uuid == data["invitation_uuid"]
+            ), None)
+            if application is None or invitation is None:
+                return {"status": "deferred", "reason": "Pool application evidence is not available"}
+            if (
+                application.data.get("invitation_uuid") != invitation.uuid
+                or application.data.get("actor_uuid") != data.get("actor_uuid")
+                or application.data.get("opening_uuid") != data.get("opening_uuid")
+                or invitation.data.get("published_by") != actor_uuid
+            ):
+                return {"status": "invalid", "reason": "resolution does not match its application or publisher"}
+            if (
+                self.pool_application_projection(
+                    pool, application.uuid,
+                ).get("state") != "submitted"
+                or self.pool_resolution_for(pool, application.uuid)
+            ):
+                return {"status": "unauthorized", "reason": "application is no longer pending"}
+            if team:
+                status, reason = self._trust_authority(
+                    team, "identity", actor_uuid,
+                    data["authority_basis_uuid"],
+                )
+                if status != "authorized":
+                    return {"status": status, "reason": reason}
+        return {"status": "authorized", "reason": ""}
+
+    def append_pool_record(
+        self, pool_uuid: str, data: dict,
+    ) -> SessionResult:
+        pool = self._pool_node(pool_uuid)
+        if not pool:
+            return SessionResult("error", reason="Pool not found")
+        candidate = ProtocolNode(
+            copy.deepcopy(data), parent_uuid=pool.uuid,
+            revision_origin=self.session.identity.data["identity_key"],
+        )
+        assessment = self.assess_pool_record(
+            pool, candidate, verification="valid",
+        )
+        if assessment["status"] != "authorized":
+            return SessionResult("error", reason=assessment["reason"])
+        return self.session.create_child(pool.uuid, data, {})
+
+    def publish_pool_invitation(
+        self, team_uuid: str, opening_uuid: str, expires_at: str = "",
+    ) -> SessionResult:
+        team = self._node(team_uuid, "team")
+        pool = self.pool_for_team(team) if team else None
+        opening = self._governance_node(
+            team, opening_uuid, "team_member_opening",
+        ) if team else None
+        if not team or not pool or not opening:
+            return SessionResult("error", reason="Team Pool or Member opening not found")
+        if self.member_opening_projection(
+            team, opening.uuid,
+        ).get("state") != "open":
+            return SessionResult("error", reason="Member opening is not open")
+        basis_uuid = self._authority_basis_for_actor(
+            team, "identity", self._identity_uuid,
+        )
+        normalized_expiry = self._normalize_expiry(expires_at)
+        if not normalized_expiry:
+            normalized_expiry = (
+                datetime.now(timezone.utc) + timedelta(days=7)
+            ).isoformat().replace("+00:00", "Z")
+        if self._is_expired(normalized_expiry):
+            return SessionResult("error", reason="invitation expiry must be in the future")
+        return self.append_pool_record(pool.uuid, {
+            "type": "team_pool_invitation",
+            "team_uuid": team.uuid,
+            "team_title": str(team.data.get("title") or "Untitled team"),
+            "opening_uuid": opening.uuid,
+            "published_by": self._identity_uuid,
+            "published_at": self._now(),
+            "expires_at": normalized_expiry,
+            "authority_basis_uuid": basis_uuid,
+        })
+
+    def submit_pool_application(
+        self, pool_uuid: str, invitation_uuid: str,
+    ) -> SessionResult:
+        pool = self._pool_node(pool_uuid)
+        invitation = next((
+            record for record in self.pool_records(
+                pool, "team_pool_invitation",
+            )
+            if record.uuid == invitation_uuid
+        ), None) if pool else None
+        if not pool or not invitation:
+            return SessionResult("error", reason="active Pool invitation not found")
+        if self._is_expired(str(invitation.data.get("expires_at") or "")):
+            return SessionResult("error", reason="Pool invitation has expired")
+        return self.append_pool_record(pool.uuid, {
+            "type": "team_pool_application",
+            "invitation_uuid": invitation.uuid,
+            "team_uuid": invitation.data["team_uuid"],
+            "opening_uuid": invitation.data["opening_uuid"],
+            "actor_uuid": self._identity_uuid,
+            "submitted_at": self._now(),
+            "state": "submitted",
+            "previous_application_uuid": "",
+        })
+
+    def withdraw_pool_application(
+        self, pool_uuid: str, application_uuid: str,
+    ) -> SessionResult:
+        pool = self._pool_node(pool_uuid)
+        application = next((
+            record for record in self.pool_application_roots(pool)
+            if record.uuid == application_uuid
+        ), None) if pool else None
+        if (
+            not pool or not application
+            or application.data.get("actor_uuid") != self._identity_uuid
+        ):
+            return SessionResult("error", reason="Pool application not found")
+        projection = self.pool_application_projection(pool, application.uuid)
+        if projection.get("state") != "submitted" or self.pool_resolution_for(
+            pool, application.uuid,
+        ):
+            return SessionResult("error", reason="Pool application is not pending")
+        return self.append_pool_record(pool.uuid, {
+            **dict(application.data),
+            "previous_application_uuid": str(projection["current_uuid"]),
+            "state": "withdrawn",
+            "withdrawn_at": self._now(),
+        })
+
+    def resolve_pool_application(
+        self, pool_uuid: str, application_uuid: str, outcome: str,
+        signals: str = "", consideration: str = "", expectation: str = "",
+    ) -> SessionResult:
+        pool = self._pool_node(pool_uuid)
+        application = next((
+            record for record in self.pool_application_roots(pool)
+            if record.uuid == application_uuid
+        ), None) if pool else None
+        invitation = next((
+            record for record in self.pool_records(
+                pool, "team_pool_invitation",
+            )
+            if application and record.uuid == application.data.get("invitation_uuid")
+        ), None) if pool else None
+        normalized = str(outcome or "").strip().lower()
+        if not pool or not application or not invitation:
+            return SessionResult("error", reason="Pool application not found")
+        if normalized not in {"accepted", "rejected"}:
+            return SessionResult("error", reason="outcome must be accepted or rejected")
+        if invitation.data.get("published_by") != self._identity_uuid:
+            return SessionResult(
+                "error", reason="only the Identity who published this invitation may resolve it",
+            )
+        if self.pool_application_projection(
+            pool, application.uuid,
+        ).get("state") != "submitted" or self.pool_resolution_for(
+            pool, application.uuid,
+        ):
+            return SessionResult("error", reason="Pool application is not pending")
+        team = self._node(str(pool.data.get("team_uuid") or ""), "team")
+        if not team:
+            return SessionResult("error", reason="linked Team is not available")
+        basis_uuid = self._authority_basis_for_actor(
+            team, "identity", self._identity_uuid,
+        )
+        token = None
+        team_record = None
+        if normalized == "accepted":
+            compose = getattr(
+                self.collaboration, "compose_topic_invitation", None,
+            )
+            if not callable(compose):
+                return SessionResult("error", reason="Team invitation service is unavailable")
+            coordinates = compose(team.uuid)
+            if not getattr(coordinates, "ok", False):
+                return SessionResult(
+                    "error", reason=getattr(coordinates, "reason", "Team has no home channel"),
+                )
+            token = copy.deepcopy(coordinates.value)
+            team_record = self.append_governance_record(team.uuid, {
+                "type": "team_external_member_resolution",
+                "pool_uuid": pool.uuid,
+                "pool_invitation_uuid": invitation.uuid,
+                "pool_application_uuid": application.uuid,
+                "opening_uuid": application.data["opening_uuid"],
+                "actor_uuid": application.data["actor_uuid"],
+                "outcome": "accepted",
+                "resolved_by": self._identity_uuid,
+                "resolved_at": self._now(),
+                "authority_basis_uuid": basis_uuid,
+                "application_evidence_hash": application.state_hash,
+                "signals": str(signals or "").strip(),
+                "consideration": str(consideration or "").strip(),
+                "expectation": str(expectation or "").strip(),
+            })
+            if team_record.status != "ok":
+                return team_record
+        data = {
+            "type": "team_pool_resolution",
+            "invitation_uuid": invitation.uuid,
+            "application_uuid": application.uuid,
+            "team_uuid": application.data["team_uuid"],
+            "opening_uuid": application.data["opening_uuid"],
+            "actor_uuid": application.data["actor_uuid"],
+            "outcome": normalized,
+            "resolved_by": self._identity_uuid,
+            "resolved_at": self._now(),
+            "authority_basis_uuid": basis_uuid,
+            "signals": str(signals or "").strip(),
+            "consideration": str(consideration or "").strip(),
+            "expectation": str(expectation or "").strip(),
+        }
+        if token is not None:
+            data["team_invitation_token"] = token
+        resolved = self.append_pool_record(pool.uuid, data)
+        if resolved.status == "ok" and team_record:
+            resolved.effects = [*team_record.effects, *resolved.effects]
+        return resolved
+
+    def mount_accepted_team(
+        self, pool_uuid: str, application_uuid: str,
+    ) -> SessionResult:
+        pool = self._pool_node(pool_uuid)
+        application = next((
+            record for record in self.pool_application_roots(pool)
+            if record.uuid == application_uuid
+        ), None) if pool else None
+        resolutions = self.pool_resolution_for(
+            pool, application_uuid,
+        ) if pool else []
+        resolution = resolutions[0] if len(resolutions) == 1 else None
+        if (
+            not pool or not application or not resolution
+            or application.data.get("actor_uuid") != self._identity_uuid
+            or resolution.data.get("actor_uuid") != self._identity_uuid
+            or resolution.data.get("outcome") != "accepted"
+        ):
+            return SessionResult("error", reason="accepted Pool application not found")
+        token = resolution.data.get("team_invitation_token")
+        accept = getattr(
+            self.collaboration, "accept_topic_invitation_token", None,
+        )
+        if not isinstance(token, dict) or not callable(accept):
+            return SessionResult("error", reason="Team coordinates are unavailable")
+        mounted = accept(copy.deepcopy(token))
+        if not getattr(mounted, "ok", False):
+            return SessionResult(
+                "error", reason=getattr(mounted, "reason", "Team connection failed"),
+            )
+        return SessionResult("ok", value=copy.deepcopy(mounted.value))
+
+    def pool_payload(self, pool: ProtocolNode) -> dict:
+        people = self._known_people()
+        team = self._node(str(pool.data.get("team_uuid") or ""), "team")
+        invitations = []
+        for invitation in self.pool_records(pool, "team_pool_invitation"):
+            applications = []
+            for application in self.pool_application_roots(
+                pool, invitation.uuid,
+            ):
+                actor_uuid = str(application.data.get("actor_uuid") or "")
+                person = people.get(actor_uuid) or {}
+                projection = self.pool_application_projection(
+                    pool, application.uuid,
+                )
+                resolutions = self.pool_resolution_for(
+                    pool, application.uuid,
+                )
+                resolution = resolutions[0] if len(resolutions) == 1 else None
+                applications.append({
+                    "uuid": application.uuid,
+                    "actor_uuid": actor_uuid,
+                    "actor_name": person.get("name") or person.get("address") or "Applicant",
+                    "picture": person.get("picture") or "",
+                    "is_self": actor_uuid == self._identity_uuid,
+                    "state": projection.get("state"),
+                    "submitted_at": application.data.get("submitted_at"),
+                    "resolution": (
+                        resolution.data.get("outcome") if resolution
+                        else ("contested" if len(resolutions) > 1 else "pending")
+                    ),
+                    "resolved_at": resolution.data.get("resolved_at") if resolution else None,
+                    "can_withdraw": bool(
+                        actor_uuid == self._identity_uuid
+                        and projection.get("state") == "submitted"
+                        and not resolutions
+                    ),
+                    "can_resolve": bool(
+                        team
+                        and invitation.data.get("published_by") == self._identity_uuid
+                        and self._authority_basis_for_actor(
+                            team, "identity", self._identity_uuid,
+                        )
+                        and projection.get("state") == "submitted"
+                        and not resolutions
+                    ),
+                    "can_mount": bool(
+                        resolution
+                        and resolution.data.get("outcome") == "accepted"
+                        and actor_uuid == self._identity_uuid
+                        and isinstance(
+                            resolution.data.get("team_invitation_token"), dict,
+                        )
+                        and not team
+                    ),
+                })
+            expired = self._is_expired(
+                str(invitation.data.get("expires_at") or ""),
+            )
+            own_pending = any(
+                application["is_self"]
+                and application["state"] == "submitted"
+                and application["resolution"] == "pending"
+                for application in applications
+            )
+            invitations.append({
+                "uuid": invitation.uuid,
+                "team_uuid": invitation.data.get("team_uuid"),
+                "team_title": invitation.data.get("team_title"),
+                "opening_uuid": invitation.data.get("opening_uuid"),
+                "published_by": invitation.data.get("published_by"),
+                "published_at": invitation.data.get("published_at"),
+                "expires_at": invitation.data.get("expires_at"),
+                "expired": expired,
+                "active": not expired,
+                "can_apply": bool(
+                    not expired
+                    and not own_pending
+                    and not (team and self._is_current_member(
+                        team, self._identity_uuid,
+                    ))
+                ),
+                "applications": applications,
+            })
+        return {
+            "uuid": pool.uuid,
+            "team_uuid": pool.data.get("team_uuid"),
+            "team_title": pool.data.get("team_title"),
+            "created_at": pool.data.get("created_at"),
+            "active_invitations": [
+                invitation for invitation in invitations if invitation["active"]
+            ],
+            "history": invitations,
+            "can_publish": bool(
+                team and self._authority_basis_for_actor(
+                    team, "identity", self._identity_uuid,
+                )
+            ),
+            "publishable_openings": (
+                [
+                    {
+                        "uuid": opening.uuid,
+                        "opened_at": opening.data.get("opened_at"),
+                    }
+                    for opening in self.member_opening_roots(team)
+                    if self.member_opening_projection(
+                        team, opening.uuid,
+                    ).get("state") == "open"
+                ] if team else []
+            ),
+            "linked_team_present": bool(team),
+        }
+
+    def governance_attempts(self, team: ProtocolNode) -> list[dict]:
+        attempts = []
+        for address in self.session.peer_addresses(team.uuid):
+            for event in self.session.analyze_peer_transitions(address, team.uuid):
+                if event.get("type") == "in_agreement":
+                    continue
+                node = self.session.get_cached_peer_subtree(
+                    address, event.get("node_uuid"),
+                )
+                if not node or node.data.get("type") not in self.GOVERNANCE_RECORD_TYPES:
+                    continue
+                assessment = self.assess_governance_record(team, node)
+                if assessment["status"] == "authorized" and event.get("type") == "local_missing_node":
+                    continue
+                reason = assessment["reason"]
+                if event.get("type") != "local_missing_node" and assessment["status"] == "authorized":
+                    reason = "governance records are append-only and cannot be changed"
+                attempts.append({
+                    "peer_addr": address,
+                    "node_uuid": node.uuid,
+                    "record_type": node.data.get("type"),
+                    "status": assessment["status"],
+                    "reason": reason,
+                })
+        return sorted(attempts, key=lambda item: (
+            item["record_type"], item["node_uuid"], item["peer_addr"],
+        ))
 
     def accountabilities(self, role: ProtocolNode) -> list[ProtocolNode]:
         return self._ordered(role, "team_accountability")
@@ -1070,6 +3581,11 @@ class TeamLogic:
         allowed = self._interaction_guard(team)
         if allowed.status != "ok":
             return allowed
+        if role.data.get("system_key") == self.MEMBER_ROLE_SYSTEM_KEY:
+            return SessionResult(
+                "error",
+                reason="Members join through an opening and application",
+            )
         if not self.holds_identity(team):
             return SessionResult(
                 "error", reason="only the Identity holder can offer a role",
@@ -1120,6 +3636,10 @@ class TeamLogic:
         allowed = self._interaction_guard(team)
         if allowed.status != "ok":
             return allowed
+        if role.data.get("system_key") == self.MEMBER_ROLE_SYSTEM_KEY:
+            return SessionResult(
+                "error", reason="Member standing is governed by resolutions",
+            )
         if not self.holds_identity(team):
             return SessionResult(
                 "error", reason="only the Identity holder can revoke a role",
@@ -1154,6 +3674,13 @@ class TeamLogic:
         if allowed.status != "ok":
             return allowed
         mine = self._identity_uuid
+        if role.data.get("system_key") == self.MEMBER_ROLE_SYSTEM_KEY:
+            genesis = self._offer_for(role, mine)
+            if not genesis or not genesis.data.get("system_genesis"):
+                return SessionResult(
+                    "error",
+                    reason="apply through an open Member opening",
+                )
         if not self._offer_for(role, mine):
             # There may be an offer that has only reached this session as a
             # proposal. If there is, answering it should take it up; if there
@@ -1958,9 +4485,62 @@ class TeamLogic:
                 return node
         return None
 
+    def accept_team_topic_invitation(
+        self, subtree: ProtocolNode,
+    ) -> SessionResult:
+        if subtree.data.get("type") == "team_pool":
+            return self.accept_pool_invitation(subtree)
+        return self.accept_team_invitation(subtree)
+
+    def accept_pool_invitation(self, subtree: ProtocolNode) -> SessionResult:
+        required = {
+            "type", "team_uuid", "team_title", "title", "created_by",
+            "created_at",
+        }
+        if (
+            subtree.data.get("type") != "team_pool"
+            or set(subtree.data) != required
+            or not all(
+                isinstance(subtree.data.get(field), str)
+                and subtree.data.get(field)
+                for field in required - {"type"}
+            )
+        ):
+            return SessionResult("error", reason="invited Pool is invalid")
+        status, reason = self._signed_actor_status(
+            subtree, str(subtree.data.get("created_by") or ""),
+        )
+        if status != "authorized":
+            return SessionResult("error", reason=reason)
+        if any(
+            child.data.get("type") not in self.POOL_RECORD_TYPES
+            or self.pool_schema_error(child)
+            for child in subtree.live_children()
+        ):
+            return SessionResult("error", reason="invited Pool contains invalid records")
+        return self.session.accept_topic_invitation(
+            subtree, self._team_container().uuid,
+        )
+
     def accept_team_invitation(self, subtree: ProtocolNode) -> SessionResult:
         if subtree.data.get("type") != "team":
             return SessionResult("error", reason="invited topic is not a team")
+        admission_pools = [
+            pool for pool in self.pools()
+            if pool.data.get("team_uuid") == subtree.uuid
+        ]
+        if admission_pools and not any(
+            resolution.data.get("outcome") == "accepted"
+            and resolution.data.get("actor_uuid") == self._identity_uuid
+            for pool in admission_pools
+            for resolution in self.pool_records(
+                pool, "team_pool_resolution",
+            )
+        ):
+            return SessionResult(
+                "error",
+                reason="this Actor has no accepted Pool application for the Team",
+            )
         # The invited subtree carries its own holdings, so its ancestry can
         # be checked before it is mounted. Joining it does not require
         # holding anything in it - that comes after, by asking.
@@ -1985,7 +4565,8 @@ class TeamLogic:
         "team", "team_section", "team_clause",
         "team_role", "team_accountability", "team_domain",
         "team_role_holding",
-        "team_trustee", "team_role_offer", "team_role_decision",
+        "team_role_offer", "team_role_decision",
+        *GOVERNANCE_RECORD_TYPES,
     })
     OWNED_NODE_TYPES = frozenset({
         *REACTABLE, "agenda_item",
@@ -1998,6 +4579,22 @@ class TeamLogic:
                 or (not adopt_absence
                     and not self.owns_node(node_uuid, source_addr))):
             return SessionResult("error", reason="node is not part of a team")
+        peer_node = self.session.get_cached_peer_subtree(
+            source_addr, node_uuid,
+        )
+        reference = peer_node or self.session.protocol.index.get(node_uuid)
+        if reference and reference.data.get("type") in self.GOVERNANCE_RECORD_TYPES:
+            if local_exists:
+                return SessionResult(
+                    "error",
+                    reason="governance records are append-only and cannot be changed",
+                )
+            team = self._team_for_reaction(source_addr, node_uuid)
+            if not team or not peer_node:
+                return SessionResult("error", reason="governance record is unavailable")
+            assessment = self.assess_governance_record(team, peer_node)
+            if assessment["status"] != "authorized":
+                return SessionResult("error", reason=assessment["reason"])
         allowed = self._interaction_guard_for_reaction(
             source_addr, node_uuid,
         )
@@ -2025,10 +4622,8 @@ class TeamLogic:
 
     def adopt_peer_changes(self, source_addr: str,
                            team_uuid: str) -> SessionResult:
-        if (
-            not self._node(team_uuid, "team")
-            or not self.owns_node(team_uuid, source_addr)
-        ):
+        team = self._node(team_uuid, "team")
+        if not team or not self.owns_node(team_uuid, source_addr):
             return SessionResult("error", reason="team not found")
         allowed = self._interaction_guard_for_node(team_uuid)
         if allowed.status != "ok":
@@ -2036,11 +4631,108 @@ class TeamLogic:
         changed = self.session.reconcile_peer_changes(
             source_addr,
             team_uuid,
-            lambda node, _event_type: (
-                node.data.get("type") != "team_role_decision"
+            lambda node, event_type: self._manual_adoption_eligible(
+                source_addr, team, node, event_type,
             ),
         )
         return SessionResult("ok", value=changed)
+
+    def _manual_adoption_eligible(
+        self, source_addr: str, team: ProtocolNode, node: ProtocolNode,
+        event_type: str,
+    ) -> bool:
+        node_type = node.data.get("type")
+        if node_type not in self.GOVERNANCE_RECORD_TYPES:
+            return node_type != "team_role_decision"
+        if event_type != "local_missing_node":
+            return False
+        peer_node = self.session.get_cached_peer_subtree(
+            source_addr, node.uuid,
+        )
+        return bool(
+            peer_node
+            and self.assess_governance_record(team, peer_node)["status"]
+            == "authorized"
+        )
+
+    def reconcile_governance_updates(self) -> SessionResult:
+        """Auto-adopt only verified, authorized, immutable governance facts."""
+        changed = False
+        for team in self.teams():
+            for address in self.session.peer_addresses(team.uuid):
+                adopted = self.session.reconcile_peer_changes(
+                    address,
+                    team.uuid,
+                    lambda node, event_type, peer=address, body=team: (
+                        self._governance_adoption_eligible(
+                            peer, body, node, event_type,
+                        )
+                    ),
+                )
+                changed = adopted or changed
+        for pool in self.pools():
+            for address in self.session.peer_addresses(pool.uuid):
+                adopted = self.session.reconcile_peer_changes(
+                    address,
+                    pool.uuid,
+                    lambda node, event_type, peer=address, dmz=pool: (
+                        self._pool_adoption_eligible(
+                            peer, dmz, node, event_type,
+                        )
+                    ),
+                )
+                changed = adopted or changed
+        return SessionResult("ok", value=changed)
+
+    def _pool_adoption_eligible(
+        self, peer_addr: str, pool: ProtocolNode, node: ProtocolNode,
+        event_type: str,
+    ) -> bool:
+        if (
+            event_type != "local_missing_node"
+            or node.data.get("type") not in self.POOL_RECORD_TYPES
+        ):
+            return False
+        peer_node = self.session.get_cached_peer_subtree(
+            peer_addr, node.uuid,
+        )
+        if not peer_node:
+            return False
+        assessment = self.assess_pool_record(pool, peer_node)
+        self.session.trace_event(
+            "team.pool_assessment",
+            peer_addr=peer_addr,
+            pool_uuid=pool.uuid,
+            node_uuid=node.uuid,
+            record_type=node.data.get("type"),
+            status=assessment["status"],
+            reason=assessment["reason"],
+        )
+        return assessment["status"] == "authorized"
+
+    def _governance_adoption_eligible(
+        self, peer_addr: str, team: ProtocolNode, node: ProtocolNode,
+        event_type: str,
+    ) -> bool:
+        if (
+            event_type != "local_missing_node"
+            or node.data.get("type") not in self.GOVERNANCE_RECORD_TYPES
+        ):
+            return False
+        peer_node = self.session.get_cached_peer_subtree(peer_addr, node.uuid)
+        if not peer_node:
+            return False
+        assessment = self.assess_governance_record(team, peer_node)
+        self.session.trace_event(
+            "team.governance_assessment",
+            peer_addr=peer_addr,
+            team_uuid=team.uuid,
+            node_uuid=node.uuid,
+            record_type=node.data.get("type"),
+            status=assessment["status"],
+            reason=assessment["reason"],
+        )
+        return assessment["status"] == "authorized"
 
     def transition_events(
         self, team_uuid: str, network: dict | None = None,
@@ -2063,6 +4755,17 @@ class TeamLogic:
             for event in self.session.analyze_peer_transitions(
                 address, team_uuid,
             ):
+                node_uuid = event.get("node_uuid")
+                local_node = self.session.protocol.index.get(node_uuid)
+                peer_node = self.session.get_cached_peer_subtree(
+                    address, node_uuid,
+                )
+                observed = peer_node or local_node
+                if (
+                    observed
+                    and observed.data.get("type") not in self.OWNED_NODE_TYPES
+                ):
+                    continue
                 if (
                     event["stage"] == "in_flight"
                     and liveness.get("state") == "stale"
@@ -2092,11 +4795,19 @@ class TeamLogic:
         "team_role": "Role",
         "team_accountability": "Accountability",
         "team_domain": "Domain",
-        "team_trustee": "Identity",
         "team_role_offer": "Role offer",
         "team_role_decision": "Role answer",
         "team_role_holding": "Seat",
         "agenda_item": "Discussion topic",
+        "team_trustee_state": "Trusteeship state",
+        "team_member_opening": "Member opening",
+        "team_member_application": "Member application",
+        "team_member_resolution": "Member resolution",
+        "team_trustee_election": "Trustee election",
+        "team_trustee_candidacy": "Trustee candidacy",
+        "team_trustee_action": "Trustee action",
+        "team_trustee_reality": "Reality observation",
+        "team_external_member_resolution": "Pool membership resolution",
     }
     # Text-bearing fields, by the name they are read under. "Title" alone
     # would be ambiguous on a team node, which now carries two.
@@ -2128,13 +4839,26 @@ class TeamLogic:
         node_type = node.data.get("type") or "node"
         label = self.NODE_LABELS.get(node_type, "Item")
         if not local:
-            return self._annotate_authorship([{
+            change = {
                 "kind": "presence",
                 "field": "node",
                 "label": label,
                 "summary": f"{label} exists only in the peer version",
                 "local_summary": f"Keep {label.lower()} absent",
-            }], label, authored_locally)
+            }
+            if node_type in self.GOVERNANCE_RECORD_TYPES and peer:
+                team = self._team_for_reaction(peer_addr, node.uuid)
+                if team:
+                    assessment = self.assess_governance_record(team, peer)
+                    change["governance_status"] = assessment["status"]
+                    change["governance_reason"] = assessment["reason"]
+                    if assessment["status"] != "authorized":
+                        change["summary"] = (
+                            f"{label} is disregarded: {assessment['reason']}"
+                        )
+            return self._annotate_authorship(
+                [change], label, authored_locally,
+            )
         if not peer:
             return self._annotate_authorship([{
                 "kind": "presence",
@@ -2236,7 +4960,7 @@ class TeamLogic:
         handover reads as an unnamed "Item changed" - which is exactly the
         kind of difference somebody most needs told.
         """
-        if node_type == "team_trustee":
+        if node_type == "__obsolete_mutable_trustee__":
             field = "holder_actor_uuid"
             if local.data.get(field) == peer.data.get(field):
                 return []
@@ -2412,9 +5136,48 @@ class TeamLogic:
     def document_payload(
         self, team_uuid: str | None = None,
         network: dict | None = None,
+        pool_uuid: str | None = None,
     ) -> dict:
         with self._reading():
+            selected_pool = self._pool_node(pool_uuid) if pool_uuid else None
+            if selected_pool or (not self.teams() and self.pools()):
+                return self._build_pool_document_payload(
+                    selected_pool or self.pools()[0], network,
+                )
             return self._build_document_payload(team_uuid, network)
+
+    def _build_pool_document_payload(
+        self, pool: ProtocolNode, network: dict | None = None,
+    ) -> dict:
+        network = (
+            self._network_info(pool.uuid) if network is None else network
+        )
+        return {
+            "view": "pool",
+            "address": self.session.address,
+            "team": None,
+            "teams": [
+                self._document_node_dict(node) for node in self.teams()
+            ],
+            "pools": [
+                {
+                    "uuid": item.uuid,
+                    "team_uuid": item.data.get("team_uuid"),
+                    "team_title": item.data.get("team_title"),
+                }
+                for item in self.pools()
+            ],
+            "pool": self.pool_payload(pool),
+            "transition_events": [],
+            "transition_by_node": {},
+            "proposed_nodes": [],
+            "network": network,
+            "agenda_items": [],
+            "identity_uuid": self._identity_uuid,
+            "known_identities": self.session.known_identities(),
+            "organization": self.organization_payload(),
+            "interaction": {"allowed": True, "reason": ""},
+        }
 
     def _build_document_payload(
         self, team_uuid: str | None = None,
@@ -2430,6 +5193,7 @@ class TeamLogic:
             self.transition_events(selected.uuid, network) if selected else []
         )
         return {
+            "view": "team",
             "address": self.session.address,
             # Payload key, not a node type. The page reads it as
             # payload.team, and the wire vocabulary is deliberately not
@@ -2457,8 +5221,47 @@ class TeamLogic:
             "identity_uuid": self._identity_uuid,
             "known_identities": self.session.known_identities(),
             "organization": self.organization_payload(),
+            "is_organization": (
+                self.is_organization(selected) if selected else False
+            ),
+            "trusteeships": (
+                {
+                    trust: self.trustee_projection(selected, trust)
+                    for trust in sorted(self.TRUSTS)
+                } if selected else {}
+            ),
+            "governance_attempts": (
+                self.governance_attempts(selected) if selected else []
+            ),
             "participants": (
                 self.participants(selected.uuid) if selected else []
+            ),
+            "membership": (
+                self.membership_payload(selected) if selected
+                else {"openings": [], "can_resolve": False, "is_member": False}
+            ),
+            "trustee_elections": (
+                self.trustee_elections_payload(selected) if selected else []
+            ),
+            "trustee_actions": (
+                self.trustee_actions_payload(selected) if selected else []
+            ),
+            "pool": (
+                {
+                    "uuid": pool.uuid,
+                    "team_uuid": pool.data.get("team_uuid"),
+                    "team_title": pool.data.get("team_title"),
+                    "active_invitation_count": len([
+                        invitation for invitation in self.pool_records(
+                            pool, "team_pool_invitation",
+                        )
+                        if not self._is_expired(str(
+                            invitation.data.get("expires_at") or "",
+                        ))
+                    ]),
+                }
+                if selected and (pool := self.pool_for_team(selected))
+                else None
             ),
             # Whether this session holds a role here. Taking a role is the
             # only way to be part of a team, so this is what the view
@@ -2468,6 +5271,10 @@ class TeamLogic:
             ),
             "identity": (
                 self.identity_payload(selected) if selected
+                else {"state": "vacant"}
+            ),
+            "trust": (
+                self.trust_payload(selected) if selected
                 else {"state": "vacant"}
             ),
             # Resolved here rather than in the view: a holder's status
@@ -2480,6 +5287,9 @@ class TeamLogic:
             ),
             "holds_identity": (
                 self.holds_identity(selected) if selected else False
+            ),
+            "holds_trust": (
+                self.holds_trust(selected) if selected else False
             ),
             # Template, instantiated or working - a count of actors, not a
             # kind of node (2.8).
@@ -2519,8 +5329,8 @@ class TeamLogic:
     # as document-change proposals. Their divergences are unaffected:
     # transition events come from the protocol tree, not from this view.
     NON_DOCUMENT_TYPES = frozenset({
-        "team_trustee",
         "team_role_offer", "team_role_decision",
+        *GOVERNANCE_RECORD_TYPES,
     })
 
     @classmethod
@@ -2542,20 +5352,20 @@ class TeamLogic:
         return payload
 
     def document_snapshot(
-        self, team_uuid: str | None = None,
+        self, team_uuid: str | None = None, pool_uuid: str | None = None,
     ) -> dict:
         """Build team state under Session without consulting transport."""
-        payload = self.document_payload(team_uuid, {})
+        payload = self.document_payload(team_uuid, {}, pool_uuid)
         decorated = []
         for event in payload.get("transition_events", []):
             node_uuid = event.get("node_uuid")
             view = self.transition_by_node([event]).get(node_uuid)
             if view:
                 decorated.append((event, view))
-        team = payload.get("team") or {}
+        topic = payload.get("team") or payload.get("pool") or {}
         return {
             "payload": payload,
-            "topic_uuid": team.get("uuid"),
+            "topic_uuid": topic.get("uuid"),
             "transition_views": decorated,
         }
 
@@ -2747,6 +5557,37 @@ class TeamLogic:
                     "decided_at": holder["decided_at"],
                     "expires_at": holder["expires_at"],
                 })
+        member = self.member_role(team)
+        known = self._known_people()
+        if member is not None:
+            for application in self.member_application_roots(team):
+                actor_uuid = str(application.data.get("actor_uuid") or "")
+                resolution = self.member_resolution_projection(
+                    team, application.uuid,
+                )
+                if resolution["state"] not in {"accepted", "contested"}:
+                    continue
+                person = people.get(actor_uuid)
+                if person is None:
+                    identity = known.get(actor_uuid) or {}
+                    person = people[actor_uuid] = {
+                        "uuid": actor_uuid,
+                        "name": identity.get("name") or identity.get("address") or "Member",
+                        "picture": identity.get("picture") or "",
+                        "actor_kind": "individual",
+                        "address": identity.get("address") or "",
+                        "addresses": identity.get("addresses") or [],
+                        "is_self": actor_uuid == self._identity_uuid,
+                        "roles": [],
+                    }
+                if not any(role["uuid"] == member.uuid for role in person["roles"]):
+                    person["roles"].append({
+                        "uuid": member.uuid,
+                        "name": member.data.get("name") or "Member",
+                        "status": resolution["state"],
+                        "decided_at": None,
+                        "expires_at": None,
+                    })
         for person in people.values():
             person["is_observer"] = not any(
                 item["status"] == "accepted" for item in person["roles"]
@@ -2778,6 +5619,16 @@ class TeamLogic:
         actors = set()
         if holder := self.identity_holder(team):
             actors.add(holder)
+        if holder := self.trust_holder(team):
+            actors.add(holder)
+        actors.update(
+            str(application.data.get("actor_uuid") or "")
+            for application in self.member_application_roots(team)
+            if self.member_resolution_projection(
+                team, application.uuid,
+            )["state"] == "accepted"
+        )
+        actors.discard("")
         for role in self.roles(team):
             actors.update(
                 holder["actor_uuid"]
@@ -3000,7 +5851,11 @@ class TeamLogic:
         # reason - so holding it is being part of the team. Otherwise the
         # person who speaks for a team could be told to take a role in
         # it before they may act, which is nonsense.
-        if self.holds_identity(team):
+        if (
+            self.holds_identity(team)
+            or self.holds_trust(team)
+            or self._is_current_member(team, self._identity_uuid)
+        ):
             return True
         mine = self._identity_uuid
         for role in self.roles(team):
@@ -3132,6 +5987,7 @@ class TeamLogic:
                 "title": team.data.get("title") or "Untitled team",
                 "joined": True,
                 "state": self.team_state(team),
+                "is_organization": self.is_organization(team),
                 "interaction_allowed": (
                     self._interaction_guard(team).status == "ok"
                 ),
@@ -3270,12 +6126,11 @@ class TeamLogic:
         if not team:
             return SessionResult("ok")
         identity = self.identity_payload(team)
-        if identity.get("state") != "held" or identity.get("claims"):
+        if identity.get("state") not in {"held", "contested"}:
             return SessionResult(
                 "error",
                 reason=(
-                    "Identity here is unsettled, so role offers cannot be "
-                    "adopted until it is resolved"
+                    "Identity is vacant, so role offers have no authority"
                 ),
             )
         if node.data.get("offered_by") != identity.get("holder_actor_uuid"):

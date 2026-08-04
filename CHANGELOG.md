@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+- Added Pool/DMZ onboarding as a separate shared topic and channel. Signed,
+  expiring invitations reference an open Member round; unknown Actors apply
+  in the Pool without receiving Team state. Identity can accept or reject the
+  signed application. Rejection publishes no Team coordinates; acceptance
+  records Team membership and publishes an applicant-specific normal Core
+  connection token, which contains channel coordinates but no Team document.
+  Expired invitations remain in Pool history and disappear from active
+  discovery. The Pool has its own view and Share/settings context. This is
+  clean schema version 10 with no migration path; Hard Fork remains deferred.
+- Vacant trusteeships now remain operable. Current Members can enter or
+  withdraw acting candidacy; withdrawal immediately revokes authority, and
+  filling the trusteeship ends all acting authority. Settled or acting
+  trustees can record domain actions with Signals, Consideration and
+  Expectation; concurrent actions remain visible as conflicts, missing
+  Signals are marked without blocking, and the counterpart trustee can append
+  Reality observations. Acting candidates can also facilitate elections and
+  operate Identity membership commands. The Actors view exposes candidates
+  and the decision trail. Election records now name a facilitator authority
+  basis, advancing the clean schema to version 9 without a migration path.
+- Any current Member can now start an Identity or Trust election. S-Team
+  snapshots current Members into a configured Integrative Election, assigns
+  the counterpart trustee as facilitator, and shows process progress under
+  Actors. A terminal result changes nothing until the counterpart trustee (or
+  a valid acting candidate) chooses **Implement decision**. The signed
+  append-only successor binds the canonical Flow result hash; competing valid
+  implementations expose a contest and keep the incumbent effective. This is
+  clean schema version 8 with no legacy migration path.
+- S-Team can now verify the versioned S-Flow decision-result contract through
+  the application facade only. Verification rejects incomplete elections,
+  malformed or tampered canonical hashes, unexpected definition versions,
+  and results that changed after a hash was recorded.
+- Member admission now uses append-only, signed openings, applications, and
+  resolutions. Identity can admit several applicants independently through
+  one opening; applicants can withdraw; closure prevents new applications
+  without stranding pending ones. Accepted applicants appear as Members, and
+  the system Member role can no longer be assigned through ordinary offers.
+  The workflow is available in the Actors section. This advances the clean
+  data schema to version 7; there is no legacy migration path.
+- Governance is now append-only and signature-authorized. Verified trustee
+  records auto-adopt; invalid or unauthorized attempts remain visible but
+  have no effect, and concurrent successors expose a contest without
+  displacing the incumbent.
+- New Teams now bootstrap exactly three base roles for their creator: Member,
+  Identity, and Trust. Identity and Trust use append-only genesis states;
+  direct takeover and handover are removed. Empty clones remain templates
+  until explicitly instantiated.
+- Root Teams are now presented contextually as **Organizations** without
+  introducing another stored type or Actor kind. The projection follows live
+  parent holdings, so taking or leaving a parent role changes the wording
+  without migrating the Team node.
+- New Teams receive a **Member** role marked with the stable
+  `system_key: member`. Names and purposes remain editable agreement content.
 - **The team's name and its agreement's name are now two things.** One field
   served both, so a team called "Finance" had an agreement called "Finance"
   and renaming the body silently retitled the document its members had
