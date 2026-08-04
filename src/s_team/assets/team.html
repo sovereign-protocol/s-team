@@ -85,6 +85,22 @@
       ) || {uuid, name: '?', picture: ''};
     }
 
+    // One route for both directions: the choice already carries which act it
+    // is and whose absence it settles, so this does not have to work out
+    // again which side holds the stale revision.
+    const applyReaction = async (nodeUuid, choice) => {
+      try {
+        await api('/api/team/react', {
+          node_uuid: nodeUuid,
+          source_addr: choice.peerAddr,
+          reaction: choice.action,
+          absent: choice.absent,
+        });
+        await load();
+        showToast(choice.action === 'rollback' ? 'Taken back' : 'Adopted');
+      } catch (error) { showToast(error.message, true); }
+    };
+
     // Editing happens in place. An element becomes contenteditable on click,
     // commits on blur or Enter, and reverts on Escape, so there is no modal
     // between a reader and the text they are reading.
@@ -147,9 +163,17 @@
     // so hiding it is right; reacting is the only way out of a divergence,
     // and an exit you cannot see is not an exit. It appears whenever there
     // is something to react to and stays hidden otherwise.
+    //
+    // Reacting is deliberately NOT governed by `interactive`, which asks
+    // whether this row may be edited. A proposed element is not editable -
+    // it is not ours to change until we accept it - but answering the
+    // proposal is precisely what the row is there for. Folding the two
+    // together is what left the receiving side looking at "Proposed" with
+    // no way to accept it, while the proposer had a button to take it back.
     const elementRow = ({node, tag, field, rename, addControl, onDelete,
                          deleteTitle, deleteMessage, index, count, onMove,
-                         toggle, proposed = false, interactive = true}) => {
+                         toggle, proposed = false, interactive = true,
+                         reactable = true}) => {
       const row = document.createElement('div');
       row.className = 'element-row';
       row.classList.toggle('is-proposed', proposed);
@@ -204,45 +228,16 @@
 
       if (interactive && addControl) actions.append(addControl);
 
-      if (interactive
-          && transition
-          && !['settled', 'in_flight'].includes(transition.stage)
-          && transition.peer_addr) {
-        const react = document.createElement('button');
-        react.type = 'button';
-        react.className = 'element-react';
-        const sourceType = transition.type;
-        const rollback = transition.reaction === 'rollback';
-        const peerMissing = sourceType === 'peer_missing_node';
-        const withdraw = rollback && peerMissing;
-        const acceptRemoval = !rollback && peerMissing;
-        react.textContent = withdraw
-          ? 'Withdraw proposal'
-          : (acceptRemoval
-            ? 'Accept removal'
-          : (rollback
-            ? 'Revert mine'
-            : (sourceType === 'local_missing_node'
-              ? 'Accept proposal' : 'Take theirs')));
-        react.title = transitionLabel(transition);
-        react.onclick = async () => {
-          try {
-            await api('/api/team/react', {
-              node_uuid: node.uuid,
-              source_addr: transition.peer_addr,
-              reaction: transition.reaction || 'adopt',
-              absent: peerMissing,
-            });
-            await load();
-            showToast(withdraw
-              ? 'Proposal withdrawn'
-              : (rollback
-                ? 'Reverted your change'
-                : (acceptRemoval ? 'Removal accepted' : 'Accepted their version')));
-          } catch (error) { showToast(error.message, true); }
-        };
-        actions.append(react);
-      }
+      // Core draws the control and words it: one available act reads as a
+      // button naming it, several become a menu. The wording is the same
+      // sentence both ends already see on the status lamp, so a team's
+      // proposals read exactly like a board's.
+      const reaction = reactable ? SovereignUI.reactionControl({
+        info: transition,
+        className: 'element-react',
+        onReact: choice => applyReaction(node.uuid, choice),
+      }) : null;
+      if (reaction) actions.append(reaction);
 
       if (interactive && onDelete) {
         const remove = document.createElement('button');
@@ -300,15 +295,22 @@
       .map(entry => entry.node)
       .filter(node => !node.deleted && node.parent_uuid === parentUuid);
 
+    // `inherited` says the row is only shown as a proposal because its parent
+    // is one. That distinction decides who gets a reaction: accepting a
+    // proposed role brings its accountabilities with it, so answering each of
+    // them separately would be four buttons for one decision. A proposal made
+    // directly against something we already have is its own decision.
     const displayedChildren = (parent, nodeType, inheritedProposal = false) => {
       const entries = ordered(parent.children)
         .filter(node => node.data.type === nodeType)
-        .map(node => ({node, proposed: inheritedProposal}));
+        .map(node => ({
+          node, proposed: inheritedProposal, inherited: inheritedProposal,
+        }));
       if (!inheritedProposal) {
         const present = new Set(entries.map(entry => entry.node.uuid));
         for (const node of proposedChildren(parent.uuid)) {
           if (node.data.type === nodeType && !present.has(node.uuid)) {
-            entries.push({node, proposed: true});
+            entries.push({node, proposed: true, inherited: false});
           }
         }
       }
@@ -927,7 +929,7 @@
     ];
 
     const renderRoleCard = ({role, proposed, index, count, interactive,
-                             movable}) => {
+                             reactable, movable}) => {
       const card = document.createElement('article');
       card.className = 'role-card';
       card.classList.toggle('is-proposed', proposed);
@@ -940,6 +942,7 @@
           {role_uuid: role.uuid, name: value}),
         proposed,
         interactive,
+        reactable,
         index,
         count,
         onMove: movable ? async newIndex => {
@@ -982,7 +985,9 @@
         column.append(columnTitle);
         const items = displayedChildren(role, type, proposed);
         const itemsHaveProposals = items.some(entry => entry.proposed);
-        items.forEach(({node: item, proposed: itemProposed}, itemIndex) => {
+        items.forEach(({
+          node: item, proposed: itemProposed, inherited: itemInherited,
+        }, itemIndex) => {
           column.append(elementRow({
             node: item,
             tag: 'p',
@@ -991,6 +996,7 @@
               {item_uuid: item.uuid, text: value}),
             proposed: itemProposed,
             interactive: interactive && !itemProposed,
+            reactable: reactable && !itemInherited,
             index: itemIndex,
             count: items.length,
             onMove: (!interactive || itemProposed || itemsHaveProposals)
@@ -1247,7 +1253,10 @@
         node: {uuid: identity.node_uuid || '', data: {name: 'Identity'}},
         tag: 'h4',
         field: 'name',
+        // The word "Identity" is not editable - it is the role's name, not
+        // its content - but a handover in flight is answered right here.
         interactive: false,
+        reactable: interactive,
       }));
 
       const purpose = document.createElement('p');
@@ -1365,6 +1374,9 @@
           index,
           count: roles.length,
           interactive: interactive && !proposed,
+          // A proposed role is not ours to edit, but answering the proposal
+          // is the whole point of showing it.
+          reactable: interactive,
           movable: interactive && !proposed && !rolesHaveProposals,
         }));
       });
@@ -1441,11 +1453,14 @@
 
       if (!ephemeral.disclosures
           || ephemeral.disclosures.agreementUuid !== current.uuid) {
+        // Who is here, first and open. The agreement is the longest thing on
+        // the page and the least often changed, so it arrives closed - the
+        // team is people and roles, and the text is what they hold to.
         ephemeral.disclosures = {
           agreementUuid: current.uuid,
-          document: true,
-          actors: false,
+          actors: true,
           roles: false,
+          document: false,
         };
       }
       const disclosure = (title, key) => SovereignUI.disclosure(title, {
@@ -1453,32 +1468,20 @@
         onToggle: open => { ephemeral.disclosures[key] = open; },
       });
 
-      // "Agreement" survives here alone, and without "document" after it:
-      // this section *is* the agreement - the text the team's members
-      // consent to - while everything around it is the team.
-      const documentPart = disclosure('Agreement', 'document');
-      const content = document.createElement('div');
-      content.className = 'content';
-      documentPart.content.append(elementRow({
+      // The team's own name, above everything and inside nothing. It used to
+      // sit under the "Agreement" heading, which made one name serve two
+      // things: renaming the body silently retitled the document its members
+      // had accepted. The lamp and the reaction belong here too - this row is
+      // the team node, and the agreement's title is a field on it, so a second
+      // row would report the same divergence twice.
+      article.append(elementRow({
         node: current,
         tag: 'h2',
         field: 'title',
         rename: value => api('/api/team/teams/rename',
           {team_uuid: current.uuid, title: value}),
         interactive: currentInteractionAllowed,
-        addControl: currentInteractionAllowed
-          ? SovereignUI.addComposer({
-            noun: 'section',
-            placeholder: 'Section title',
-            className: 'element-add-control',
-            onSubmit: async title => {
-              await api('/api/team/sections/create',
-                {team_uuid: current.uuid, title});
-              await load();
-            },
-            onError: error => showToast(error.message, true),
-          })
-          : null,
+        reactable: currentInteractionAllowed,
       }));
       if (!currentInteractionAllowed) {
         const notice = document.createElement('p');
@@ -1487,8 +1490,41 @@
           payload.interaction?.reason
           || 'This subteam is visible but read-only.'
         );
-        documentPart.content.append(notice);
+        article.append(notice);
       }
+
+      const documentPart = disclosure('Agreement', 'document');
+      const content = document.createElement('div');
+      content.className = 'content';
+      // The agreement's own name, drawn the way a role's purpose is: an
+      // editable heading rather than a row of its own, because the status it
+      // would carry is already on the team name above. An unnamed agreement
+      // stays genuinely empty - the prompt is a pseudo-element, so it can
+      // never be committed as the name.
+      const agreementHead = document.createElement('div');
+      agreementHead.className = 'agreement-head';
+      const agreementTitle = document.createElement('h2');
+      agreementTitle.className = 'agreement-title';
+      agreementTitle.textContent = current.data.agreement_title || '';
+      if (currentInteractionAllowed) {
+        editable(agreementTitle, current.data.agreement_title || '', value =>
+          api('/api/team/agreement/rename',
+            {team_uuid: current.uuid, title: value}));
+      }
+      agreementHead.append(agreementTitle);
+      if (currentInteractionAllowed) {
+        agreementHead.append(SovereignUI.addComposer({
+          noun: 'section',
+          placeholder: 'Section title',
+          onSubmit: async title => {
+            await api('/api/team/sections/create',
+              {team_uuid: current.uuid, title});
+            await load();
+          },
+          onError: error => showToast(error.message, true),
+        }));
+      }
+      documentPart.content.append(agreementHead);
       const sections = displayedChildren(current, 'team_section');
       const sectionsHaveProposals = sections.some(entry => entry.proposed);
       sections.forEach(({node: section, proposed}, sIndex) => {
@@ -1499,6 +1535,7 @@
           field: 'title',
           proposed,
           interactive: currentInteractionAllowed,
+          reactable: currentInteractionAllowed,
           rename: proposed ? null : value => api(
             '/api/team/sections/rename',
             {section_uuid: section.uuid, title: value},
@@ -1539,13 +1576,16 @@
           section, 'team_clause', proposed,
         );
         const clausesHaveProposals = clauses.some(entry => entry.proposed);
-        clauses.forEach(({node: clause, proposed: clauseProposed}, cIndex) => {
+        clauses.forEach(({
+          node: clause, proposed: clauseProposed, inherited: clauseInherited,
+        }, cIndex) => {
           block.append(elementRow({
             node: clause,
             tag: 'p',
             field: 'text',
             proposed: clauseProposed,
             interactive: currentInteractionAllowed,
+            reactable: currentInteractionAllowed && !clauseInherited,
             rename: clauseProposed ? null : value => api(
               '/api/team/clauses/update',
               {clause_uuid: clause.uuid, text: value},
@@ -1590,7 +1630,10 @@
 
       const rolesPart = disclosure('Roles', 'roles');
       rolesPart.content.append(renderRoles(current, currentInteractionAllowed));
-      article.append(documentPart.section, actorsPart.section, rolesPart.section);
+      // Who is here, then what is expected of them, then the text they hold
+      // to. The agreement used to come first; it is the longest section and
+      // the least often changed, and leading with it buried the team.
+      article.append(actorsPart.section, rolesPart.section, documentPart.section);
       SovereignShell.refresh();
     };
 
@@ -1619,6 +1662,10 @@
           ? (node.data.title || node.data.text || '').slice(0, 60)
           : '';
       },
+      // The pane lists what is unsettled; these settle it without leaving it,
+      // so a team with a dozen proposals is worked through top to bottom.
+      canReact: () => currentInteractionAllowed,
+      reactNode: (uuid, choice) => applyReaction(uuid, choice),
     });
 
     // Deep link from the overview: /apps/team?team=<uuid> selects

@@ -359,10 +359,14 @@ class TeamLogic:
             ),
             self._team_titles(),
         )
+        # The copy is a new body with the same agreement, so it takes a new
+        # team name and keeps the agreement's - which is the whole reason the
+        # two are separate fields. A template's text arrives named.
+        data = {"type": "team", "title": normalized}
+        if agreement_title := source.data.get("agreement_title"):
+            data["agreement_title"] = agreement_title
         created = self.session.create_child(
-            self._team_container().uuid,
-            {"type": "team", "title": normalized},
-            {},
+            self._team_container().uuid, data, {},
         )
         if created.status != "ok":
             return created
@@ -479,6 +483,27 @@ class TeamLogic:
         # body calls itself.
         return self._retitle(
             team_uuid, "team", "title", title, distinct=True,
+        )
+
+    def rename_agreement(self, team_uuid: str, title: str) -> SessionResult:
+        """Name the agreement, which is not the name of the team.
+
+        A team is a body of people; its agreement is the text they hold to.
+        One name was doing both jobs, so a team called "Finance" had an
+        agreement called "Finance" - and renaming the body silently retitled
+        the document everybody had accepted. They are stored as two fields on
+        the same node because sections already hang off the team directly and
+        there is no separate agreement node to carry one.
+
+        It is left unset rather than defaulted: an agreement nobody has named
+        is a real state, and seeding every team with the word "Agreement" as
+        a name would only make the label unreadable as a name. The page shows
+        a prompt in its place. Both fields sit in team_reference_hash, so
+        renaming either re-opens acceptances - which is right for the title
+        of the thing that was accepted.
+        """
+        return self._retitle(
+            team_uuid, "team", "agreement_title", title,
         )
 
     def rename_section(self, section_uuid: str, title: str) -> SessionResult:
@@ -2073,9 +2098,11 @@ class TeamLogic:
         "team_role_holding": "Seat",
         "agenda_item": "Discussion topic",
     }
-    # Text-bearing fields, by the name they are read under.
+    # Text-bearing fields, by the name they are read under. "Title" alone
+    # would be ambiguous on a team node, which now carries two.
     TEXT_FIELDS = {
         "title": "Title",
+        "agreement_title": "Agreement title",
         "name": "Name",
         "text": "Text",
         "purpose": "Purpose",

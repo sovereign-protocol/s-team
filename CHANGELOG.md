@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+- **The team's name and its agreement's name are now two things.** One field
+  served both, so a team called "Finance" had an agreement called "Finance"
+  and renaming the body silently retitled the document its members had
+  accepted. The team's name heads the page; the agreement carries its own
+  `agreement_title`, renamed through `POST /api/team/agreement/rename` and
+  editable in place inside its section. It is left unset rather than
+  defaulted - the page prompts in its place - and a copy takes a new team name
+  while keeping the agreement's, which is what makes a template a template.
+  Both fields are inside `team_reference_hash`, so renaming either re-opens
+  acceptances, as it should for the title of what was accepted.
+- **The page reads team name, Actors, Roles, Agreement**, with Actors open and
+  the other two collapsed. The agreement used to come first and open: it is
+  the longest section and the least often changed, so leading with it buried
+  the team behind its own text.
+- **Fixed: a proposal could be taken back but not accepted.** When a peer added
+  a role, accountability or domain, its author saw a button to withdraw it
+  while the side it was proposed to saw only the word "Proposed" with no way to
+  answer. The row treated editing and reacting as one permission: a proposed
+  element is not ours to edit until we accept it, which also removed the one
+  control the row existed for. The two are now separate, and a reaction is
+  offered wherever there is something to answer - including on the Identity
+  card, where a handover in flight had the same problem. Items inside a
+  proposed role stay unanswered on purpose: accepting the role brings them.
+- Reactions now use Core's shared control and wording, so a team's proposals
+  read like a board's: one available act is a button naming it, several become
+  a menu. This replaces S-Team's own five-way label ladder, which was the only
+  place these acts were named differently.
+- The collaboration pane's divergences can now be answered from the pane, so a
+  team with several open proposals is worked through top to bottom.
+
 ## 0.2.0a3 - 2026-08-01
 
 Renamed from S-Agreement to **S-Team**, distributed as `sovereign-team`. The

@@ -148,6 +148,17 @@ button, select { padding: 8px 11px; border-radius: 6px; border: 1px solid var(--
 .element-label { margin: 6px 0; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 h2.element-label { margin: 0 0 4px; }
 
+/* The team's name is the page's subject, so it is set apart from the three
+   sections beneath it - it names all of them rather than heading the first.
+   The rule below it does the separating; the sections carry none of their
+   own, which is what kept the old page to two rules and no more. */
+#document > .element-row {
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+#document > .element-row h2.element-label { font-size: 22px; }
+
 /* The lamp carries the explanation, so hovering the status tells you what is
    unsettled without opening anything. These four are the reserved status
    colours (U2) and are unchanged by the repaint - they never sat on the
@@ -242,6 +253,15 @@ h2.element-label { margin: 0 0 4px; }
   border: 1px solid var(--teal, #0f7a64);
   color: #ffffff;
   font-weight: 600;
+}
+/* Core's control fades to a soft tint on hover, which is right for a quiet
+   outline button and wrong for a filled one - it would look disabled. A
+   filled button darkens instead. */
+.element-react:hover,
+.element-react:focus-visible {
+  background: #0b6855;
+  border-color: #0b6855;
+  color: #ffffff;
 }
 .element-delete {
   background: none;
@@ -533,6 +553,38 @@ h2.element-label { margin: 0 0 4px; }
 }
 .element-toggle:hover { color: var(--text); }
 .content.is-collapsed { display: none; }
+
+/* The agreement's own name, and the one control that adds to it. Not an
+   element row: the status it would carry is already on the team name at the
+   top of the page, and two lamps for one node would report the same
+   divergence twice. Drawn the way a role's title and purpose are - the text
+   itself, editable in place, with nothing framing it. */
+.agreement-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.agreement-title {
+  margin: 0;
+  min-width: 0;
+  font-size: 17px;
+  overflow-wrap: anywhere;
+}
+/* The prompt is a pseudo-element, so an unnamed agreement stays genuinely
+   empty and the prompt can never be committed as the name. */
+.agreement-title:empty::before {
+  content: 'Name this agreement';
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+.agreement-head .ui-add-control { margin: 0; }
+.agreement-head .ui-add-trigger {
+  background: none;
+  color: var(--text-muted);
+}
+.agreement-head .ui-inline-composer input { width: 180px; }
 
 /* A team nobody is in is worth marking in the tree, where it sits
    among teams people rely on. Nowhere else: on its own page the

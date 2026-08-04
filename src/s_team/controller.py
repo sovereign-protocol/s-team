@@ -69,6 +69,12 @@ def build_routes(logic, runtime) -> list[Route]:
             data["team_uuid"], data.get("title", ""),
         ))
 
+    async def api_rename_agreement(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.rename_agreement(
+            data["team_uuid"], data.get("title", ""),
+        ))
+
     async def api_rename_section(request: Request):
         data = await request.json()
         return await _json_result(runtime, logic.rename_section(
@@ -279,6 +285,11 @@ def build_routes(logic, runtime) -> list[Route]:
         Route("/api/team/teams/select", api_select_team, methods=["POST"]),
         Route("/api/team/teams/rename", api_rename_team, methods=["POST"]),
         Route("/api/team/teams/delete", api_delete_team, methods=["POST"]),
+        Route(
+            "/api/team/agreement/rename",
+            api_rename_agreement,
+            methods=["POST"],
+        ),
         Route("/api/team/sections/create", api_create_section, methods=["POST"]),
         Route("/api/team/sections/rename", api_rename_section, methods=["POST"]),
         Route("/api/team/sections/delete", api_delete_section, methods=["POST"]),

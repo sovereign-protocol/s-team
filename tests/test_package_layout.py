@@ -181,11 +181,24 @@ class AssetTests(unittest.TestCase):
 
     def test_peer_only_nodes_are_presented_as_proposals(self):
         self.assertIn("payloadState.proposed_nodes", self.team)
-        self.assertIn("Accept proposal", self.team)
-        self.assertIn("Withdraw proposal", self.team)
+        # The reaction control and its wording are Core's, so a proposal here
+        # offers the same acts, named the same way, as one on a board. This
+        # page must not grow a second vocabulary for them again.
+        self.assertIn("SovereignUI.reactionControl", self.team)
+        self.assertNotIn("Accept proposal", self.team)
+        self.assertNotIn("Withdraw proposal", self.team)
         # "Keep mine" is the Kanban reaction, offered after a merge. An
         # team never merges a peer's node first, so it must not appear.
         self.assertNotIn("Keep mine", self.team)
+
+    def test_a_proposal_is_answerable_by_the_side_it_is_made_to(self):
+        # Editing a proposed element and answering it are different rights:
+        # it is not ours to edit until we accept it, and accepting it is the
+        # only thing the row is for. Conflating them left the receiving side
+        # with "Proposed" and no way to accept.
+        self.assertIn("reactable = true", self.team)
+        self.assertIn("reactable: interactive", self.team)
+        self.assertIn("reactable: reactable && !itemInherited", self.team)
 
     def test_topic_header_delegates_navigation_and_creation_to_the_shell(self):
         self.assertNotIn("onCreateTopic", self.team)
@@ -296,9 +309,11 @@ class AssetTests(unittest.TestCase):
             ("Roles", "roles"),
         ):
             self.assertIn(f"disclosure('{title}', '{key}')", self.team)
-        self.assertIn("document: true", self.team)
-        self.assertIn("actors: false", self.team)
+        # Who is here, open. The agreement is the longest section and the
+        # least often changed, so it no longer greets whoever opens the team.
+        self.assertIn("actors: true", self.team)
         self.assertIn("roles: false", self.team)
+        self.assertIn("document: false", self.team)
 
     def test_copying_is_only_offered_while_making_a_new_team(self):
         # Starting a new team from this one is a choice made where a new
@@ -328,15 +343,39 @@ class AssetTests(unittest.TestCase):
         self.assertNotIn("team-state", self.team)
         self.assertNotIn("One actor", self.team)
 
-    def test_document_add_controls_live_on_their_heading_rows(self):
+    def test_document_add_controls_live_on_their_headings(self):
         css = files("s_team.assets").joinpath(
             "team.css",
         ).read_text(encoding="utf-8")
-        self.assertIn("addControl: currentInteractionAllowed", self.team)
+        # A clause is added from its section's heading row, hover-revealed
+        # like the other row controls.
         self.assertIn("addControl: !proposed && currentInteractionAllowed", self.team)
         self.assertIn("className: 'element-add-control'", self.team)
         self.assertIn(".element-row:hover .element-add-control", css)
+        # A section is added from the agreement's heading, which is not a row:
+        # the agreement's title is a field on the team node, and giving it a
+        # row would put a second lamp on the same node's divergence.
+        self.assertIn("agreementHead.append(SovereignUI.addComposer", self.team)
+        self.assertIn(".agreement-head .ui-add-trigger", css)
         self.assertNotIn("block.append(SovereignUI.addComposer", self.team)
+
+    def test_the_team_is_named_apart_from_its_agreement(self):
+        css = files("s_team.assets").joinpath(
+            "team.css",
+        ).read_text(encoding="utf-8")
+        # One field used to serve both, so renaming the body silently
+        # retitled the document its members had accepted.
+        self.assertIn("/api/team/agreement/rename", self.team)
+        self.assertIn("current.data.agreement_title", self.team)
+        self.assertIn(".agreement-title:empty::before", css)
+        # The team's name heads the page, outside every disclosure, and the
+        # sections follow in the order the page now reads.
+        self.assertIn("#document > .element-row", css)
+        self.assertIn(
+            "article.append(actorsPart.section, rolesPart.section,"
+            " documentPart.section)",
+            self.team,
+        )
 
     def test_role_offer_picker_shares_the_held_by_heading_and_theme(self):
         css = files("s_team.assets").joinpath(
