@@ -170,25 +170,44 @@ class RegistryTests(unittest.TestCase):
         for name in ("TRUSTS", "TRUSTEE_CAUSES", "ACTION_KINDS"):
             self.assertIn(name, documented_vocabularies())
 
-    def test_every_governance_record_type_has_an_assessor(self):
+    def test_every_governance_record_type_has_a_row(self):
         # The dispatch table and the type list are two statements of the same
         # thing. A type in one and not the other is a KeyError raised while
         # assessing somebody else's record, which is the worst place for one.
         self.assertEqual(
-            set(TeamLogic.GOVERNANCE_ASSESSMENT),
+            set(TeamLogic.GOVERNANCE_RECORDS),
             set(TeamLogic.GOVERNANCE_RECORD_TYPES),
         )
 
-    def test_each_assessor_exists_and_its_author_field_is_declared(self):
-        for node_type, (author_field, assessor) in sorted(
-            TeamLogic.GOVERNANCE_ASSESSMENT.items(),
+    def test_each_row_names_methods_that_exist_and_a_declared_author(self):
+        for node_type, (author, checker, assessor) in sorted(
+            TeamLogic.GOVERNANCE_RECORDS.items(),
         ):
             with self.subTest(node_type=node_type):
+                required, _ = TeamLogic.GOVERNANCE_FIELDS[node_type]
+                self.assertIn(author, required)
                 self.assertTrue(
                     callable(getattr(TeamLogic, assessor, None)), assessor,
                 )
-                required, _ = TeamLogic.GOVERNANCE_FIELDS[node_type]
-                self.assertIn(author_field, required)
+                if checker:
+                    self.assertTrue(
+                        callable(getattr(TeamLogic, checker, None)), checker,
+                    )
+
+    def test_every_pool_record_type_has_a_row(self):
+        self.assertEqual(
+            set(TeamLogic.POOL_ASSESSMENT),
+            set(TeamLogic.POOL_RECORD_TYPES),
+        )
+        for node_type, (author, assessor) in sorted(
+            TeamLogic.POOL_ASSESSMENT.items(),
+        ):
+            with self.subTest(node_type=node_type):
+                required, _ = TeamLogic.POOL_FIELDS[node_type]
+                self.assertIn(author, required)
+                self.assertTrue(
+                    callable(getattr(TeamLogic, assessor, None)), assessor,
+                )
 
     def test_retired_names_appear_in_no_source_file(self):
         for path in sorted((ROOT / "src").rglob("*.py")):

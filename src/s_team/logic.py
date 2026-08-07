@@ -1553,6 +1553,11 @@ class TeamLogic:
         return None
 
     def governance_schema_error(self, node: ProtocolNode) -> str | None:
+        """Whether a governance record is the shape its type declares.
+
+        The field contract first, which is the same question for every one of
+        them, then whatever that one type requires of its own values.
+        """
         node_type = node.data.get("type")
         contract = self.GOVERNANCE_FIELDS.get(node_type)
         if contract is None:
@@ -1569,6 +1574,8 @@ class TeamLogic:
             return "unsupported governance fields: " + ", ".join(extra)
 
         data = node.data
+        # Everything a governance record carries is text, bar an electorate,
+        # an action payload and a process version.
         scalar_exceptions = {
             "electorate_actor_uuids", "payload", "process_definition_version",
         }
@@ -1578,110 +1585,138 @@ class TeamLogic:
         for field in optional:
             if field in data and not isinstance(data[field], str):
                 return f"{field} must be a string"
-        if node_type in {"team_trustee_state", "team_trustee_election",
-                         "team_trustee_candidacy", "team_trustee_action"}:
-            if data.get("trust") not in self.TRUSTS:
-                return "trust must be identity or trust"
-        if node_type == "team_trustee_state":
-            if data.get("cause") not in self.TRUSTEE_CAUSES:
-                return "unsupported trustee-state cause"
-            if data.get("cause") == "genesis" and (
-                data.get("previous_state_uuid") or data.get("authority_basis_uuid")
+        # Read off the contract rather than from a second list of which types
+        # carry a trusteeship, which would be one more thing to keep in step.
+        if "trust" in required and data.get("trust") not in self.TRUSTS:
+            return "trust must be identity or trust"
+        checker = self.GOVERNANCE_RECORDS[node_type][1]
+        return getattr(self, checker)(data) if checker else None
+
+    # Each check below is what one record type asks of its own values, beyond
+    # the fields it must carry. They answer with the complaint, or nothing.
+
+    def _trustee_state_schema_error(self, data: dict) -> str | None:
+        cause = data.get("cause")
+        if cause not in self.TRUSTEE_CAUSES:
+            return "unsupported trustee-state cause"
+        if cause == "genesis" and (
+            data.get("previous_state_uuid") or data.get("authority_basis_uuid")
+        ):
+            return "genesis cannot name previous state or authority basis"
+        if cause != "genesis" and not data.get("previous_state_uuid"):
+            return "non-genesis trustee state requires previous_state_uuid"
+        if cause in {"election", "resolution"} and (
+            not data.get("process_uuid") or not data.get("process_result_hash")
+        ):
+            return "election state requires process evidence"
+        return None
+
+    def _membership_schema_error(self, data: dict) -> str | None:
+        if data.get("state") not in {"member", "former"}:
+            return "membership state must be member or former"
+        cause = data.get("cause")
+        if cause not in self.MEMBERSHIP_CAUSES:
+            return "unsupported membership cause"
+        if cause == "genesis":
+            if (
+                data.get("previous_membership_uuid")
+                or data.get("authority_basis_uuid")
             ):
-                return "genesis cannot name previous state or authority basis"
-            if data.get("cause") != "genesis" and not data.get("previous_state_uuid"):
-                return "non-genesis trustee state requires previous_state_uuid"
-            if data.get("cause") in {"election", "resolution"} and (
-                not data.get("process_uuid") or not data.get("process_result_hash")
-            ):
-                return "election state requires process evidence"
-        elif node_type == "team_membership":
-            if data.get("state") not in {"member", "former"}:
-                return "membership state must be member or former"
-            if data.get("cause") not in self.MEMBERSHIP_CAUSES:
-                return "unsupported membership cause"
-            cause = data.get("cause")
-            if cause == "genesis":
-                if (
-                    data.get("previous_membership_uuid")
-                    or data.get("authority_basis_uuid")
-                ):
-                    return (
-                        "genesis membership cannot name a predecessor "
-                        "or authority basis"
-                    )
-                if data.get("state") != "member":
-                    return "genesis membership must be a membership"
-            if cause == "admission":
-                if not data.get("resolution_uuid"):
-                    return "an admission must name the resolution it implements"
-                if data.get("state") != "member":
-                    return "an admission must be a membership"
-            if cause in {"departure", "removal"} and data.get("state") != "former":
-                return "leaving must end the membership"
-            if cause == "departure" and data.get("authority_basis_uuid"):
-                # Leaving is nobody's decision but your own, so it rests on
-                # no authority - naming one would claim it did.
-                return "a departure rests on no authority basis"
-        elif node_type == "team_member_opening":
-            if data.get("state") not in {"open", "closed"}:
-                return "opening state must be open or closed"
-            if data.get("state") == "open" and data.get("previous_opening_uuid"):
-                return "initial opening cannot name a predecessor"
-            if data.get("state") == "closed" and (
-                not data.get("closed_at") or not data.get("previous_opening_uuid")
-            ):
-                return "closed opening requires closed_at and a predecessor"
-        elif node_type == "team_member_application":
-            if data.get("state") not in {"submitted", "withdrawn"}:
-                return "application state must be submitted or withdrawn"
-            if data.get("state") == "submitted" and data.get("previous_application_uuid"):
-                return "initial application cannot name a predecessor"
-            if data.get("state") == "withdrawn" and (
-                not data.get("withdrawn_at")
-                or not data.get("previous_application_uuid")
-            ):
-                return "withdrawn application requires withdrawn_at and a predecessor"
-        elif node_type == "team_member_resolution":
-            if data.get("outcome") not in {"accepted", "rejected"}:
-                return "resolution outcome must be accepted or rejected"
-        elif node_type == "team_trustee_election":
-            electorate = data.get("electorate_actor_uuids")
-            if not isinstance(electorate, list) or not all(
-                isinstance(actor, str) and actor for actor in electorate
-            ):
-                return "electorate_actor_uuids must be a list of actor UUIDs"
-            if not electorate or len(electorate) != len(set(electorate)):
-                return "electorate_actor_uuids must be non-empty and unique"
-            version = data.get("process_definition_version")
-            if isinstance(version, bool) or not isinstance(version, (str, int)):
-                return "process_definition_version must be a string or integer"
-            # No trusteeship supervises itself. Expressed as "not the
-            # subject" rather than "the counterpart", because a counterpart
-            # only exists while there are exactly two, and the rule this
-            # protects is the one about self-supervision.
-            if data.get("facilitator_trust") not in self.TRUSTS:
-                return "facilitator_trust must name a trusteeship"
-            if data.get("facilitator_trust") == data.get("trust"):
-                return "a trusteeship cannot facilitate its own election"
-        elif node_type == "team_trustee_candidacy":
-            if data.get("state") not in {"active", "withdrawn"}:
-                return "candidacy state must be active or withdrawn"
-            if data.get("state") == "active" and data.get("previous_candidacy_uuid"):
-                return "initial candidacy cannot name a predecessor"
-            if data.get("state") == "withdrawn" and (
-                not data.get("withdrawn_at")
-                or not data.get("previous_candidacy_uuid")
-            ):
-                return "withdrawn candidacy requires withdrawn_at and a predecessor"
-        elif node_type == "team_trustee_action":
-            if data.get("action_kind") not in self.ACTION_KINDS:
-                return "unsupported trustee action kind"
-            if not isinstance(data.get("payload"), dict):
-                return "trustee action payload must be an object"
-        elif node_type == "team_external_member_resolution":
-            if data.get("outcome") != "accepted":
-                return "external Team resolution must be accepted"
+                return (
+                    "genesis membership cannot name a predecessor "
+                    "or authority basis"
+                )
+            if data.get("state") != "member":
+                return "genesis membership must be a membership"
+        if cause == "admission":
+            if not data.get("resolution_uuid"):
+                return "an admission must name the resolution it implements"
+            if data.get("state") != "member":
+                return "an admission must be a membership"
+        if cause in {"departure", "removal"} and data.get("state") != "former":
+            return "leaving must end the membership"
+        if cause == "departure" and data.get("authority_basis_uuid"):
+            # Leaving is nobody's decision but your own, so it rests on no
+            # authority - naming one would claim it did.
+            return "a departure rests on no authority basis"
+        return None
+
+    def _member_opening_schema_error(self, data: dict) -> str | None:
+        state = data.get("state")
+        if state not in {"open", "closed"}:
+            return "opening state must be open or closed"
+        if state == "open" and data.get("previous_opening_uuid"):
+            return "initial opening cannot name a predecessor"
+        if state == "closed" and (
+            not data.get("closed_at") or not data.get("previous_opening_uuid")
+        ):
+            return "closed opening requires closed_at and a predecessor"
+        return None
+
+    def _member_application_schema_error(self, data: dict) -> str | None:
+        state = data.get("state")
+        if state not in {"submitted", "withdrawn"}:
+            return "application state must be submitted or withdrawn"
+        if state == "submitted" and data.get("previous_application_uuid"):
+            return "initial application cannot name a predecessor"
+        if state == "withdrawn" and (
+            not data.get("withdrawn_at")
+            or not data.get("previous_application_uuid")
+        ):
+            return "withdrawn application requires withdrawn_at and a predecessor"
+        return None
+
+    def _member_resolution_schema_error(self, data: dict) -> str | None:
+        if data.get("outcome") not in {"accepted", "rejected"}:
+            return "resolution outcome must be accepted or rejected"
+        return None
+
+    def _trustee_election_schema_error(self, data: dict) -> str | None:
+        electorate = data.get("electorate_actor_uuids")
+        if not isinstance(electorate, list) or not all(
+            isinstance(actor, str) and actor for actor in electorate
+        ):
+            return "electorate_actor_uuids must be a list of actor UUIDs"
+        if not electorate or len(electorate) != len(set(electorate)):
+            return "electorate_actor_uuids must be non-empty and unique"
+        version = data.get("process_definition_version")
+        if isinstance(version, bool) or not isinstance(version, (str, int)):
+            return "process_definition_version must be a string or integer"
+        # No trusteeship supervises itself. Expressed as "not the subject"
+        # rather than "the counterpart", because a counterpart only exists
+        # while there are exactly two, and the rule this protects is the one
+        # about self-supervision.
+        if data.get("facilitator_trust") not in self.TRUSTS:
+            return "facilitator_trust must name a trusteeship"
+        if data.get("facilitator_trust") == data.get("trust"):
+            return "a trusteeship cannot facilitate its own election"
+        return None
+
+    def _trustee_candidacy_schema_error(self, data: dict) -> str | None:
+        state = data.get("state")
+        if state not in {"active", "withdrawn"}:
+            return "candidacy state must be active or withdrawn"
+        if state == "active" and data.get("previous_candidacy_uuid"):
+            return "initial candidacy cannot name a predecessor"
+        if state == "withdrawn" and (
+            not data.get("withdrawn_at")
+            or not data.get("previous_candidacy_uuid")
+        ):
+            return "withdrawn candidacy requires withdrawn_at and a predecessor"
+        return None
+
+    def _trustee_action_schema_error(self, data: dict) -> str | None:
+        if data.get("action_kind") not in self.ACTION_KINDS:
+            return "unsupported trustee action kind"
+        if not isinstance(data.get("payload"), dict):
+            return "trustee action payload must be an object"
+        return None
+
+    def _external_member_resolution_schema_error(
+        self, data: dict,
+    ) -> str | None:
+        if data.get("outcome") != "accepted":
+            return "external Team resolution must be accepted"
         return None
 
     def pool_schema_error(self, node: ProtocolNode) -> str | None:
@@ -2964,23 +2999,50 @@ class TeamLogic:
             return ("unauthorized", "the acting candidate is not a current Member")
         return ("authorized", "")
 
-    # One row per governance record type: the field naming its author, and
-    # the assessor that knows what else has to be true of it. Adding a type
-    # is a row and a short method beside its siblings, rather than another
-    # branch in a function that ran to four hundred lines and was touched by
-    # every change to any of them.
-    GOVERNANCE_ASSESSMENT = {
-        "team_trustee_state": ("acted_by", "_assess_trustee_state"),
-        "team_membership": ("acted_by", "_assess_membership"),
-        "team_member_opening": ("opened_by", "_assess_member_opening"),
-        "team_member_application": ("actor_uuid", "_assess_member_application"),
-        "team_member_resolution": ("resolved_by", "_assess_member_resolution"),
-        "team_trustee_election": ("triggered_by", "_assess_trustee_election"),
-        "team_trustee_candidacy": ("actor_uuid", "_assess_trustee_candidacy"),
-        "team_trustee_action": ("acted_by", "_assess_trustee_action"),
-        "team_trustee_reality": ("observed_by", "_assess_trustee_reality"),
+    # One row per governance record type, in the order the three questions
+    # are asked of it: which field names its author, what its own shape
+    # requires beyond the field contract, and what has to be true before it
+    # may be adopted. Adding a type is a row and two short methods beside
+    # their siblings, rather than another branch in two long functions that
+    # every change to any type had to be threaded through.
+    #
+    # An empty middle column means the field contract is the whole of that
+    # type's shape.
+    GOVERNANCE_RECORDS = {
+        "team_trustee_state": (
+            "acted_by", "_trustee_state_schema_error", "_assess_trustee_state",
+        ),
+        "team_membership": (
+            "acted_by", "_membership_schema_error", "_assess_membership",
+        ),
+        "team_member_opening": (
+            "opened_by", "_member_opening_schema_error",
+            "_assess_member_opening",
+        ),
+        "team_member_application": (
+            "actor_uuid", "_member_application_schema_error",
+            "_assess_member_application",
+        ),
+        "team_member_resolution": (
+            "resolved_by", "_member_resolution_schema_error",
+            "_assess_member_resolution",
+        ),
+        "team_trustee_election": (
+            "triggered_by", "_trustee_election_schema_error",
+            "_assess_trustee_election",
+        ),
+        "team_trustee_candidacy": (
+            "actor_uuid", "_trustee_candidacy_schema_error",
+            "_assess_trustee_candidacy",
+        ),
+        "team_trustee_action": (
+            "acted_by", "_trustee_action_schema_error",
+            "_assess_trustee_action",
+        ),
+        "team_trustee_reality": ("observed_by", "", "_assess_trustee_reality"),
         "team_external_member_resolution": (
-            "resolved_by", "_assess_external_member_resolution",
+            "resolved_by", "_external_member_resolution_schema_error",
+            "_assess_external_member_resolution",
         ),
     }
 
@@ -3009,7 +3071,7 @@ class TeamLogic:
                 "reason": "Governance records must be direct children of their Team.",
             }
         data = node.data
-        author_field, assessor = self.GOVERNANCE_ASSESSMENT[data["type"]]
+        author_field, _, assessor = self.GOVERNANCE_RECORDS[data["type"]]
         actor_uuid = data.get(author_field) or ""
         status, reason = self._signed_actor_status(node, actor_uuid)
         if status != "authorized":
@@ -4105,10 +4167,19 @@ class TeamLogic:
             if normalized else None
         )
 
+    # As GOVERNANCE_RECORDS, for the waiting room: the field naming each
+    # record's author, and the assessor for what else has to be true of it.
+    POOL_ASSESSMENT = {
+        "team_pool_invitation": ("published_by", "_assess_pool_invitation"),
+        "team_pool_application": ("actor_uuid", "_assess_pool_application"),
+        "team_pool_resolution": ("resolved_by", "_assess_pool_resolution"),
+    }
+
     def assess_pool_record(
         self, pool: ProtocolNode, node: ProtocolNode,
         verification: str | None = None,
     ) -> dict:
+        """Whether a Pool record may be adopted here."""
         verification = verification or self.session.revision_verification(node)
         if verification == "unknown":
             return {"status": "deferred", "reason": "the signing key is not known"}
@@ -4123,125 +4194,138 @@ class TeamLogic:
         if node.parent_uuid != pool.uuid:
             return {"status": "invalid", "reason": "Pool records must be direct children"}
         data = node.data
-        actor_field = {
-            "team_pool_invitation": "published_by",
-            "team_pool_application": "actor_uuid",
-            "team_pool_resolution": "resolved_by",
-        }[data["type"]]
-        actor_uuid = str(data.get(actor_field) or "")
+        author_field, assessor = self.POOL_ASSESSMENT[data["type"]]
+        actor_uuid = str(data.get(author_field) or "")
         status, reason = self._signed_actor_status(node, actor_uuid)
         if status != "authorized":
             return {"status": status, "reason": reason}
         if data.get("team_uuid") != pool.data.get("team_uuid"):
             return {"status": "invalid", "reason": "record names another Team"}
-
+        # The Team may not be here at all: a Pool is shared with people who
+        # have not been let into it, which is the whole point of one.
         team = self._node(str(pool.data.get("team_uuid") or ""), "team")
-        if data["type"] == "team_pool_invitation":
-            published = self._timestamp(data["published_at"])
-            expires = self._timestamp(data["expires_at"])
-            if not published or not expires or expires <= published:
-                return {"status": "invalid", "reason": "invitation expiry is invalid"}
-            if data.get("team_title") != pool.data.get("team_title"):
-                return {"status": "invalid", "reason": "invitation Team title does not match the Pool"}
-            if team:
-                opening = self._governance_node(
-                    team, data["opening_uuid"], "team_member_opening",
-                )
-                if opening is None:
-                    return {"status": "deferred", "reason": "Member opening is not available"}
-                status, reason = self._trust_authority(
-                    team, self.MEMBERSHIP_TRUST, actor_uuid,
-                    data["authority_basis_uuid"],
-                )
-                if status != "authorized":
-                    return {"status": status, "reason": reason}
-        elif data["type"] == "team_pool_application":
-            invitation = next((
-                record for record in self.pool_records(
-                    pool, "team_pool_invitation",
-                )
-                if record.uuid == data["invitation_uuid"]
-            ), None)
-            if invitation is None:
-                return {"status": "deferred", "reason": "Pool invitation is not available"}
-            if (
-                data.get("opening_uuid") != invitation.data.get("opening_uuid")
-                or data.get("team_uuid") != invitation.data.get("team_uuid")
-            ):
-                return {"status": "invalid", "reason": "application does not match its invitation"}
-            submitted = self._timestamp(data["submitted_at"])
-            published = self._timestamp(str(invitation.data.get("published_at") or ""))
-            expires = self._timestamp(str(invitation.data.get("expires_at") or ""))
-            if not submitted or not published or not expires or not (
-                published <= submitted < expires
-            ):
-                return {"status": "unauthorized", "reason": "invitation was not active when the application was submitted"}
-            if data["state"] == "withdrawn":
-                previous = next((
-                    record for record in self.pool_records(
-                        pool, "team_pool_application",
-                    )
-                    if record.uuid == data["previous_application_uuid"]
-                ), None)
-                root = next((
-                    record for record in self.pool_application_roots(pool)
-                    if record.uuid == (previous.uuid if previous else "")
-                ), None)
-                if (
-                    not previous or not root
-                    or previous.data.get("actor_uuid") != actor_uuid
-                    or previous.data.get("state") != "submitted"
-                    or self.pool_application_projection(
-                        pool, root.uuid,
-                    ).get("current_uuid") != previous.uuid
-                    or self.pool_resolution_for(pool, root.uuid)
-                ):
-                    return {"status": "unauthorized", "reason": "withdrawal does not match a pending application"}
-            elif any(
-                root.data.get("actor_uuid") == actor_uuid
-                and root.data.get("invitation_uuid") == data["invitation_uuid"]
-                and self.pool_application_projection(
-                    pool, root.uuid,
-                ).get("state") == "submitted"
-                and not self.pool_resolution_for(pool, root.uuid)
-                for root in self.pool_application_roots(pool)
-            ):
-                return {"status": "unauthorized", "reason": "the Actor already applied through this invitation"}
-        else:
-            application = next((
-                record for record in self.pool_application_roots(pool)
-                if record.uuid == data["application_uuid"]
-            ), None)
-            invitation = next((
-                record for record in self.pool_records(
-                    pool, "team_pool_invitation",
-                )
-                if record.uuid == data["invitation_uuid"]
-            ), None)
-            if application is None or invitation is None:
-                return {"status": "deferred", "reason": "Pool application evidence is not available"}
-            if (
-                application.data.get("invitation_uuid") != invitation.uuid
-                or application.data.get("actor_uuid") != data.get("actor_uuid")
-                or application.data.get("opening_uuid") != data.get("opening_uuid")
-                or invitation.data.get("published_by") != actor_uuid
-            ):
-                return {"status": "invalid", "reason": "resolution does not match its application or publisher"}
-            if (
-                self.pool_application_projection(
-                    pool, application.uuid,
-                ).get("state") != "submitted"
-                or self.pool_resolution_for(pool, application.uuid)
-            ):
-                return {"status": "unauthorized", "reason": "application is no longer pending"}
-            if team:
-                status, reason = self._trust_authority(
-                    team, self.MEMBERSHIP_TRUST, actor_uuid,
-                    data["authority_basis_uuid"],
-                )
-                if status != "authorized":
-                    return {"status": status, "reason": reason}
-        return {"status": "authorized", "reason": ""}
+        return getattr(self, assessor)(pool, team, data, actor_uuid) or {
+            "status": "authorized", "reason": "",
+        }
+
+    def _pool_record(
+        self, pool: ProtocolNode, node_type: str, node_uuid: str,
+    ) -> ProtocolNode | None:
+        return next((
+            record for record in self.pool_records(pool, node_type)
+            if record.uuid == node_uuid
+        ), None)
+
+    def _assess_pool_invitation(
+        self, pool: ProtocolNode, team: ProtocolNode | None, data: dict,
+        actor_uuid: str,
+    ) -> dict | None:
+        published = self._timestamp(data["published_at"])
+        expires = self._timestamp(data["expires_at"])
+        if not published or not expires or expires <= published:
+            return {"status": "invalid", "reason": "invitation expiry is invalid"}
+        if data.get("team_title") != pool.data.get("team_title"):
+            return {"status": "invalid", "reason": "invitation Team title does not match the Pool"}
+        if not team:
+            return None
+        opening = self._governance_node(
+            team, data["opening_uuid"], "team_member_opening",
+        )
+        if opening is None:
+            return {"status": "deferred", "reason": "Member opening is not available"}
+        return self._membership_authority_refusal(team, data, actor_uuid)
+
+    def _assess_pool_application(
+        self, pool: ProtocolNode, team: ProtocolNode | None, data: dict,
+        actor_uuid: str,
+    ) -> dict | None:
+        invitation = self._pool_record(
+            pool, "team_pool_invitation", data["invitation_uuid"],
+        )
+        if invitation is None:
+            return {"status": "deferred", "reason": "Pool invitation is not available"}
+        if (
+            data.get("opening_uuid") != invitation.data.get("opening_uuid")
+            or data.get("team_uuid") != invitation.data.get("team_uuid")
+        ):
+            return {"status": "invalid", "reason": "application does not match its invitation"}
+        # Whether the invitation was live is decided by comparing what this
+        # record says against what the invitation says - both recorded, never
+        # the clock - so an application valid when made stays valid however
+        # long it takes to arrive.
+        submitted = self._timestamp(data["submitted_at"])
+        published = self._timestamp(str(invitation.data.get("published_at") or ""))
+        expires = self._timestamp(str(invitation.data.get("expires_at") or ""))
+        if not submitted or not published or not expires or not (
+            published <= submitted < expires
+        ):
+            return {"status": "unauthorized", "reason": "invitation was not active when the application was submitted"}
+        if data["state"] == "withdrawn":
+            return self._assess_pool_withdrawal(pool, data, actor_uuid)
+        if any(
+            root.data.get("actor_uuid") == actor_uuid
+            and root.data.get("invitation_uuid") == data["invitation_uuid"]
+            and self.pool_application_projection(
+                pool, root.uuid,
+            ).get("state") == "submitted"
+            and not self.pool_resolution_for(pool, root.uuid)
+            for root in self.pool_application_roots(pool)
+        ):
+            return {"status": "unauthorized", "reason": "the Actor already applied through this invitation"}
+        return None
+
+    def _assess_pool_withdrawal(
+        self, pool: ProtocolNode, data: dict, actor_uuid: str,
+    ) -> dict | None:
+        previous = self._pool_record(
+            pool, "team_pool_application", data["previous_application_uuid"],
+        )
+        root = next((
+            record for record in self.pool_application_roots(pool)
+            if record.uuid == (previous.uuid if previous else "")
+        ), None)
+        if (
+            not previous or not root
+            or previous.data.get("actor_uuid") != actor_uuid
+            or previous.data.get("state") != "submitted"
+            or self.pool_application_projection(
+                pool, root.uuid,
+            ).get("current_uuid") != previous.uuid
+            or self.pool_resolution_for(pool, root.uuid)
+        ):
+            return {"status": "unauthorized", "reason": "withdrawal does not match a pending application"}
+        return None
+
+    def _assess_pool_resolution(
+        self, pool: ProtocolNode, team: ProtocolNode | None, data: dict,
+        actor_uuid: str,
+    ) -> dict | None:
+        application = next((
+            record for record in self.pool_application_roots(pool)
+            if record.uuid == data["application_uuid"]
+        ), None)
+        invitation = self._pool_record(
+            pool, "team_pool_invitation", data["invitation_uuid"],
+        )
+        if application is None or invitation is None:
+            return {"status": "deferred", "reason": "Pool application evidence is not available"}
+        if (
+            application.data.get("invitation_uuid") != invitation.uuid
+            or application.data.get("actor_uuid") != data.get("actor_uuid")
+            or application.data.get("opening_uuid") != data.get("opening_uuid")
+            or invitation.data.get("published_by") != actor_uuid
+        ):
+            return {"status": "invalid", "reason": "resolution does not match its application or publisher"}
+        if (
+            self.pool_application_projection(
+                pool, application.uuid,
+            ).get("state") != "submitted"
+            or self.pool_resolution_for(pool, application.uuid)
+        ):
+            return {"status": "unauthorized", "reason": "application is no longer pending"}
+        if not team:
+            return None
+        return self._membership_authority_refusal(team, data, actor_uuid)
 
     def append_pool_record(
         self, pool_uuid: str, data: dict,
