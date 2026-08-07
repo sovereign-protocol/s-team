@@ -109,15 +109,20 @@ class RegistryTests(unittest.TestCase):
         self.documented = documented_contracts()
         self.declared = {**TeamLogic.GOVERNANCE_FIELDS, **TeamLogic.POOL_FIELDS}
 
-    def test_the_registry_documents_at_least_the_trusteeship_types(self):
-        # The registry is deliberately partial - it is being migrated one
-        # area at a time - but an area it claims is registered may not
+    def test_the_registry_documents_every_reviewed_area(self):
+        # The registry is deliberately partial - it is being built one
+        # element at a time - but an area it claims is registered may not
         # quietly lose an entry.
-        trusteeship = {
-            name for name in self.declared if name.startswith("team_trustee_")
+        reviewed = {
+            name for name in self.declared
+            if name.startswith("team_trustee_")
+            or name in {
+                "team_membership", "team_member_opening",
+                "team_member_application", "team_member_resolution",
+            }
         }
-        self.assertTrue(trusteeship, "no trusteeship types declared in source")
-        self.assertEqual(trusteeship - set(self.documented), set())
+        self.assertTrue(reviewed, "no reviewed types declared in source")
+        self.assertEqual(reviewed - set(self.documented), set())
 
     def test_every_documented_type_exists_in_source(self):
         unknown = sorted(set(self.documented) - set(self.declared))
@@ -140,7 +145,23 @@ class RegistryTests(unittest.TestCase):
                 self.assertTrue(
                     hasattr(TeamLogic, name), f"TeamLogic has no {name}",
                 )
-                self.assertEqual(values, getattr(TeamLogic, name))
+                declared = getattr(TeamLogic, name)
+                # A vocabulary of one is declared as a plain string, because
+                # nothing chooses between its members. MEMBERSHIP_TRUST is
+                # the name of a rule rather than a set of options.
+                self.assertEqual(
+                    values,
+                    frozenset({declared}) if isinstance(declared, str)
+                    else declared,
+                )
+
+    def test_the_membership_authority_is_itself_a_trusteeship(self):
+        self.assertIn(TeamLogic.MEMBERSHIP_TRUST, TeamLogic.TRUSTS)
+
+    def test_the_membership_vocabularies_are_all_registered(self):
+        documented = documented_vocabularies()
+        for name in ("MEMBERSHIP_CAUSES", "MEMBERSHIP_TRUST"):
+            self.assertIn(name, documented)
 
     def test_the_trusteeship_vocabularies_are_all_registered(self):
         for name in ("TRUSTS", "TRUSTEE_CAUSES", "ACTION_KINDS"):

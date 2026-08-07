@@ -48,6 +48,12 @@ class TeamLogic:
         "team_pool_resolution",
     })
     TRUSTS = frozenset({"identity", "trust"})
+    # Which trusteeship decides who belongs. Openings, resolutions,
+    # admissions, removals and Pool onboarding all rest on this one, and it
+    # was the same string written out at each of them. Named here so that
+    # "membership is Identity's" is something the model says once, in a
+    # place that can be read, rather than a literal repeated sixteen times.
+    MEMBERSHIP_TRUST = "identity"
     TRUSTEE_CAUSES = frozenset({
         "genesis", "election", "resignation", "resolution",
     })
@@ -1201,7 +1207,7 @@ class TeamLogic:
             "acted_by": self._identity_uuid,
             "acted_at": self._now(),
             "authority_basis_uuid": self._authority_basis_for_actor(
-                team, "identity", self._identity_uuid,
+                team, self.MEMBERSHIP_TRUST, self._identity_uuid,
             ),
             "signals": str(signals or "").strip(),
             "consideration": str(consideration or "").strip(),
@@ -1332,12 +1338,6 @@ class TeamLogic:
 
     def roles(self, team: ProtocolNode) -> list[ProtocolNode]:
         return self._ordered(team, "team_role")
-
-    # Teams made before membership became its own record carry a role
-    # marked this way, and their founder's standing is written on it. New
-    # teams never create one, and nothing treats it as special any more -
-    # in a team that has it, it is an ordinary role called "Member".
-    MEMBER_ROLE_SYSTEM_KEY = "member"
 
     def governance_records(
         self, team: ProtocolNode, node_type: str | None = None,
@@ -1756,9 +1756,15 @@ class TeamLogic:
     ) -> dict:
         """Where one Actor's membership chain has got to.
 
-        A chain per Actor, not per team: somebody admitted, gone and
-        admitted again has one history, and reading only the latest record
-        would make re-admission indistinguishable from never having left.
+        One chain per Actor, and only one: somebody admitted, gone and
+        admitted again continues the chain rather than starting a second,
+        so the whole history is one line and being re-admitted is
+        distinguishable from never having left.
+
+        That is what lets a second root mean something. Re-admission used to
+        start one, so two roots could be either a return or two replicas
+        admitting the same person at once, and the second was resolved
+        silently by taking the newest. Now it is a contest, and shown.
         """
         records = self.membership_records(team, actor_uuid)
         roots = [
@@ -1767,9 +1773,13 @@ class TeamLogic:
         ]
         if not roots:
             return {"current_uuid": "", "state": "observer", "contenders": []}
-        # Re-admission starts a new root rather than continuing the ended
-        # chain, so the standing is the newest root's chain.
-        root = roots[-1]
+        if len(roots) > 1:
+            return {
+                "current_uuid": "",
+                "state": "contested",
+                "contenders": [record.uuid for record in roots],
+            }
+        root = roots[0]
         projection = self._record_chain_projection(
             team, "team_membership", root.uuid, "previous_membership_uuid",
         )
@@ -1780,65 +1790,24 @@ class TeamLogic:
         }
 
     def member_standing(self, team: ProtocolNode, actor_uuid: str) -> str:
-        if self.membership_records(team, actor_uuid):
-            return {
-                "member": "accepted",
-                "contested": "contested",
-                "former": "former",
-            }.get(
-                self.membership_projection(team, actor_uuid)["state"],
-                "observer",
-            )
-        return self._legacy_member_standing(team, actor_uuid)
+        """Membership is one question with one answer, read from one place.
 
-    def _legacy_member_standing(
-        self, team: ProtocolNode, actor_uuid: str,
-    ) -> str:
-        """Standing for an Actor from before membership was its own record.
-
-        Teams made under the old model said "member" three different ways:
-        an accepted application, a Pool resolution, or - for the founder - a
-        genesis offer on the system Member role. Read, never rewritten:
-        appending records while answering a read would make every replica
-        diverge on being looked at. It is per-Actor rather than per-team, so
-        a team that admits somebody under the new rules does not thereby
-        un-member everyone who was already on it.
+        There used to be a second: teams made before membership was its own
+        record said "member" three other ways - an accepted application, a
+        Pool resolution, or a genesis offer on a role marked
+        `system_key: member` - and standing fell through to those when no
+        record existed. Both admission paths now write a `team_membership`,
+        so the fallback answered only for teams that predate them, and a
+        path that quietly supplies an answer the model no longer produces is
+        worse than no answer.
         """
-        for application in self.member_application_roots(team):
-            if application.data.get("actor_uuid") != actor_uuid:
-                continue
-            resolution = self.member_resolution_projection(
-                team, application.uuid,
-            )
-            if resolution["state"] == "accepted":
-                return "accepted"
-            if resolution["state"] == "contested":
-                return "contested"
-        if any(
-            record.data.get("actor_uuid") == actor_uuid
-            and record.data.get("outcome") == "accepted"
-            for record in self.governance_records(
-                team, "team_external_member_resolution",
-            )
-        ):
-            return "accepted"
-        role = next(
-            (
-                item for item in self.roles(team)
-                if item.data.get("system_key") == self.MEMBER_ROLE_SYSTEM_KEY
-            ),
-            None,
-        )
-        if role is None:
-            return "observer"
-        offer = self._offer_for(role, actor_uuid)
-        decision = self._role_decision_for(role, actor_uuid)
-        return (
-            "accepted"
-            if offer and offer.data.get("system_genesis") and decision
-            and decision.data.get("decision") == "accepted"
-            and not self._is_expired(decision.data.get("expires_at"))
-            else "observer"
+        return {
+            "member": "accepted",
+            "contested": "contested",
+            "former": "former",
+        }.get(
+            self.membership_projection(team, actor_uuid)["state"],
+            "observer",
         )
 
     def membership_payload(self, team: ProtocolNode) -> dict:
@@ -1903,7 +1872,7 @@ class TeamLogic:
                 "applications": applications,
             })
         can_resolve = bool(self._authority_basis_for_actor(
-            team, "identity", self._identity_uuid,
+            team, self.MEMBERSHIP_TRUST, self._identity_uuid,
         ))
         # The roster, which the page had no way to show because membership
         # was only ever visible as a badge on the Member role. Ending one is
@@ -2097,35 +2066,18 @@ class TeamLogic:
         )
 
     def current_member_uuids(self, team: ProtocolNode) -> list[str]:
-        """Everyone on this team right now, however they got here."""
-        candidates = {
-            str(record.data.get("actor_uuid") or "")
-            for record in self.membership_records(team)
-        }
-        # Anybody whose standing is still only written the old way. Once
-        # every team has been through an admission or a departure this is
-        # empty, and the legacy branch of member_standing goes with it.
-        candidates.update(
-            str(application.data.get("actor_uuid") or "")
-            for application in self.member_application_roots(team)
-        )
-        candidates.update(
-            str(record.data.get("actor_uuid") or "")
-            for record in self.governance_records(
-                team, "team_external_member_resolution",
-            )
-        )
-        for role in self.roles(team):
-            if role.data.get("system_key") != self.MEMBER_ROLE_SYSTEM_KEY:
-                continue
-            candidates.update(
-                str(offer.data.get("actor_uuid") or "")
-                for offer in self._all_role_offers(role)
-                if offer.data.get("system_genesis")
-            )
+        """Everyone on this team right now.
+
+        Membership records are the only source. Both admission paths - an
+        application resolved here, and a Pool resolution - end in one, so
+        there is nowhere else standing can come from.
+        """
         return sorted(
             actor_uuid
-            for actor_uuid in candidates
+            for actor_uuid in {
+                str(record.data.get("actor_uuid") or "")
+                for record in self.membership_records(team)
+            }
             if actor_uuid and self._is_current_member(team, actor_uuid)
         )
 
@@ -2761,9 +2713,22 @@ class TeamLogic:
             team, basis_uuid, "team_trustee_state",
         )
         if state:
-            if state.uuid != current_uuid:
-                return ("unauthorized", "the trusteeship authority basis is stale")
-            if projection.get("holder_actor_uuid") != actor_uuid:
+            # Judged against the state the record names, not against the head
+            # of the chain now. Requiring the basis to still be current meant
+            # a trustee's whole trail became unauthorized the moment they
+            # resigned - invisibly, because records already adopted stayed,
+            # so only a replica that received them afterwards refused them.
+            # Whether somebody was a member then depended on where a sync
+            # happened to fall. Decisions taken in office stand; that is what
+            # an append-only trail is for.
+            #
+            # The cost, taken deliberately: somebody who has left can still
+            # write new records naming the state they used to hold. They are
+            # signed, attributed and visible, and the signatures are there to
+            # say who did what rather than to prevent it.
+            if state.data.get("trust") != trust:
+                return ("unauthorized", "the authority basis is another trusteeship")
+            if state.data.get("holder_actor_uuid") != actor_uuid:
                 return ("unauthorized", f"the Actor does not hold {trust.title()}")
             return ("authorized", "")
         candidacy = self._governance_node(
@@ -2938,35 +2903,43 @@ class TeamLogic:
                     or resolution.data.get("outcome") != "accepted"
                 ):
                     return {"status": "invalid", "reason": "the admission does not implement its resolution"}
+                # A return names the membership it resumes. Checked as a
+                # record rather than against the current standing, so a
+                # later ending does not reach back and unauthorize it.
+                returning = str(data["previous_membership_uuid"] or "")
+                if returning:
+                    resumed = self._governance_node(
+                        team, returning, "team_membership",
+                    )
+                    if resumed is None:
+                        return {"status": "deferred", "reason": "the membership being resumed is not available"}
+                    if resumed.data.get("actor_uuid") != subject_uuid:
+                        return {"status": "invalid", "reason": "the admission resumes somebody else's membership"}
                 status, reason = self._trust_authority(
-                    team, "identity", actor_uuid, data["authority_basis_uuid"],
+                    team, self.MEMBERSHIP_TRUST, actor_uuid, data["authority_basis_uuid"],
                 )
                 if status != "authorized":
                     return {"status": status, "reason": reason}
             else:
+                # An ending always points at the membership it ends. There
+                # used to be an exception for standing written before
+                # membership records existed, which had nothing to name;
+                # without it, naming nothing is a way to end a membership
+                # without pointing at it.
                 named = str(data["previous_membership_uuid"] or "")
-                if named:
-                    previous = self._governance_node(
-                        team, named, "team_membership",
-                    )
-                    if previous is None:
-                        return {"status": "deferred", "reason": "the membership being ended is not available"}
-                    if previous.data.get("actor_uuid") != subject_uuid:
-                        return {"status": "invalid", "reason": "the ending names somebody else's membership"}
-                    if previous.uuid != self.membership_projection(
-                        team, subject_uuid,
-                    ).get("current_uuid"):
-                        return {"status": "unauthorized", "reason": "the membership being ended is not the current one"}
-                # A membership from before this record existed has nothing
-                # to name, so the standing itself is what is checked. Only
-                # that case: naming nothing while a record does exist would
-                # be a way to end a membership without pointing at it.
-                elif (
-                    self.membership_records(team, subject_uuid)
-                    or self._legacy_member_standing(team, subject_uuid)
-                    != "accepted"
-                ):
+                if not named:
                     return {"status": "unauthorized", "reason": "there is no current membership to end"}
+                previous = self._governance_node(
+                    team, named, "team_membership",
+                )
+                if previous is None:
+                    return {"status": "deferred", "reason": "the membership being ended is not available"}
+                if previous.data.get("actor_uuid") != subject_uuid:
+                    return {"status": "invalid", "reason": "the ending names somebody else's membership"}
+                if previous.uuid != self.membership_projection(
+                    team, subject_uuid,
+                ).get("current_uuid"):
+                    return {"status": "unauthorized", "reason": "the membership being ended is not the current one"}
                 if cause == "departure":
                     # Leaving is the member's own act and nobody else's,
                     # which is the counterpart of Identity's power to remove.
@@ -2974,7 +2947,7 @@ class TeamLogic:
                         return {"status": "unauthorized", "reason": "only the member themselves may leave"}
                 else:
                     status, reason = self._trust_authority(
-                        team, "identity", actor_uuid,
+                        team, self.MEMBERSHIP_TRUST, actor_uuid,
                         data["authority_basis_uuid"],
                     )
                     if status != "authorized":
@@ -2990,7 +2963,7 @@ class TeamLogic:
                 if previous.data.get("state") != "open":
                     return {"status": "invalid", "reason": "opening closure does not match an open Member opening"}
             status, reason = self._trust_authority(
-                team, "identity", actor_uuid, data["authority_basis_uuid"],
+                team, self.MEMBERSHIP_TRUST, actor_uuid, data["authority_basis_uuid"],
             )
             if status != "authorized":
                 return {"status": status, "reason": reason}
@@ -3043,7 +3016,7 @@ class TeamLogic:
             if application_state != "submitted":
                 return {"status": "unauthorized", "reason": "only a pending application can be resolved"}
             status, reason = self._trust_authority(
-                team, "identity", actor_uuid, data["authority_basis_uuid"],
+                team, self.MEMBERSHIP_TRUST, actor_uuid, data["authority_basis_uuid"],
             )
             if status != "authorized":
                 return {"status": status, "reason": reason}
@@ -3060,7 +3033,7 @@ class TeamLogic:
             )):
                 return {"status": "invalid", "reason": "external application evidence is incomplete"}
             status, reason = self._trust_authority(
-                team, "identity", actor_uuid, data["authority_basis_uuid"],
+                team, self.MEMBERSHIP_TRUST, actor_uuid, data["authority_basis_uuid"],
             )
             if status != "authorized":
                 return {"status": status, "reason": reason}
@@ -3161,7 +3134,14 @@ class TeamLogic:
             )
             if action is None:
                 return {"status": "deferred", "reason": "observed trustee action is not available"}
-            facilitator = "trust" if action.data.get("trust") == "identity" else "identity"
+            facilitator = self._sole_facilitating_trust(
+                str(action.data.get("trust") or ""),
+            )
+            if not facilitator:
+                return {
+                    "status": "invalid",
+                    "reason": "the facilitating trusteeship is ambiguous",
+                }
             status, reason = self._trust_authority(
                 team, facilitator, actor_uuid, data["authority_basis_uuid"],
             )
@@ -3194,7 +3174,7 @@ class TeamLogic:
         if not team:
             return SessionResult("error", reason="team not found")
         authority_basis_uuid = self._authority_basis_for_actor(
-            team, "identity", self._identity_uuid,
+            team, self.MEMBERSHIP_TRUST, self._identity_uuid,
         )
         return self.append_governance_record(team.uuid, {
             "type": "team_member_opening",
@@ -3218,7 +3198,7 @@ class TeamLogic:
         if projection["state"] != "open":
             return SessionResult("error", reason="Member opening is not open")
         authority_basis_uuid = self._authority_basis_for_actor(
-            team, "identity", self._identity_uuid,
+            team, self.MEMBERSHIP_TRUST, self._identity_uuid,
         )
         now = self._now()
         return self.append_governance_record(team.uuid, {
@@ -3315,7 +3295,7 @@ class TeamLogic:
         )["state"] != "pending":
             return SessionResult("error", reason="application is already resolved")
         authority_basis_uuid = self._authority_basis_for_actor(
-            team, "identity", self._identity_uuid,
+            team, self.MEMBERSHIP_TRUST, self._identity_uuid,
         )
         resolved = self.append_governance_record(team.uuid, {
             "type": "team_member_resolution",
@@ -3358,7 +3338,12 @@ class TeamLogic:
             "type": "team_membership",
             "actor_uuid": actor_uuid,
             "state": "member",
-            "previous_membership_uuid": "",
+            # A return continues the chain it left. Empty only for somebody
+            # who has never been on this team, which is what makes a second
+            # root a contest rather than a re-admission.
+            "previous_membership_uuid": self.membership_projection(
+                team, actor_uuid,
+            )["current_uuid"],
             "cause": "admission",
             "resolution_uuid": resolution_uuid,
             "acted_by": self._identity_uuid,
@@ -3464,9 +3449,7 @@ class TeamLogic:
                 str(action.data.get("action_kind") or ""),
                 str(action.data.get("subject_uuid") or ""),
             )
-            facilitator_trust = (
-                "trust" if key[0] == "identity" else "identity"
-            )
+            facilitator_trust = self._sole_facilitating_trust(key[0])
             observations = []
             for observation in realities:
                 if observation.data.get("action_uuid") != action.uuid:
@@ -3889,7 +3872,7 @@ class TeamLogic:
                 if opening is None:
                     return {"status": "deferred", "reason": "Member opening is not available"}
                 status, reason = self._trust_authority(
-                    team, "identity", actor_uuid,
+                    team, self.MEMBERSHIP_TRUST, actor_uuid,
                     data["authority_basis_uuid"],
                 )
                 if status != "authorized":
@@ -3975,7 +3958,7 @@ class TeamLogic:
                 return {"status": "unauthorized", "reason": "application is no longer pending"}
             if team:
                 status, reason = self._trust_authority(
-                    team, "identity", actor_uuid,
+                    team, self.MEMBERSHIP_TRUST, actor_uuid,
                     data["authority_basis_uuid"],
                 )
                 if status != "authorized":
@@ -4014,7 +3997,7 @@ class TeamLogic:
         ).get("state") != "open":
             return SessionResult("error", reason="Member opening is not open")
         basis_uuid = self._authority_basis_for_actor(
-            team, "identity", self._identity_uuid,
+            team, self.MEMBERSHIP_TRUST, self._identity_uuid,
         )
         normalized_expiry = self._normalize_expiry(expires_at)
         if not normalized_expiry:
@@ -4118,7 +4101,7 @@ class TeamLogic:
         if not team:
             return SessionResult("error", reason="linked Team is not available")
         basis_uuid = self._authority_basis_for_actor(
-            team, "identity", self._identity_uuid,
+            team, self.MEMBERSHIP_TRUST, self._identity_uuid,
         )
         token = None
         team_record = None
@@ -4256,7 +4239,7 @@ class TeamLogic:
                         team
                         and invitation.data.get("published_by") == self._identity_uuid
                         and self._authority_basis_for_actor(
-                            team, "identity", self._identity_uuid,
+                            team, self.MEMBERSHIP_TRUST, self._identity_uuid,
                         )
                         and projection.get("state") == "submitted"
                         and not resolutions
@@ -4310,7 +4293,7 @@ class TeamLogic:
             "history": invitations,
             "can_publish": bool(
                 team and self._authority_basis_for_actor(
-                    team, "identity", self._identity_uuid,
+                    team, self.MEMBERSHIP_TRUST, self._identity_uuid,
                 )
             ),
             "publishable_openings": (

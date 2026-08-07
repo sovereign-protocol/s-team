@@ -756,6 +756,145 @@ class TeamLogicTests(unittest.TestCase):
             runtime.session.protocol.index[team_uuid],
         )["can_act"])
 
+    def test_a_trustees_decisions_survive_their_resignation(self):
+        """Authority is judged against the state a record names, not the head
+        of the chain now. A replica receiving an admission and the admitting
+        Identity's resignation in one sync must still see the member."""
+        identity = self.runtime(9665)
+        member = self.runtime(9666)
+        team_uuid = identity.logic.create_team("Trail stands").value
+        connect(identity, member, team_uuid)
+        member.logic.accept_team_invitation(
+            member.session.protocol.index[team_uuid],
+        )
+        sync(identity, member)
+        opening = identity.logic.open_member_opening(team_uuid)
+        sync(identity, member)
+        application = member.logic.submit_member_application(
+            team_uuid, opening.value.uuid,
+        )
+        sync(identity, member)
+
+        # Resolved and resigned before a single sync carries both.
+        identity.logic.resolve_member_application(
+            team_uuid, application.value.uuid, "accepted",
+        )
+        identity.logic.resign_identity(team_uuid)
+        sync(identity, member)
+
+        who = member.session.identity.uuid
+        on_peer = member.session.protocol.index[team_uuid]
+        at_home = identity.session.protocol.index[team_uuid]
+        self.assertEqual(member.logic.member_standing(on_peer, who), "accepted")
+        self.assertEqual(identity.logic.member_standing(at_home, who), "accepted")
+        admission = next(
+            record for record in identity.logic.membership_records(at_home, who)
+            if record.data.get("cause") == "admission"
+        )
+        self.assertEqual(identity.logic.assess_governance_record(
+            at_home, admission,
+        )["status"], "authorized")
+
+    def test_a_return_continues_the_membership_chain(self):
+        """Coming back resumes the chain that was left, rather than starting
+        a second one. One line per Actor is what lets a second root mean
+        two replicas admitting the same person at once."""
+        identity = self.runtime(9668)
+        member = self.runtime(9669)
+        team_uuid = identity.logic.create_team("Returns").value
+        connect(identity, member, team_uuid)
+        member.logic.accept_team_invitation(
+            member.session.protocol.index[team_uuid],
+        )
+        sync(identity, member)
+        who = member.session.identity.uuid
+
+        def admit():
+            opening = identity.logic.open_member_opening(team_uuid)
+            sync(identity, member)
+            application = member.logic.submit_member_application(
+                team_uuid, opening.value.uuid,
+            )
+            sync(identity, member)
+            resolved = identity.logic.resolve_member_application(
+                team_uuid, application.value.uuid, "accepted",
+            )
+            sync(identity, member)
+            return resolved
+
+        self.assertEqual(admit().status, "ok")
+        self.assertEqual(member.logic.leave_team(team_uuid).status, "ok")
+        sync(identity, member)
+        self.assertEqual(admit().status, "ok")
+
+        team = identity.session.protocol.index[team_uuid]
+        records = identity.logic.membership_records(team, who)
+        roots = [
+            record for record in records
+            if not record.data.get("previous_membership_uuid")
+        ]
+        # Admitted, left, admitted again - three records, one chain.
+        self.assertEqual(len(records), 3)
+        self.assertEqual(len(roots), 1)
+        self.assertEqual(identity.logic.member_standing(team, who), "accepted")
+        self.assertIn(who, identity.logic.current_member_uuids(team))
+
+    def test_two_membership_roots_for_one_actor_are_a_contest(self):
+        """What a second root now means: two replicas admitting the same
+        person at once. Shown, not settled by taking whichever sorts last."""
+        runtime = self.runtime(9670)
+        team_uuid = runtime.logic.create_team("Two claims").value
+        mine = runtime.session.identity.uuid
+        runtime.session.create_child(team_uuid, {
+            "type": "team_membership", "actor_uuid": mine, "state": "member",
+            "previous_membership_uuid": "", "cause": "genesis",
+            "acted_by": mine, "acted_at": "2026-08-07T14:00:00Z",
+            "authority_basis_uuid": "", "signals": "",
+            "consideration": "", "expectation": "",
+        }, {})
+
+        team = runtime.session.protocol.index[team_uuid]
+        projection = runtime.logic.membership_projection(team, mine)
+
+        self.assertEqual(projection["state"], "contested")
+        self.assertEqual(len(projection["contenders"]), 2)
+        self.assertEqual(runtime.logic.member_standing(team, mine), "contested")
+        self.assertFalse(runtime.logic._is_current_member(team, mine))
+
+    def test_a_team_can_be_left_beyond_recovery(self):
+        """Leave, resign Identity, resign Trust - each legitimate on its own -
+        and nothing can happen on the team again. Accepted rather than
+        prevented: the alternative traps the last person in a team to keep it
+        alive. The record survives and a fork can carry the work on."""
+        runtime = self.runtime(9667)
+        team_uuid = runtime.logic.create_team("Abandoned").value
+
+        self.assertEqual(runtime.logic.leave_team(team_uuid).status, "ok")
+        self.assertEqual(runtime.logic.resign_identity(team_uuid).status, "ok")
+        self.assertEqual(
+            runtime.logic.resign_trusteeship(team_uuid, "trust").status, "ok",
+        )
+
+        team = runtime.session.protocol.index[team_uuid]
+        self.assertEqual(runtime.logic.current_member_uuids(team), [])
+        for trust in ("identity", "trust"):
+            self.assertEqual(
+                runtime.logic.trustee_projection(team, trust)["state"], "vacant",
+            )
+        # Nothing left that can bring it back.
+        self.assertEqual(
+            runtime.logic.open_member_opening(team_uuid).status, "error",
+        )
+        self.assertEqual(runtime.logic.enter_trustee_candidacy(
+            team_uuid, "identity",
+        ).status, "error")
+        self.assertEqual(runtime.logic.start_trustee_election(
+            team_uuid, "identity",
+        ).status, "error")
+        self.assertEqual(runtime.logic.settle_trusteeship(
+            team_uuid, "identity", runtime.session.identity.uuid, "p", "h",
+        ).status, "error")
+
     def test_a_team_cannot_hold_a_trusteeship(self):
         """Only an Individual. A Team holding one would leave admissions,
         resignations and elections resting on an authority with nobody
@@ -3656,11 +3795,11 @@ class TeamLogicTests(unittest.TestCase):
         child = runtime.session.protocol.index[child_uuid]
         self.assertTrue(runtime.logic.is_organization(child))
 
-    def test_a_team_from_before_membership_was_a_record_still_reads(self):
-        # Live teams say "member" the old way: a genesis offer on a role
-        # marked system_key=member, accepted by the founder. That standing
-        # is read, never rewritten - appending records while answering a
-        # read would make every replica diverge on being looked at.
+    def test_standing_written_only_the_old_way_no_longer_counts(self):
+        """A team from before membership was a record. Its founder's
+        standing lived on a role marked system_key=member; nothing reads
+        that any more, so they are an observer and the failure is visible
+        rather than quietly answered from a superseded shape."""
         runtime = self.runtime(9478)
         team_uuid = runtime.logic.create_team("Cooperative").value
         team = runtime.session.protocol.index[team_uuid]
@@ -3681,16 +3820,13 @@ class TeamLogicTests(unittest.TestCase):
 
         team = runtime.session.protocol.index[team_uuid]
         self.assertEqual(runtime.logic.membership_records(team, mine), [])
-        self.assertTrue(runtime.logic._is_current_member(team, mine))
-        self.assertEqual(runtime.logic.current_member_uuids(team), [mine])
-        # And Identity can still end it, naming no predecessor because
-        # there is no membership record to name.
+        self.assertEqual(runtime.logic.member_standing(team, mine), "observer")
+        self.assertFalse(runtime.logic._is_current_member(team, mine))
+        self.assertEqual(runtime.logic.current_member_uuids(team), [])
+        # And there is no membership left to end, rather than one that can
+        # be ended by naming nothing.
         ended = runtime.logic.end_membership(team_uuid, mine)
-        self.assertEqual(ended.status, "ok")
-        self.assertEqual(ended.value.data["previous_membership_uuid"], "")
-        self.assertFalse(runtime.logic._is_current_member(
-            runtime.session.protocol.index[team_uuid], mine,
-        ))
+        self.assertEqual(ended.status, "error")
 
     def test_copying_needs_no_standing_in_the_original(self):
         runtime = self.runtime(9497)
