@@ -1070,6 +1070,74 @@ class TeamLogic:
             "expectation": str(expectation or "").strip(),
         })
 
+    def settle_trusteeship(
+        self, team_uuid: str, trust: str, holder_actor_uuid: str,
+        process_uuid: str, process_result_hash: str,
+        signals: str = "", consideration: str = "", expectation: str = "",
+    ) -> SessionResult:
+        """Fill a vacant trusteeship from a decision that was not an election.
+
+        The `resolution` cause. It asks for process evidence and the
+        facilitating trusteeship's authority, and unlike `election` it needs
+        no `team_trustee_election` record behind it. The authority model has
+        always allowed it; nothing in the application reached it, so the only
+        way to write one was by hand, and it read as dead vocabulary.
+
+        Vacancy is required here. The authority model alone would also let a
+        facilitator write over a *sitting* holder, which is a different power
+        from settling an empty seat and is not one this offers.
+        """
+        team = self._node(team_uuid, "team")
+        normalized_trust = str(trust or "").strip().lower()
+        if not team:
+            return SessionResult("error", reason="team not found")
+        if normalized_trust not in self.TRUSTS:
+            return SessionResult("error", reason="unknown trusteeship")
+        holder = str(holder_actor_uuid or "").strip()
+        if not holder:
+            return SessionResult("error", reason="a holder is required")
+        evidence = str(process_uuid or "").strip()
+        evidence_hash = str(process_result_hash or "").strip()
+        if not evidence or not evidence_hash:
+            return SessionResult(
+                "error", reason="settling requires process evidence",
+            )
+        projection = self.trustee_projection(team, normalized_trust)
+        if projection.get("state") != "vacant":
+            return SessionResult("error", reason="the trusteeship is not vacant")
+        facilitator_trust = self._sole_facilitating_trust(normalized_trust)
+        if not facilitator_trust:
+            return SessionResult(
+                "error",
+                reason="the facilitating trusteeship must be chosen explicitly",
+            )
+        basis_uuid = self._authority_basis_for_actor(
+            team, facilitator_trust, self._identity_uuid,
+        )
+        if not basis_uuid:
+            return SessionResult(
+                "error",
+                reason=(
+                    f"only {facilitator_trust.title()} may settle "
+                    f"{normalized_trust.title()}"
+                ),
+            )
+        return self.append_governance_record(team.uuid, {
+            "type": "team_trustee_state",
+            "trust": normalized_trust,
+            "holder_actor_uuid": holder,
+            "previous_state_uuid": str(projection["current_state_uuid"]),
+            "cause": "resolution",
+            "acted_by": self._identity_uuid,
+            "acted_at": self._now(),
+            "authority_basis_uuid": basis_uuid,
+            "signals": str(signals or "").strip(),
+            "consideration": str(consideration or "").strip(),
+            "expectation": str(expectation or "").strip(),
+            "process_uuid": evidence,
+            "process_result_hash": evidence_hash,
+        })
+
     def _found_membership(self, team: ProtocolNode) -> SessionResult:
         """Every team starts with one member: whoever made it.
 
@@ -1387,11 +1455,14 @@ class TeamLogic:
             version = data.get("process_definition_version")
             if isinstance(version, bool) or not isinstance(version, (str, int)):
                 return "process_definition_version must be a string or integer"
-            expected_facilitator = (
-                "trust" if data.get("trust") == "identity" else "identity"
-            )
-            if data.get("facilitator_trust") != expected_facilitator:
-                return "the counterpart trusteeship must facilitate the election"
+            # No trusteeship supervises itself. Expressed as "not the
+            # subject" rather than "the counterpart", because a counterpart
+            # only exists while there are exactly two, and the rule this
+            # protects is the one about self-supervision.
+            if data.get("facilitator_trust") not in self.TRUSTS:
+                return "facilitator_trust must name a trusteeship"
+            if data.get("facilitator_trust") == data.get("trust"):
+                return "a trusteeship cannot facilitate its own election"
         elif node_type == "team_trustee_candidacy":
             if data.get("state") not in {"active", "withdrawn"}:
                 return "candidacy state must be active or withdrawn"
@@ -2198,6 +2269,43 @@ class TeamLogic:
             under_way.append(election)
         return under_way
 
+    def _holder_may_be_a_trustee(self, holder_actor_uuid: str) -> tuple[str, str]:
+        """Only an Individual may hold a trusteeship.
+
+        A Team in a role brings everybody on it into the team below, which is
+        why seating one is an admission. A Team *holding* a trusteeship would
+        go further: admissions, resignations and elections would rest on an
+        authority with no person answerable for it. So the holder is a person.
+
+        Checked here rather than in the schema because the answer is not in
+        the record - it is whether the uuid names a Team - and a check that
+        reads the tree does not belong in a pure function of node.data. An
+        actor this replica cannot place defers and retries, the same as an
+        unknown signing key: absence of a Team node is not evidence of a
+        person.
+        """
+        if not holder_actor_uuid:
+            # A vacancy names nobody, and nobody is not a Team.
+            return ("authorized", "")
+        if self._node(holder_actor_uuid, "team"):
+            return ("unauthorized", "only an Individual may hold a trusteeship")
+        if not self.session.identity_key_for_actor(holder_actor_uuid):
+            return ("deferred", "the named holder is not known")
+        return ("authorized", "")
+
+    def _sole_facilitating_trust(self, trust: str) -> str:
+        """Which trusteeship facilitates an action of this one, if only one can.
+
+        No trusteeship supervises itself, and while there are two that
+        leaves exactly one. It returns nothing rather than choosing once a
+        third exists, so the caller refuses: "the other one" written as an
+        if/else would quietly become "Identity facilitates everything" the
+        moment a third trusteeship was added, which is a decision nobody
+        would have made on purpose.
+        """
+        eligible = sorted(self.TRUSTS - {trust})
+        return eligible[0] if len(eligible) == 1 else ""
+
     def _authority_basis_for_actor(
         self, team: ProtocolNode, trust: str, actor_uuid: str,
     ) -> str:
@@ -2293,9 +2401,12 @@ class TeamLogic:
         if not electorate:
             return SessionResult("error", reason="the Team has no current Members")
         target = self.trustee_projection(team, normalized_trust)
-        facilitator_trust = (
-            "trust" if normalized_trust == "identity" else "identity"
-        )
+        facilitator_trust = self._sole_facilitating_trust(normalized_trust)
+        if not facilitator_trust:
+            return SessionResult(
+                "error",
+                reason="the facilitating trusteeship must be chosen explicitly",
+            )
         facilitator = self.trustee_projection(team, facilitator_trust)
         requested_facilitator = str(facilitator_actor_uuid or "").strip()
         settled_facilitator = str(facilitator.get("holder_actor_uuid") or "")
@@ -2716,6 +2827,11 @@ class TeamLogic:
 
         if node_type == "team_trustee_state":
             trust = data["trust"]
+            holder_status, holder_reason = self._holder_may_be_a_trustee(
+                str(data.get("holder_actor_uuid") or ""),
+            )
+            if holder_status != "authorized":
+                return {"status": holder_status, "reason": holder_reason}
             existing = self.governance_records(team, "team_trustee_state")
             same_trust = [state for state in existing if state.data.get("trust") == trust]
             if data["cause"] == "genesis":
@@ -2783,7 +2899,14 @@ class TeamLogic:
                             != data.get("holder_actor_uuid")
                         ):
                             return {"status": "invalid", "reason": "the trustee state does not implement the election result"}
-                    facilitator = "trust" if trust == "identity" else "identity"
+                    facilitator = self._sole_facilitating_trust(trust)
+                    if not facilitator:
+                        return {
+                            "status": "invalid",
+                            "reason": (
+                                "the facilitating trusteeship is ambiguous"
+                            ),
+                        }
                     status, reason = self._trust_authority(
                         team, facilitator, actor_uuid, data["authority_basis_uuid"],
                     )
@@ -3300,9 +3423,14 @@ class TeamLogic:
             return SessionResult("error", reason="trustee action not found")
         if not normalized_reality:
             return SessionResult("error", reason="Reality is required")
-        facilitator_trust = (
-            "trust" if action.data.get("trust") == "identity" else "identity"
+        facilitator_trust = self._sole_facilitating_trust(
+            str(action.data.get("trust") or ""),
         )
+        if not facilitator_trust:
+            return SessionResult(
+                "error",
+                reason="the facilitating trusteeship must be chosen explicitly",
+            )
         basis_uuid = self._authority_basis_for_actor(
             team, facilitator_trust, self._identity_uuid,
         )
