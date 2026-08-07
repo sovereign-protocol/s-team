@@ -52,7 +52,7 @@ contradiction into a silent fallback; no browser testing.
 | 1 | Trusteeship                    | **5 — done**, bar three blueprint-only rows |
 | 2 | Membership                     | **5 — done**, bar M4/M8/M12 carried forward |
 | 3 | Roles and holdings             | **5 — done**, bar blueprint-only rows |
-| 4 | Document (sections, clauses)   | not started |
+| 4 | Document (sections, clauses)   | **5 — done** |
 | 5 | Pool onboarding                | not started |
 
 ---
@@ -549,6 +549,100 @@ the cross-repo half needs deciding before s-initiative or s-flow adopt it.
 not a git repo, so the blueprint, `backlog.md` and `CODEBASE_REVIEW.md` are
 unversioned and ship with nothing. Fine for a working draft; not fine for the
 document the registry now points at.
+
+---
+
+# Element 4 — The document, and C-Text
+
+## Step 1: extracted
+
+Four content types, all the same two fields and all mutable:
+
+| Type                  | Under          | Carries          |
+| --------------------- | -------------- | ---------------- |
+| `team_section`        | `team`         | `title`, `order` |
+| `team_clause`         | `team_section` | `text`, `order`  |
+| `team_accountability` | `team_role`    | `text`, `order`  |
+| `team_domain`         | `team_role`    | `text`, `order`  |
+
+Exactly **two levels** of document: a section holds clauses, and a clause holds
+nothing. Accountabilities and domains are the same shape hung off a role
+instead. All four are reactable per node, editable in place — correct, per the
+content/record line drawn in element 3 — and **none has a field contract**, the
+same gap R1 closed for participation records.
+
+`_content_hash(root, included_types)` is already type-agnostic, as is Core's
+`session.next_child_order(parent_uuid, node_type)`. So the machinery around
+ordered text is *already* written without knowing what the text is called.
+
+## Step 2: contradictions
+
+| #  | Question | Positions | Consequence |
+| -- | -------- | --------- | ----------- |
+| D1 | **Is a clause recursive?** | `B` §4: `Clause: 0-1 Content, 0-n sub-Clauses, 0-1 qualifier` — arbitrary depth · `S`: exactly two levels, and a clause has no children | The blueprint's model is recursive and the built one is not |
+| D2 | **What is `qualifier`?** | `B` §4: `0-1 qualifier [Text]` on every Clause · `S`: no such field, and nothing resembling it | Cannot be built without knowing what it is for |
+| D3 | **Section and Clause, or just Clause?** | `B`: one recursive type, where a section is a Clause with Content and sub-Clauses · `S`: two types, one titled and one not | The blueprint collapses the pair; the source keeps them apart |
+| D4 | **Are accountabilities and domains C-Text?** | `S`: separate types, "because REACTABLE is per node" — but that argues for separate *nodes*, not separate *types*, and a generic clause is still one node each · `B`: `Role: 0-n Domains, 0-n Accountabilities`, untyped | Four types of the same shape, or one shape used four times |
+| D5 | **No field contract** | `S`: none for any of the four; a peer's clause is whatever they sent | Content is mutable by decision, but mutable is not the same as unchecked |
+| D6 | **C-Text across repositories** | `B` uses C-Text in Initiative, Trustee, Bet, Resource, Flow and History — s-team, s-initiative and s-flow · `S`: `team_section`/`team_clause`, owned by S-Team · applications may not import one another, and Core's boundary scan forbids application vocabulary in its source | Duplicate the rules three times, or find something Core can own that is not an application node type |
+
+**On D6.** The third option is the interesting one, and the codebase already
+points at it: `next_child_order` takes a *type name from the caller*, and
+`_content_hash` takes an *included-types set*. Neither knows what the text is
+called. So what is shared need not be a type at all — it can be the **shape**
+(a node with text and an order, whose children are the same shape) plus the
+type-agnostic helpers. Each application keeps its own node-type names, no
+vocabulary leaks into Core, and the boundary scans pass unchanged.
+
+## Step 3: decisions
+
+| #  | Decision | Costs |
+| -- | -------- | ----- |
+| D1/D3 | **Two fixed levels.** A section holds clauses and a clause holds nothing. The shape permits nesting; this document does not use it. The blueprint's recursive Clause and its collapse of Section into it are retired. | Documentation only. Nothing to build. |
+| D2 | **`qualifier` is dropped** from the blueprint. If a need for it appears, it arrives with a reason attached. | Blueprint only. |
+| D4 | **Separate types, one shared shape.** `team_accountability` and `team_domain` stay distinct types and are documented and validated as instances of the clause shape. The stated reason for keeping them apart — per-node reactions — is satisfied either way, since a generic clause would still be one node each. | Documentation and a contract; no node changes. |
+| D5 | **A contract for content too**, checked on adoption. Content stays *editable* — it is what people agree to, and agreements are rewritten — but editable is not unchecked. Content may also only contain content. | **Applied.** No append-only rule here, unlike participation records. |
+| D6 | **Share the shape and the helpers, not the type.** Each application declares its own node-type names against one documented shape. Nothing is promoted to Core, no application imports another, and both boundary scans pass unchanged. | Applied for s-team. See below for what is left. |
+
+### D6 in full
+
+The codebase pointed at the answer. `session.next_child_order` takes a *type
+name from the caller*; `_content_hash` takes an *included-types set*. Neither
+knows what the text is called, so the machinery around ordered text was
+already written type-agnostically — nobody had noticed that this made a shared
+*type* unnecessary.
+
+Promoting a type to Core was rejected: even under a neutral name it would make
+Core own an application node type, which is the one boundary Core exists to
+hold. Duplicating the rules per repository was rejected because three copies
+of one set of rules is how the documentation drifted in the first place.
+
+**Left to do, and not this repository's to do:** Core has no type-agnostic
+content-hashing helper. `_content_hash` is a static method on `TeamLogic`. Until
+that moves, s-initiative and s-flow adopting the shape would each write their
+own copy of the hashing. That is an s-core change and belongs in its own pass.
+
+## Step 5: enforcement
+
+| Test | Encodes |
+| ---- | ------- |
+| `test_document_content_is_checked_but_still_editable` | D5 — a malformed clause and a clause carrying a role are both refused, and editing in place still works |
+
+`tests/test_type_registry.py` covers the four content types field for field.
+Suite: **191 tests, green** (was 190).
+
+## Supersedes — element 4
+
+| Document | Section | Replaced by |
+| -------- | ------- | ----------- |
+| `DESIGN_ROLES_AND_ACTORS.md` | §1.2's note on accountabilities and domains being nodes rather than lists | `DESIGN_TYPES.md` § The clause shape |
+
+## Blueprint edits — element 4
+
+`C-Text` is now described as a shape rather than a shared type, with the
+reasoning; `Clause` gains `Order`, loses `qualifier`, and states that a Team's
+Agreement uses two levels and that content is edited while records are
+appended.
 
 ## Retired names
 

@@ -42,6 +42,30 @@ class TeamLogic:
         "team_trustee_reality",
         "team_external_member_resolution",
     })
+    # The clause shape: a piece of text and where it sits among its
+    # siblings, whose children are the same shape again. Four types use it -
+    # a section names itself with a title, the other three carry text - and
+    # it is a *shape* rather than a type on purpose. The machinery around it
+    # already works without knowing what the text is called: Core's
+    # next_child_order takes a type name from the caller, and _content_hash
+    # takes a set of them. So another application can hold the same shape
+    # under its own names without either importing the other, and without
+    # this vocabulary reaching Core.
+    #
+    # Two levels, not arbitrary depth: a section holds clauses and a clause
+    # holds nothing. The shape permits nesting; this document does not use it.
+    CONTENT_TYPES = frozenset({
+        "team_section", "team_clause", "team_accountability", "team_domain",
+    })
+    CONTENT_FIELDS = {
+        "team_section": (frozenset({"type", "title", "order"}), frozenset()),
+        "team_clause": (frozenset({"type", "text", "order"}), frozenset()),
+        "team_accountability": (
+            frozenset({"type", "text", "order"}), frozenset(),
+        ),
+        "team_domain": (frozenset({"type", "text", "order"}), frozenset()),
+    }
+
     # Taking part in a role is recorded, not stored as content. A role and
     # its accountabilities are what people agree to and are edited like any
     # other text; an offer, an answer and a seat are facts *about* who is
@@ -1419,6 +1443,43 @@ class TeamLogic:
             ],
             key=lambda node: (node.created_at, node.uuid),
         )
+
+    def content_schema_error(self, node: ProtocolNode) -> str | None:
+        """Whether a piece of document content is the shape its type declares.
+
+        Content is edited rather than appended, and that is deliberate - it
+        is what people agree to, and agreements are rewritten. Editable is
+        not the same as unchecked, though: a peer's clause used to be
+        whatever they sent, and somebody was asked to accept it as a
+        proposal without anything having looked at it.
+        """
+        node_type = node.data.get("type")
+        contract = self.CONTENT_FIELDS.get(node_type)
+        if contract is None:
+            return "not document content"
+        required, optional = contract
+        fields = set(node.data)
+        missing = sorted(required - fields)
+        extra = sorted(fields - required - optional)
+        if missing:
+            return "missing content fields: " + ", ".join(missing)
+        if extra:
+            return "unsupported content fields: " + ", ".join(extra)
+        text_field = "title" if node_type == "team_section" else "text"
+        if not isinstance(node.data.get(text_field), str):
+            return f"{text_field} must be a string"
+        order = node.data.get("order")
+        if isinstance(order, bool) or not isinstance(order, (int, float)):
+            return "order must be a number"
+        # The shape nests, and only these types may appear inside it. A
+        # clause carrying a role would be a document that owns its own
+        # participants.
+        for child in node.children:
+            if child.deleted:
+                continue
+            if child.data.get("type") not in self.CONTENT_TYPES:
+                return "document content may only contain document content"
+        return None
 
     def role_record_schema_error(self, node: ProtocolNode) -> str | None:
         """Whether a participation record is the shape its type declares.
@@ -5831,6 +5892,14 @@ class TeamLogic:
                     "error", reason="participation record is unavailable",
                 )
             schema_error = self.role_record_schema_error(peer_node)
+            if schema_error:
+                return SessionResult("error", reason=schema_error)
+        if reference and reference.data.get("type") in self.CONTENT_TYPES:
+            # No append-only check here: content is edited, so a peer's node
+            # replacing a local one is the ordinary case rather than a
+            # rewrite of somebody's record.
+            checked = peer_node or reference
+            schema_error = self.content_schema_error(checked)
             if schema_error:
                 return SessionResult("error", reason=schema_error)
         allowed = self._interaction_guard_for_reaction(
