@@ -259,12 +259,175 @@ again on every read of a peer's record.
 - Trusteeship vacant, actor has an active candidacy → that candidacy.
 - Otherwise → empty, and the write is refused.
 
-A basis that names a state which is no longer the head is **stale**, and the
-record it supports is unauthorized. This is what makes the append-only chain
-do real work: authority expires by being superseded, without anything being
-rewritten.
+The basis is judged **as the record it names**, not against the head of the
+chain now. If the state it points at says this actor held that trusteeship,
+the record stands — so decisions taken in office survive the holder leaving,
+which is what an append-only trail is for.
+
+It was the other way once: the basis had to *be* the current head. That made a
+trustee's whole trail unauthorized the moment they resigned, and did it
+invisibly, because records already adopted stayed put and only a replica that
+received them afterwards refused them. Whether somebody counted as a member
+depended on where a sync happened to fall.
+
+The cost, taken deliberately: somebody who has left can still write new records
+naming the state they used to hold. They are signed, attributed and visible,
+and the signatures are here to say who did what rather than to prevent it.
+What stops it in practice is the application, which will not compose such a
+record — the same split as `settle_trusteeship` and a sitting holder.
 
 ## Where the blueprint's vocabulary lands
+
+---
+
+# Membership
+
+**To be on a team, an Actor is a member of it.** Membership is its own
+relationship, not a role and not a side effect of holding one. A member who has
+taken nothing on is still on the team.
+
+**`Member` is not a stored thing.** There is no member record with a name and a
+type in it; there is a chain of `team_membership` records per Actor, and
+"member" is the current state of that chain. The name comes from the identity,
+the kind comes from the actor, and neither is copied into the membership — a
+name copied at admission would be the name somebody had that day.
+
+Identity decides membership, and that is the whole of what Identity decides
+about a person. A member then takes any role by their own record.
+
+**Vocabulary — `MEMBERSHIP_TRUST`:** `identity`
+
+## `team_membership`
+
+One chain per Actor, and only one. Somebody admitted, gone and admitted again
+continues the chain rather than starting a second.
+
+| Field                        | Requirement                                                              |
+| ---------------------------- | -------------------------------------------------------------------------- |
+| `actor_uuid`                 | required — whose standing this is                                           |
+| `state`                      | required — `member` or `former`                                             |
+| `previous_membership_uuid`   | required — empty only for an Actor who has never been on this team          |
+| `cause`                      | required — from `MEMBERSHIP_CAUSES`                                         |
+| `acted_by`                   | required                                                                    |
+| `acted_at`                   | required                                                                    |
+| `authority_basis_uuid`       | required — empty for `genesis` and `departure`, which rest on no authority   |
+| `signals`                    | required — may be empty                                                     |
+| `consideration`              | required — may be empty                                                     |
+| `expectation`                | required — may be empty                                                     |
+| `resolution_uuid`            | optional — required in practice for `admission`, which must name what it implements |
+
+**Vocabulary — `MEMBERSHIP_CAUSES`:** `genesis`, `admission`, `departure`, `removal`
+
+### How standing changes
+
+| Cause       | Who                       | What it needs                                                                                 |
+| ----------- | ------------------------- | ----------------------------------------------------------------------------------------------- |
+| `genesis`   | the founder, for themself | No predecessor and no authority basis, and no other membership may exist on the team              |
+| `admission` | Identity                  | A resolution naming the same actor with outcome `accepted`. A return also names the membership it resumes |
+| `departure` | the member, for themself  | Names the current membership. Rests on **no** authority basis — naming one would claim it did      |
+| `removal`   | Identity                  | Names the current membership, plus Identity's authority                                            |
+
+Leaving is nobody's decision but the member's own, and it is the counterpart of
+Identity's power to remove. That is why a departure may not name an authority
+basis at all: it would be claiming the act rested on one.
+
+## `team_member_opening`
+
+Identity says the team is open to applications. One opening admits any number
+of people; closing it is a second record naming the first.
+
+| Field                     | Requirement                          |
+| ------------------------- | ------------------------------------- |
+| `previous_opening_uuid`   | required — empty for the initial record |
+| `state`                   | required — `open` or `closed`          |
+| `opened_by`               | required                              |
+| `opened_at`               | required                              |
+| `authority_basis_uuid`    | required                              |
+| `closed_at`               | optional — required when `closed`      |
+
+## `team_member_application`
+
+The applicant's own record, and theirs alone to withdraw.
+
+| Field                         | Requirement                          |
+| ----------------------------- | ------------------------------------- |
+| `opening_uuid`                | required                              |
+| `previous_application_uuid`   | required — empty for the initial record |
+| `actor_uuid`                  | required                              |
+| `submitted_at`                | required                              |
+| `state`                       | required — `submitted` or `withdrawn`  |
+| `withdrawn_at`                | optional — required when `withdrawn`   |
+
+## `team_member_resolution`
+
+Identity's answer to one application. The decision, not the standing — it stays
+true whatever happens later, which is what lets a membership be ended without
+rewriting the decision that began it. The same split as an election and the
+trusteeship it fills.
+
+| Field                    | Requirement                        |
+| ------------------------ | ----------------------------------- |
+| `opening_uuid`           | required                            |
+| `application_uuid`       | required                            |
+| `actor_uuid`             | required                            |
+| `outcome`                | required — `accepted` or `rejected`  |
+| `resolved_by`            | required                            |
+| `resolved_at`            | required                            |
+| `authority_basis_uuid`   | required                            |
+| `signals`                | required — may be empty              |
+| `consideration`          | required — may be empty              |
+| `expectation`            | required — may be empty              |
+
+An accepted resolution is followed by a `team_membership` admission naming it.
+Pool onboarding reaches the same place by a different resolution.
+
+## Standing, and where it comes from
+
+Membership records are the **only** source. Both admission paths end in one, so
+there is nowhere else standing can come from, and an Actor with no record is an
+observer.
+
+There was a second source: teams made before membership was a record said
+"member" three other ways — an accepted application, a Pool resolution, or a
+genesis offer on a role marked `system_key: member` — and standing fell through
+to those. It is gone. Teams that relied on it read as observers, visibly,
+rather than being answered from a shape the model no longer produces.
+
+`membership_projection` walks the chain and returns `observer`, `member`,
+`former`, or `contested`.
+
+**More than one root is a contest.** A return continues the chain it left, so a
+second root can only mean two replicas admitting the same person at once, and
+that is shown rather than settled by taking whichever sorts last — the same
+answer as a contested trusteeship, for the same reason.
+
+## A team may have no members at all
+
+The blueprint asks for one or more. Zero is reachable and is accepted: the
+founder leaving is enough.
+
+Nothing bars the last person from going, and that is the point — the
+alternative is refusing the final departure, which keeps a team alive by
+trapping somebody in it. The Identity holder need not be a member to exercise
+Identity, so a team at zero members can still be opened to applications and
+recovered.
+
+**Beyond recovery.** Leave, resign Identity, resign Trust — three ordinary acts,
+each legitimate on its own — and nothing can happen on that team again: no
+opening without Identity's authority, no candidacy without membership, no
+settlement without Trust. This is a real end state, not an oversight. The record
+survives, and a fork carries the work on.
+
+## Where the blueprint's vocabulary lands
+
+| Blueprint (`Domain-Driven-Design.md`) | Here                                                             |
+| ------------------------------------- | ---------------------------------------------------------------- |
+| `Member: 1 Name, 1 Type, 1 Actor`     | Not an entity. The current state of an Actor's `team_membership` chain; name and kind are read from the actor, never copied |
+| `Team: 1-n Members`                   | `0-n`. Zero is reachable and accepted                             |
+
+---
+
+# Trusteeship — blueprint mapping
 
 | Blueprint (`Domain-Driven-Design.md`) | Here                                                             |
 | ------------------------------------- | ---------------------------------------------------------------- |
