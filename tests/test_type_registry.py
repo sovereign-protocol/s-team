@@ -107,7 +107,11 @@ class RegistryTests(unittest.TestCase):
     def setUp(self):
         self.assertTrue(REGISTRY.exists(), "DESIGN_TYPES.md is missing")
         self.documented = documented_contracts()
-        self.declared = {**TeamLogic.GOVERNANCE_FIELDS, **TeamLogic.POOL_FIELDS}
+        self.declared = {
+            **TeamLogic.GOVERNANCE_FIELDS,
+            **TeamLogic.POOL_FIELDS,
+            **TeamLogic.ROLE_RECORD_FIELDS,
+        }
 
     def test_the_registry_documents_every_reviewed_area(self):
         # The registry is deliberately partial - it is being built one
@@ -116,6 +120,7 @@ class RegistryTests(unittest.TestCase):
         reviewed = {
             name for name in self.declared
             if name.startswith("team_trustee_")
+            or name in TeamLogic.ROLE_RECORD_TYPES
             or name in {
                 "team_membership", "team_member_opening",
                 "team_member_application", "team_member_resolution",
@@ -161,6 +166,11 @@ class RegistryTests(unittest.TestCase):
     def test_the_membership_vocabularies_are_all_registered(self):
         documented = documented_vocabularies()
         for name in ("MEMBERSHIP_CAUSES", "MEMBERSHIP_TRUST"):
+            self.assertIn(name, documented)
+
+    def test_the_participation_vocabularies_are_all_registered(self):
+        documented = documented_vocabularies()
+        for name in ("OFFER_STATES", "ROLE_DECISIONS", "HOLDING_STATES"):
             self.assertIn(name, documented)
 
     def test_the_trusteeship_vocabularies_are_all_registered(self):

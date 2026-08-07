@@ -51,7 +51,7 @@ contradiction into a silent fallback; no browser testing.
 | - | ------------------------------ | ---- |
 | 1 | Trusteeship                    | **5 — done**, bar three blueprint-only rows |
 | 2 | Membership                     | **5 — done**, bar M4/M8/M12 carried forward |
-| 3 | Roles and holdings             | not started |
+| 3 | Roles and holdings             | **5 — done**, bar blueprint-only rows |
 | 4 | Document (sections, clauses)   | not started |
 | 5 | Pool onboarding                | not started |
 
@@ -384,6 +384,130 @@ Suite: **186 tests, green** (was 180).
 
 - **M4** deferred to element 3, **M8** to element 5, **M12** open.
 - **M9** changes `../Domain-Driven-Design.md`, not s-team.
+
+---
+
+# Element 3 — Roles and holdings
+
+## Step 1: extracted
+
+Six types, and they are **not** shaped like the first two elements:
+
+| Type                   | Lives under | Carries                                                            |
+| ---------------------- | ----------- | ------------------------------------------------------------------- |
+| `team_role`            | `team`      | `name`, `purpose`, `order`                                          |
+| `team_accountability`  | `team_role` | `text`, `order`                                                     |
+| `team_domain`          | `team_role` | `text`, `order`                                                     |
+| `team_role_offer`      | `team_role` | `actor_uuid`, `actor_kind`, `offered_by`, `offered_at`, `revoked_at` |
+| `team_role_decision`   | `team_role` | `actor_uuid`, `decision`, `decided_at`, `reference_hash`, `expires_at`, and `decided_by` only when a team is answered for |
+| `team_role_holding`    | `team` (the child) | `parent_team_uuid`, `role_uuid`, `order`                     |
+
+Three differences from everything reviewed so far, and each is a decision
+waiting to be made rather than a detail:
+
+1. **No contract and no validation.** There is no `GOVERNANCE_FIELDS`
+   equivalent, and `governance_schema_error` answers "not a governance
+   record" for all six. They travel the `REACTABLE` proposal path instead, so
+   a peer's role record is offered to a human to accept and, if accepted, is
+   whatever they sent — any fields, any shapes.
+2. **They are mutated, not appended.** Re-offering after a revocation
+   *revives the same record* through `session.modify`; answering a role again
+   *modifies* the existing decision. Governance records are strictly
+   append-only. So there is no trail of who held a role and when — only the
+   latest answer.
+3. **A decision alone holds a role** (§2.4b), which makes
+   `team_role_decision` authority-bearing rather than content — while it is
+   stored like content.
+
+Acceptance is scoped by `role_reference_hash` = the document body plus that
+one role's definition, so editing one role does not re-open everybody else's.
+
+## Step 2: contradictions
+
+| #   | Question | Positions | Consequence |
+| --- | -------- | --------- | ----------- |
+| R1  | **No field contract for any of the six** | `S`: none, and no validation on the adoption path | Registering them at all requires giving them one first. This is the enabling decision |
+| R2  | **Mutable, though authority-bearing** | `S`: offers and decisions are `modify`-ed in place · `ARCHITECTURE.md` ¶4: "Decision, offer, holding and identity nodes are records *about* the agreement rather than content of it" · every other authority record in the system is append-only | Two storage models in one document. No history of who took or left a role |
+| R3  | **`revoked_at: None`** | `S`: a null, where every governance field is a string | Schema style splits, and revocation is encoded as a null rather than a state |
+| R4  | **`decided_by` appears conditionally** | `S`: written only when answering for a team | An optional field with no contract saying when it is required |
+| R5  | **Expiry exists only here** | `S`: `expires_at` on role decisions; membership and trusteeship have none | Is a lapsing commitment a role-specific idea, or one the model should have everywhere? |
+| R6  | **The cost of depth** | `R` §5 **[OPEN]**: every member needs a role at every level, and any edit to a root's document invalidates acceptance at every level below · `B` §3 proposed a grace period, already rejected as making validity depend on wall-clock time and local config | Still unresolved, and the largest thing element 3 inherits |
+| R7  | **Stale claim in source** | `team_reference_hash`'s docstring: "Nobody holds a role yet… the scoping becomes visible when holdings arrive" · `S`: holdings exist | Documentation rot inside the code, not only in the documents |
+| R8  | **Seated Team and membership** (was M4) | `R` §1.1: seating a Team is an admission · `S`: `seat_team` writes only a decision; a seated Team is not a member of its parent | Teams hold roles without membership; people cannot |
+| R9  | **Present-tense authority** (was M12) | `S`: ending a membership requires the named predecessor to be *current*; acting authority requires the vacancy to be current *now* | The same order-dependence M11 fixed, in two places it was not applied |
+| R10 | **`Role: … 0-n Actors`** | `B` §4 · `S`: actors relate through offer and decision children, and a decision alone is enough | "Actors" is ambiguous between invited and holding |
+| R11 | **`team_role_holding` is absent from the blueprint** | `S`: the child side of a seat, carrying the ordered parent list that home is projected through · `B`: no such concept | The blueprint cannot express a subteam as built |
+
+`team_accountability` and `team_domain` are text-plus-order owned by a role,
+the same shape as clauses, and are reactable as document content. They may
+belong with element 4 rather than here — noted, not decided.
+
+## Step 3: decisions
+
+| #  | Decision | Costs |
+| -- | -------- | ----- |
+| R1 | **The three participation records get a field contract and validation**, declared as `ROLE_RECORD_FIELDS` beside `GOVERNANCE_FIELDS`. | Registering them becomes possible; the registry test can enforce them. |
+| R2 | **Offer, decision and holding become append-only.** `team_role`, `team_accountability` and `team_domain` stay mutable document content — the line `ARCHITECTURE.md` already draws between content and records *about* it. | The largest change of the review. Each of the three loses history in a different way today: an offer is revived by `modify`, a decision is rewritten in place, and a holding is **deleted** on unseating. |
+| R6 | **The cost of depth is accepted as correct.** If the document people agreed to changes, their agreement is genuinely stale and re-accepting is the honest answer. The existing scoping — body plus that one role's definition — stays. | Documented, not mechanised. Closes an item open since before this review. |
+| R9 | **Applied.** Ending a membership checks that the record it names is a *standing* membership, not that it is still the current one. Acting authority checks the vacancy and candidacy it names as records. Write-time refusal still comes from `_authority_basis_for_actor`, so nothing new is writable through the application. | Done; suite green. |
+| R7 | The stale docstring on `team_reference_hash` goes with R2. | Documentation only. |
+| R8 | **Member-equivalence, inferred at the act.** A Team may hold a seat only if every one of its members is already a member of the parent, and the seat is non-empty. Checked when the seat is taken, with the member set it saw recorded on the decision. Later drift shows as a divergence in the parent rather than silently revoking the seat. **Seating no longer admits anybody**: containment is a precondition, not a consequence. | Reverses the direction of the hierarchy — a subteam stops being a route into a parent, and everyone must be admitted to the parent first. Rejected the continuously-inferred form because a parent replica that cannot see the subteam could not tell whether its own role was held, and because the subteam's Identity could toggle the seat by admitting one person. |
+
+### Target shapes
+
+Chains, each keyed per (role, actor) or per seat, in the same style as
+`team_member_opening`:
+
+| Type                 | Required                                                                                       | Optional |
+| -------------------- | ------------------------------------------------------------------------------------------------ | -------- |
+| `team_role_offer`    | `actor_uuid`, `actor_kind`, `state`, `previous_offer_uuid`, `offered_by`, `offered_at`             | `revoked_at` |
+| `team_role_decision` | `actor_uuid`, `decision`, `previous_decision_uuid`, `decided_at`, `reference_hash`                 | `expires_at`, `decided_by`, `seated_member_uuids` |
+| `team_role_holding`  | `parent_team_uuid`, `role_uuid`, `order`, `state`, `previous_holding_uuid`                         | — |
+
+`seated_member_uuids` is R8's evidence, and follows the precedent of
+`electorate_actor_uuids` on an election: the set is recorded rather than
+hashed, so it can be checked later rather than only compared.
+
+### What R8 turned out to cost
+
+Almost nothing, because most of it was already there. `_members_outside`
+existed and already read **membership** — `actor_uuids` counts members for
+individuals — so containment was a working precondition and seating already
+admitted nobody. What was wrong was the *reasoning* around it: the docstring
+and the refusal both still said "hold a role in the parent", language from
+when membership was a role, and `offer_role` still justified Identity-only
+team offers with "seating a team admits everybody on it".
+
+So R8 reduced to correcting that language, adding the non-empty check, and
+recording the evidence. The rule the user proposed was largely the rule
+already built; nobody had noticed because the words around it described the
+model it replaced.
+
+## Step 5: enforcement
+
+| Test | Encodes |
+| ---- | ------- |
+| `test_giving_up_a_seat_keeps_the_record_that_it_was_held` | R2 — unseating appends instead of deleting, and retaking continues one chain |
+| `test_a_team_with_no_members_cannot_take_a_seat` | R8 — containment is vacuous for an empty team |
+| `test_a_malformed_participation_record_is_refused` | R1 — a contract exists and is checked on adoption |
+| `test_refusal_updates_the_users_item_and_renders_a_badge` | R2 — answering again continues the chain; both answers readable |
+| `test_declining_a_seat_answers_it_and_can_be_reconsidered` | R2/R8 — a Team's answer chains, and records who was on it |
+| `test_an_offer_from_someone_who_is_not_identity_is_not_adopted` | R1 — contract and authority are separate refusals |
+
+`tests/test_type_registry.py` now covers all three participation types field
+for field and their three vocabularies. Suite: **190 tests, green** (was 186).
+
+## Supersedes — element 3
+
+| Document | Section | Replaced by |
+| -------- | ------- | ----------- |
+| `ARCHITECTURE.md` | ¶2 and ¶3 entire, and ¶4's first sentence | `DESIGN_TYPES.md` § Roles — every node name in them is superseded, and ¶2's "held only while both exist" is no longer how a role is held |
+| `DESIGN_ROLES_AND_ACTORS.md` | §1.2 role subtree; §1.3 cardinality; §2.1, §2.3, §2.4, §2.5, §2.7, §2.9; §5 "cost of depth" | `DESIGN_TYPES.md` § Roles |
+
+## Element 3 — remaining
+
+- `team_accountability` and `team_domain` are content and go with element 4.
+- The blueprint rows (R10, R11) change `../Domain-Driven-Design.md`.
 
 ## Retired names
 

@@ -42,6 +42,47 @@ class TeamLogic:
         "team_trustee_reality",
         "team_external_member_resolution",
     })
+    # Taking part in a role is recorded, not stored as content. A role and
+    # its accountabilities are what people agree to and are edited like any
+    # other text; an offer, an answer and a seat are facts *about* who is
+    # doing what, and facts are appended. They used to be neither: an offer
+    # was revived by rewriting the revoked one, an answer was rewritten in
+    # place, and giving up a seat deleted the holding outright - so who held
+    # a role, and when, was not anywhere.
+    ROLE_RECORD_TYPES = frozenset({
+        "team_role_offer", "team_role_decision", "team_role_holding",
+    })
+    OFFER_STATES = frozenset({"offered", "revoked"})
+    ROLE_DECISIONS = frozenset({"accepted", "refused"})
+    HOLDING_STATES = frozenset({"held", "given_up"})
+    ROLE_RECORD_FIELDS = {
+        "team_role_offer": (
+            frozenset({
+                "type", "actor_uuid", "actor_kind", "state",
+                "previous_offer_uuid", "offered_by", "offered_at",
+            }),
+            frozenset({"revoked_at", "revoked_by"}),
+        ),
+        # decided_by names who answered on a Team's behalf, and
+        # seated_member_uuids is what they saw when they did: every member of
+        # the seated team, all of whom had to be members here already. The
+        # set is kept rather than hashed, following the electorate on an
+        # election, so it can be read back rather than only compared.
+        "team_role_decision": (
+            frozenset({
+                "type", "actor_uuid", "decision", "previous_decision_uuid",
+                "decided_at", "reference_hash",
+            }),
+            frozenset({"expires_at", "decided_by", "seated_member_uuids"}),
+        ),
+        "team_role_holding": (
+            frozenset({
+                "type", "parent_team_uuid", "role_uuid", "order", "state",
+                "previous_holding_uuid",
+            }),
+            frozenset(),
+        ),
+    }
     POOL_RECORD_TYPES = frozenset({
         "team_pool_invitation",
         "team_pool_application",
@@ -346,8 +387,36 @@ class TeamLogic:
     # read-only until they join it.
 
     def parent_holdings(self, team: ProtocolNode) -> list[ProtocolNode]:
-        """This team's roles in other teams, in declared order."""
-        return self._ordered(team, "team_role_holding")
+        """This team's roles in other teams, in declared order.
+
+        The seats it holds now: the end of each seat's chain, and only where
+        that end still says held. A seat given up stays as history, which is
+        what it did not do while unseating deleted the record.
+        """
+        records = self._ordered(team, "team_role_holding")
+        live = []
+        seen = set()
+        for record in records:
+            seat = (
+                record.data.get("parent_team_uuid"),
+                record.data.get("role_uuid"),
+            )
+            if seat in seen:
+                continue
+            seen.add(seat)
+            head = self._chain_head(
+                [
+                    other for other in records
+                    if (
+                        other.data.get("parent_team_uuid"),
+                        other.data.get("role_uuid"),
+                    ) == seat
+                ],
+                "previous_holding_uuid",
+            )
+            if head is not None and head.data.get("state") == "held":
+                live.append(head)
+        return live
 
     def is_organization(self, team: ProtocolNode) -> bool:
         """Whether this Team is a root body rather than a subteam.
@@ -1350,6 +1419,68 @@ class TeamLogic:
             ],
             key=lambda node: (node.created_at, node.uuid),
         )
+
+    def role_record_schema_error(self, node: ProtocolNode) -> str | None:
+        """Whether a participation record is the shape its type declares.
+
+        The check governance records have always had. These had none: they
+        travel the proposal path, so a peer's offer or answer was whatever
+        they sent, and a person was asked to accept it sight unseen.
+        """
+        node_type = node.data.get("type")
+        contract = self.ROLE_RECORD_FIELDS.get(node_type)
+        if contract is None:
+            return "not a participation record"
+        if node.children:
+            return "participation records cannot contain children"
+        required, optional = contract
+        fields = set(node.data)
+        missing = sorted(required - fields)
+        extra = sorted(fields - required - optional)
+        if missing:
+            return "missing participation fields: " + ", ".join(missing)
+        if extra:
+            return "unsupported participation fields: " + ", ".join(extra)
+
+        data = node.data
+        # `order` is a sort key and `seated_member_uuids` a list of them;
+        # everything else a participation record carries is text.
+        for field in required - {"type", "order"}:
+            if not isinstance(data.get(field), str):
+                return f"{field} must be a string"
+        for field in optional - {"seated_member_uuids"}:
+            if field in data and not isinstance(data[field], str):
+                return f"{field} must be a string"
+        if node_type == "team_role_offer":
+            if data.get("state") not in self.OFFER_STATES:
+                return "offer state must be offered or revoked"
+            if data.get("actor_kind") not in {"individual", "team"}:
+                return "actor_kind must be individual or team"
+            if data.get("state") == "revoked" and (
+                not data.get("revoked_at")
+                or not data.get("previous_offer_uuid")
+            ):
+                return "a revoked offer requires revoked_at and a predecessor"
+        elif node_type == "team_role_decision":
+            if data.get("decision") not in self.ROLE_DECISIONS:
+                return "decision must be accepted or refused"
+            seated = data.get("seated_member_uuids")
+            if seated is not None and (
+                not isinstance(seated, list)
+                or not all(isinstance(actor, str) and actor for actor in seated)
+            ):
+                return "seated_member_uuids must be a list of actor UUIDs"
+        elif node_type == "team_role_holding":
+            if data.get("state") not in self.HOLDING_STATES:
+                return "holding state must be held or given_up"
+            order = data.get("order")
+            if isinstance(order, bool) or not isinstance(order, (int, float)):
+                return "order must be a number"
+            if data.get("state") == "given_up" and not data.get(
+                "previous_holding_uuid",
+            ):
+                return "a seat given up requires a predecessor"
+        return None
 
     def governance_schema_error(self, node: ProtocolNode) -> str | None:
         node_type = node.data.get("type")
@@ -2737,19 +2868,28 @@ class TeamLogic:
         if candidacy is None:
             return ("deferred", "the authority basis is not available")
         if (
-            projection.get("state") != "vacant"
-            or candidacy.data.get("vacant_state_uuid") != current_uuid
-        ):
-            return ("unauthorized", "the acting-authority vacancy is no longer current")
-        if (
             candidacy.data.get("trust") != trust
             or candidacy.data.get("actor_uuid") != actor_uuid
             or candidacy.data.get("previous_candidacy_uuid")
-            or self.trustee_candidacy_projection(
-                team, candidacy.uuid,
-            ).get("state") != "active"
         ):
             return ("unauthorized", "the candidacy does not grant this authority")
+        # The vacancy the candidacy answers, read as a record. Whether the
+        # seat is still empty and the candidacy still active are questions
+        # about now, and asking them here made an acting trustee's past
+        # decisions stop being authorized the moment the seat was filled.
+        # Nothing new becomes writable: composing an acting record still
+        # goes through _authority_basis_for_actor, which hands out a basis
+        # only while the seat is vacant and the candidacy is live.
+        vacancy = self._governance_node(
+            team, str(candidacy.data.get("vacant_state_uuid") or ""),
+            "team_trustee_state",
+        )
+        if vacancy is None:
+            return ("deferred", "the vacancy the candidacy answers is not available")
+        if vacancy.data.get("trust") != trust or vacancy.data.get(
+            "holder_actor_uuid",
+        ):
+            return ("unauthorized", "the candidacy does not answer a vacancy")
         if not self._is_current_member(team, actor_uuid):
             return ("unauthorized", "the acting candidate is not a current Member")
         return ("authorized", "")
@@ -2936,10 +3076,13 @@ class TeamLogic:
                     return {"status": "deferred", "reason": "the membership being ended is not available"}
                 if previous.data.get("actor_uuid") != subject_uuid:
                     return {"status": "invalid", "reason": "the ending names somebody else's membership"}
-                if previous.uuid != self.membership_projection(
-                    team, subject_uuid,
-                ).get("current_uuid"):
-                    return {"status": "unauthorized", "reason": "the membership being ended is not the current one"}
+                # Checked as a record: what it names must be a standing
+                # membership. Not that it is still the current one - that
+                # would make an ending stop being authorized as soon as
+                # anything followed it, which is the order-dependence a
+                # trustee's own trail was already losing.
+                if previous.data.get("state") != "member":
+                    return {"status": "invalid", "reason": "the membership being ended is not a standing one"}
                 if cause == "departure":
                     # Leaving is the member's own act and nobody else's,
                     # which is the counterpart of Identity's power to remove.
@@ -4489,14 +4632,19 @@ class TeamLogic:
     # several actors, and revoking one must not revoke the rest.
 
     def role_offers(self, role: ProtocolNode) -> list[ProtocolNode]:
-        """Offers that still stand. A revoked one is kept but is not an offer."""
-        return [
-            offer for offer in self._all_role_offers(role)
-            if not offer.data.get("revoked_at")
-        ]
+        """Offers that still stand - one per actor, and only where the end
+        of that actor's chain still says `offered`. A withdrawn invitation
+        is kept, because the fact that there was one survives."""
+        heads = {}
+        for record in self._all_role_offers(role):
+            actor_uuid = str(record.data.get("actor_uuid") or "")
+            if actor_uuid not in heads:
+                heads[actor_uuid] = self._offer_for(role, actor_uuid)
+        return [head for head in heads.values() if head is not None]
 
     @staticmethod
     def _all_role_offers(role: ProtocolNode) -> list[ProtocolNode]:
+        """Every offer record, links included. History, not standing."""
         return [
             child for child in role.live_children()
             if child.data.get("type") == "team_role_offer"
@@ -4543,22 +4691,24 @@ class TeamLogic:
             return SessionResult(
                 "error", reason="that actor has already been offered this role",
             )
-        data = {
-            "type": "team_role_offer",
-            "actor_uuid": normalized,
-            # A team can be offered a seat as readily as a person.
-            "actor_kind": "team" if seating_team else "individual",
-            "offered_by": self._identity_uuid,
-            "offered_at": self._now(),
-            "revoked_at": None,
-        }
-        # Offering again after a revocation revives the same record rather
-        # than laying a second one beside it.
-        if withdrawn := self._offer_for(role, normalized, revoked=True):
-            return self.session.modify(
-                withdrawn.uuid, data, withdrawn.weights,
-            )
-        return self.session.create_child(role.uuid, data, {})
+        # Offering again after a withdrawal continues that actor's chain
+        # rather than reviving the record it ended with. The withdrawal
+        # stays where it happened.
+        withdrawn = self._offer_for(role, normalized, revoked=True)
+        return self.session.create_child(
+            role.uuid,
+            {
+                "type": "team_role_offer",
+                "actor_uuid": normalized,
+                # A team can be offered a seat as readily as a person.
+                "actor_kind": "team" if seating_team else "individual",
+                "state": "offered",
+                "previous_offer_uuid": withdrawn.uuid if withdrawn else "",
+                "offered_by": self._identity_uuid,
+                "offered_at": self._now(),
+            },
+            {},
+        )
 
     def revoke_role_offer(
         self, role_uuid: str, actor_uuid: str,
@@ -4591,10 +4741,21 @@ class TeamLogic:
             return SessionResult(
                 "error", reason="only whoever invited them can withdraw it",
             )
-        data = dict(offer.data)
-        data["revoked_at"] = self._now()
-        data["revoked_by"] = self._identity_uuid
-        return self.session.modify(offer.uuid, data, offer.weights)
+        return self.session.create_child(
+            role.uuid,
+            {
+                "type": "team_role_offer",
+                "actor_uuid": offer.data["actor_uuid"],
+                "actor_kind": offer.data["actor_kind"],
+                "state": "revoked",
+                "previous_offer_uuid": offer.uuid,
+                "offered_by": offer.data["offered_by"],
+                "offered_at": offer.data["offered_at"],
+                "revoked_at": self._now(),
+                "revoked_by": self._identity_uuid,
+            },
+            {},
+        )
 
     def decide_role(
         self, role_uuid: str, decision: str, expires_at: str | None = None,
@@ -4713,20 +4874,30 @@ class TeamLogic:
                 "error",
                 reason="that would make the organisation circular",
             )
+        # A team with nobody on it contains no strangers either, so
+        # containment alone would let an empty - or abandoned - team hold a
+        # seat in every parent there is.
+        members = self.current_member_uuids(seated)
+        if not members:
+            return SessionResult(
+                "error",
+                reason="a team with no members cannot take a seat",
+            )
         outside = self._members_outside(seated, parent)
         if outside:
             return SessionResult(
                 "error",
                 reason=(
-                    "Everybody on this team has to hold a role in "
+                    "Everybody on this team has to be a member of "
                     f"{parent.data.get('title') or 'the parent team'} "
-                    "before it can take a seat there. Not yet holding one: "
+                    "before it can take a seat there. Not yet a member: "
                     + ", ".join(sorted(outside))
                 ),
             )
         answered = self._record_role_decision(
             parent, role, "accepted", None,
             actor_uuid=seated.uuid, decided_by=self._identity_uuid,
+            seated_member_uuids=members,
         )
         if answered.status != "ok":
             return answered
@@ -4739,18 +4910,27 @@ class TeamLogic:
             None,
         )
         if existing:
-            # Reconsidering a refusal: the answer is rewritten and the seat it
+            # Reconsidering a refusal: the answer moved on and the seat it
             # already names is the same seat.
             return SessionResult("ok", value=existing.uuid, effects=answered.effects)
+        # Taking a seat that was given up before continues that seat's
+        # chain. Starting a second root would leave two claims on one seat,
+        # which is what a chain reads as a contest.
+        released = self._given_up_seat(seated, parent.uuid, role.uuid)
         held = self.session.create_child(
             seated.uuid,
             {
                 "type": "team_role_holding",
                 "parent_team_uuid": parent.uuid,
                 "role_uuid": role.uuid,
-                "order": self.session.next_child_order(
-                    seated.uuid, "team_role_holding",
+                "order": (
+                    released.data.get("order", 0) if released
+                    else self.session.next_child_order(
+                        seated.uuid, "team_role_holding",
+                    )
                 ),
+                "state": "held",
+                "previous_holding_uuid": released.uuid if released else "",
             },
             {},
         )
@@ -4792,24 +4972,50 @@ class TeamLogic:
             admitted = above if admitted is None else (admitted & above)
         return admitted if admitted is not None else set()
 
+    def _given_up_seat(
+        self, seated: ProtocolNode, parent_uuid: str, role_uuid: str,
+    ) -> ProtocolNode | None:
+        """The end of a seat's chain when that end says it was given up."""
+        head = self._chain_head(
+            [
+                record for record in self._ordered(seated, "team_role_holding")
+                if record.data.get("parent_team_uuid") == parent_uuid
+                and record.data.get("role_uuid") == role_uuid
+            ],
+            "previous_holding_uuid",
+        )
+        if head is not None and head.data.get("state") == "given_up":
+            return head
+        return None
+
     def _members_outside(
         self, seated: ProtocolNode, parent: ProtocolNode,
     ) -> set[str]:
-        """Who is on this team without also being on the one above it.
+        """Who is on this team without already being on the one above it.
 
-        Taking a seat commits everybody already on this team to the parent,
-        because being on a team below is being on the team above. Somebody
-        who has not taken a role up there would be carried into a team
-        they never accepted - and would then find this team read-only,
-        including the trustee who accepted the seat on its behalf.
+        A Team may hold a seat only while everybody on it is a member of the
+        team it sits in. It is inferred rather than assigned: nobody grants
+        a team membership, it either contains no strangers or it does not.
+
+        Seating admits nobody. It used to be described the other way round -
+        a team in a role brought everybody on it into the parent - and that
+        made a subteam a way into a team you had never been admitted to.
+        Containment is the precondition now, not the consequence, so the
+        people come first and the seat follows.
+
+        Checked when the seat is taken, and the answer recorded with it. Not
+        re-derived on every read: a parent replica need not have the subteam
+        mounted at all, so a rule evaluated continuously would leave a team
+        unable to tell whether its own role was held.
 
         A team seated *here* is not checked: its own members were contained
         when it took its seat, so containment holds up the chain by
         induction. Only individuals are counted.
 
-        This can only report what it can see. A role held on a replica this
-        session does not reach reads as unheld, so the answer is the
-        cautious one - refuse and name them - rather than a guess.
+        This can only report what it can see. Somebody whose membership is
+        recorded on a replica this session does not reach reads as absent,
+        so the answer is the cautious one - refuse and name them - rather
+        than a guess.
         """
         above = self.actor_uuids(parent) | {seated.uuid}
         outside = set()
@@ -4898,9 +5104,22 @@ class TeamLogic:
         effects = []
         for holding in held:
             effects.extend(self._release_seat(seated, holding))
-            dropped = self.session.delete(holding.uuid)
-            if dropped.status == "ok":
-                effects.extend(dropped.effects)
+            # Appended, not deleted. Deleting it left no record that the
+            # seat was ever held, which is the one thing a holding is for.
+            given_up = self.session.create_child(
+                seated.uuid,
+                {
+                    "type": "team_role_holding",
+                    "parent_team_uuid": holding.data["parent_team_uuid"],
+                    "role_uuid": holding.data["role_uuid"],
+                    "order": holding.data.get("order", 0),
+                    "state": "given_up",
+                    "previous_holding_uuid": holding.uuid,
+                },
+                {},
+            )
+            if given_up.status == "ok":
+                effects.extend(given_up.effects)
         return SessionResult("ok", effects=effects)
 
     def _release_seat(
@@ -5012,28 +5231,35 @@ class TeamLogic:
         expires_at: str | None,
         actor_uuid: str | None = None,
         decided_by: str | None = None,
+        seated_member_uuids: list[str] | None = None,
     ) -> SessionResult:
-        """One answer per actor per role, rewritten rather than added to.
+        """One chain per actor per role, appended to rather than rewritten.
 
         An actor who refuses and later accepts has changed their mind, not
-        answered twice, and two decision nodes for one actor would leave
-        which of them counts up to iteration order. `decided_by` is set only
-        for a Team actor, which cannot answer for itself.
+        answered twice - so the new answer continues their chain and which
+        one counts is the end of it, not iteration order. It used to be the
+        same record rewritten, which said the same thing about standing and
+        left no trace of when anybody took a role or stepped out of one.
+
+        `decided_by` is set only for a Team actor, which cannot answer for
+        itself, and `seated_member_uuids` records what was true of it then.
         """
         actor = actor_uuid or self._identity_uuid
+        existing = self._role_decision_for(role, actor)
         data = {
             "type": "team_role_decision",
             "actor_uuid": actor,
             "decision": decision,
+            "previous_decision_uuid": existing.uuid if existing else "",
             "decided_at": self._now(),
             "reference_hash": self.role_reference_hash(team, role),
-            "expires_at": expires_at,
         }
+        if expires_at:
+            data["expires_at"] = expires_at
         if decided_by:
             data["decided_by"] = decided_by
-        existing = self._role_decision_for(role, actor)
-        if existing:
-            return self.session.modify(existing.uuid, data, existing.weights)
+        if seated_member_uuids is not None:
+            data["seated_member_uuids"] = list(seated_member_uuids)
         return self.session.create_child(role.uuid, data, {})
 
     def _adopt_offer_proposal(
@@ -5078,16 +5304,17 @@ class TeamLogic:
     def _offer_for(
         self, role: ProtocolNode, actor_uuid: str, revoked: bool = False,
     ) -> ProtocolNode | None:
-        source = (
-            self._all_role_offers(role) if revoked else self.role_offers(role)
+        """The offer that stands for this actor, if one does.
+
+        `revoked=True` asks for the head whatever it says, which is how
+        offering again after a withdrawal finds what it is continuing.
+        """
+        head = self._role_chain_head(
+            role, "team_role_offer", actor_uuid, "previous_offer_uuid",
         )
-        return next(
-            (
-                offer for offer in source
-                if offer.data.get("actor_uuid") == actor_uuid
-            ),
-            None,
-        )
+        if head is None or revoked:
+            return head
+        return head if head.data.get("state") == "offered" else None
 
     def _own_role_decision(self, role: ProtocolNode) -> ProtocolNode | None:
         return self._role_decision_for(role, self._identity_uuid)
@@ -5095,16 +5322,57 @@ class TeamLogic:
     def _role_decision_for(
         self, role: ProtocolNode, actor_uuid: str,
     ) -> ProtocolNode | None:
-        return next(
-            (
-                child for child in role.live_children()
-                if (
-                    child.data.get("type") == "team_role_decision"
-                    and child.data.get("actor_uuid") == actor_uuid
-                )
-            ),
-            None,
+        """This actor's current answer on this role - the end of their chain."""
+        return self._role_chain_head(
+            role, "team_role_decision", actor_uuid, "previous_decision_uuid",
         )
+
+    def _role_chain_head(
+        self, role: ProtocolNode, node_type: str, actor_uuid: str,
+        predecessor_field: str,
+    ) -> ProtocolNode | None:
+        return self._chain_head(
+            [
+                child for child in role.live_children()
+                if child.data.get("type") == node_type
+                and child.data.get("actor_uuid") == actor_uuid
+            ],
+            predecessor_field,
+        )
+
+    @staticmethod
+    def _chain_head(
+        records: list[ProtocolNode], predecessor_field: str,
+    ) -> ProtocolNode | None:
+        """The end of one append-only chain, or nothing when it forks.
+
+        The same walk the governance projections do, without the reporting:
+        a single root advances through single successors, and more than one
+        of either is a contest. A contest holds nothing, which is what a
+        divergence should mean here - two answers about one seat are two
+        people to talk to, not a race to settle by sort order.
+        """
+        by_previous: dict[str, list[ProtocolNode]] = {}
+        for record in records:
+            by_previous.setdefault(
+                str(record.data.get(predecessor_field) or ""), [],
+            ).append(record)
+        roots = by_previous.get("", [])
+        if len(roots) != 1:
+            return None
+        current = roots[0]
+        seen = {current.uuid}
+        while True:
+            successors = [
+                record for record in by_previous.get(current.uuid, [])
+                if record.uuid not in seen
+            ]
+            if not successors:
+                return current
+            if len(successors) > 1:
+                return None
+            current = successors[0]
+            seen.add(current.uuid)
 
     def role_holders(
         self, team: ProtocolNode, role: ProtocolNode,
@@ -5549,6 +5817,22 @@ class TeamLogic:
             assessment = self.assess_governance_record(team, peer_node)
             if assessment["status"] != "authorized":
                 return SessionResult("error", reason=assessment["reason"])
+        if reference and reference.data.get("type") in self.ROLE_RECORD_TYPES:
+            if local_exists:
+                return SessionResult(
+                    "error",
+                    reason=(
+                        "participation records are append-only and cannot "
+                        "be changed"
+                    ),
+                )
+            if not peer_node:
+                return SessionResult(
+                    "error", reason="participation record is unavailable",
+                )
+            schema_error = self.role_record_schema_error(peer_node)
+            if schema_error:
+                return SessionResult("error", reason=schema_error)
         allowed = self._interaction_guard_for_reaction(
             source_addr, node_uuid,
         )
@@ -6640,11 +6924,17 @@ class TeamLogic:
         """Hash team content without participant decision records.
 
         Role nodes are deliberately absent. An acceptance covers the document
-        body plus the definitions of the roles that participant *holds*, so
-        that editing one role does not re-open everybody else's acceptance.
-        Nobody holds a role yet, which makes the held-role contribution empty
-        and this hash exactly right for now; the scoping becomes visible when
-        holdings arrive.
+        body plus the definition of the role being accepted - see
+        role_reference_hash - so that editing one role does not re-open
+        everybody else's acceptance.
+
+        Editing the body still re-opens everyone's, at every level below,
+        and that is not a defect to be worked around: if the document people
+        agreed to has changed, their agreement to it is genuinely stale and
+        being asked again is the honest answer. A grace period was
+        considered and rejected, because it would make whether somebody
+        holds a role depend on the clock and on local settings, and two
+        replicas would disagree.
         """
         return self._content_hash(team, {
             "team", "team_section", "team_clause",
