@@ -46,6 +46,18 @@ def build_routes(logic, runtime) -> list[Route]:
             runtime, logic.delete_team(data["team_uuid"]),
         )
 
+    async def api_archive_team(request: Request):
+        data = await request.json()
+        return await _json_result(
+            runtime, logic.archive_team(data["team_uuid"]),
+        )
+
+    async def api_restore_team(request: Request):
+        data = await request.json()
+        return await _json_result(
+            runtime, logic.restore_team(data.get("file", "")),
+        )
+
     async def api_create_section(request: Request):
         data = await request.json()
         return await _json_result(runtime, logic.create_section(
@@ -214,6 +226,20 @@ def build_routes(logic, runtime) -> list[Route]:
             data["team_uuid"], data["application_uuid"],
         ))
 
+    async def api_end_membership(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.end_membership(
+            data["team_uuid"], data.get("actor_uuid", ""),
+            data.get("signals", ""), data.get("consideration", ""),
+            data.get("expectation", ""),
+        ))
+
+    async def api_leave_team(request: Request):
+        data = await request.json()
+        return await _json_result(
+            runtime, logic.leave_team(data["team_uuid"]),
+        )
+
     async def api_resolve_membership(request: Request):
         data = await request.json()
         return await _json_result(runtime, logic.resolve_member_application(
@@ -227,6 +253,12 @@ def build_routes(logic, runtime) -> list[Route]:
         return await _json_result(runtime, logic.start_trustee_election(
             data["team_uuid"], data.get("trust", ""),
             data.get("facilitator_actor_uuid", ""),
+        ))
+
+    async def api_join_trustee_election(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.join_trustee_election(
+            data["team_uuid"], data["election_uuid"],
         ))
 
     async def api_implement_trustee_election(request: Request):
@@ -403,6 +435,8 @@ def build_routes(logic, runtime) -> list[Route]:
         Route("/api/team/teams/select", api_select_team, methods=["POST"]),
         Route("/api/team/teams/rename", api_rename_team, methods=["POST"]),
         Route("/api/team/teams/delete", api_delete_team, methods=["POST"]),
+        Route("/api/team/teams/archive", api_archive_team, methods=["POST"]),
+        Route("/api/team/teams/restore", api_restore_team, methods=["POST"]),
         Route(
             "/api/team/agreement/rename",
             api_rename_agreement,
@@ -500,7 +534,19 @@ def build_routes(logic, runtime) -> list[Route]:
             methods=["POST"],
         ),
         Route(
+            "/api/team/membership/end", api_end_membership,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/team/membership/leave", api_leave_team,
+            methods=["POST"],
+        ),
+        Route(
             "/api/team/elections/start", api_start_trustee_election,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/team/elections/join", api_join_trustee_election,
             methods=["POST"],
         ),
         Route(

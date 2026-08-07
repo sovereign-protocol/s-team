@@ -264,7 +264,7 @@ class AssetTests(unittest.TestCase):
     def test_an_unreachable_answer_is_not_worded_as_an_unanswered_one(self):
         # "They have not answered" and "this session cannot see whether they
         # have" are different facts, and the interface has to say which.
-        self.assertIn("offered, not yet decided", self.team)
+        self.assertIn("invited, not yet taken up", self.team)
         self.assertIn("answer not visible from here", self.team)
         self.assertIn(
             "you cannot see their answer", self.team,
@@ -272,14 +272,50 @@ class AssetTests(unittest.TestCase):
 
     def test_destructive_role_actions_state_their_consequence(self):
         for marker in (
-            # Revoking says what survives it and what does not.
-            "This withdraws the offer",
-            "is theirs and stays",
+            # Withdrawing an invitation says what it does not do.
+            "This takes back the suggestion",
+            "stepping out of it is theirs",
             # Trustee resignation says what happens next.
             "trusteeship stays vacant until a valid decision is implemented",
             "confirmModalConfirmBtn",
         ):
             self.assertIn(marker, self.team)
+
+    def test_archiving_and_joining_an_election_are_reachable(self):
+        for marker in (
+            "/api/team/teams/archive",
+            "/api/team/teams/restore",
+            "archive-shelf",
+            # Archiving says what it does and, more to the point, what it
+            # does not: nothing is sent, and nobody else loses anything.
+            "everybody else keeps their copy",
+            "the file carries",
+            # An elector can bring an unavailable election here.
+            "/api/team/elections/join",
+            "Bring it here",
+            "can_join",
+        ):
+            self.assertIn(marker, self.team)
+
+    def test_membership_is_operable_and_separate_from_roles(self):
+        # Identity decides membership; a member takes any role. Both acts
+        # have to be reachable, and neither may be dressed as the other.
+        for marker in (
+            "/api/team/membership/end",
+            "/api/team/membership/leave",
+            "membership-roster",
+            "Take this role",
+            "on this team, holding no role yet",
+        ):
+            self.assertIn(marker, self.team)
+        # Nothing left that treats a role as the carrier of membership, or
+        # an answer as a request awaiting Identity's confirmation.
+        for gone in (
+            "system_key === 'member'",
+            "Apply for this role",
+            "asked to take this",
+        ):
+            self.assertNotIn(gone, self.team)
 
     def test_vacancy_and_decision_trail_are_operable_in_the_page(self):
         for marker in (
@@ -290,8 +326,16 @@ class AssetTests(unittest.TestCase):
             "/api/team/trusteeships/actions/record",
             "/api/team/trusteeships/actions/reality",
             "signals_missing",
-            "Conflicting actions",
+            "conflicting records",
             "requestDecisionContext",
+            # The trail is a history of records, not a list of the actions
+            # somebody typed in: every row says when, who, and how it came
+            # out, and it is fed by the payload that carries all of them.
+            "decision_trail",
+            "decision-record",
+            "decision-when",
+            "decision-intent",
+            "decision-result",
         ):
             self.assertIn(marker, self.team)
 
