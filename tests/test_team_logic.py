@@ -855,6 +855,56 @@ class TeamLogicTests(unittest.TestCase):
             runtime.session.protocol.index[child_uuid],
         ), [])
 
+    def test_document_content_is_checked_but_still_editable(self):
+        """Content is edited rather than appended, and that is deliberate.
+        Editable is not unchecked: a peer's clause used to be whatever they
+        sent, and somebody was asked to accept it sight unseen."""
+        left, right = self.runtime(9675), self.runtime(9676)
+        team_uuid = left.logic.create_team("Charter").value
+        section_uuid = left.logic.create_section(team_uuid, "Terms").value
+        connect(left, right, team_uuid)
+        right.logic.accept_team_invitation(
+            right.session.protocol.index[team_uuid],
+        )
+        sync(left, right)
+
+        malformed = right.session.create_child(
+            section_uuid,
+            {"type": "team_clause", "text": "Fine", "order": "not a number"},
+            {},
+        ).value
+        wrong_child = right.session.create_child(
+            section_uuid,
+            {"type": "team_clause", "text": "Also fine", "order": 1.0},
+            {},
+        ).value
+        right.session.create_child(
+            wrong_child.uuid,
+            {
+                "type": "team_role", "name": "Smuggled",
+                "purpose": "", "order": 0.0,
+            },
+            {},
+        )
+        sync(left, right)
+
+        bad_order = left.logic.accept_peer_node(
+            right.peer_addr, malformed.uuid,
+        )
+        owns_a_role = left.logic.accept_peer_node(
+            right.peer_addr, wrong_child.uuid,
+        )
+
+        self.assertEqual(bad_order.status, "error")
+        self.assertIn("order must be a number", bad_order.reason)
+        self.assertEqual(owns_a_role.status, "error")
+        self.assertIn("only contain document content", owns_a_role.reason)
+        # And editing a clause in place is still the ordinary case.
+        clause_uuid = left.logic.create_clause(section_uuid, "First").value
+        self.assertEqual(
+            left.logic.update_clause(clause_uuid, "Reworded").status, "ok",
+        )
+
     def test_a_malformed_participation_record_is_refused(self):
         """These had no contract at all: a peer's offer was whatever they
         sent, and a person was asked to accept it sight unseen."""

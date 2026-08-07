@@ -111,6 +111,7 @@ class RegistryTests(unittest.TestCase):
             **TeamLogic.GOVERNANCE_FIELDS,
             **TeamLogic.POOL_FIELDS,
             **TeamLogic.ROLE_RECORD_FIELDS,
+            **TeamLogic.CONTENT_FIELDS,
         }
 
     def test_the_registry_documents_every_reviewed_area(self):
@@ -121,6 +122,7 @@ class RegistryTests(unittest.TestCase):
             name for name in self.declared
             if name.startswith("team_trustee_")
             or name in TeamLogic.ROLE_RECORD_TYPES
+            or name in TeamLogic.CONTENT_TYPES
             or name in {
                 "team_membership", "team_member_opening",
                 "team_member_application", "team_member_resolution",

@@ -427,6 +427,91 @@ survives, and a fork carries the work on.
 
 ---
 
+# The clause shape
+
+A piece of text and where it sits among its siblings, whose children are the
+same thing again:
+
+```
+<node>
+├── text | title   the words
+├── order          position among siblings
+└── children       the same shape
+```
+
+Four types use it. `team_section` names itself with a `title` and holds
+clauses; `team_clause`, `team_accountability` and `team_domain` carry `text`.
+
+| Type                  | Under          | Names itself with |
+| --------------------- | -------------- | ------------------ |
+| `team_section`        | `team`         | `title`            |
+| `team_clause`         | `team_section` | `text`             |
+| `team_accountability` | `team_role`    | `text`             |
+| `team_domain`         | `team_role`    | `text`             |
+
+**Two levels, not arbitrary depth.** The shape permits nesting and this
+document does not use it: a section holds clauses and a clause holds nothing.
+Nothing is gained by leaving the depth open in a document people have to read
+and agree to.
+
+**Content, not record.** These are what people agree to, so they are edited in
+place, and they are reactable per node — which is why an accountability is its
+own node rather than an entry in a list on the role. Two people editing
+different accountabilities have to be able to diverge separately; a list would
+collapse both edits into one undiffable conflict.
+
+Editable is not unchecked. Every one is validated against
+`CONTENT_FIELDS` on adoption, and content may only contain content — a clause
+carrying a role would be a document that owned its own participants.
+
+## `team_section`
+
+| Field   | Requirement                             |
+| ------- | ---------------------------------------- |
+| `title` | required — what the section is called     |
+| `order` | required — a number, position among siblings |
+
+## `team_clause`
+
+| Field   | Requirement                             |
+| ------- | ---------------------------------------- |
+| `text`  | required                                 |
+| `order` | required — a number, position among siblings |
+
+## `team_accountability`
+
+| Field   | Requirement                             |
+| ------- | ---------------------------------------- |
+| `text`  | required — what the role is answerable for |
+| `order` | required — a number, position among siblings |
+
+## `team_domain`
+
+| Field   | Requirement                             |
+| ------- | ---------------------------------------- |
+| `text`  | required — what the role decides about    |
+| `order` | required — a number, position among siblings |
+
+## It is a shape, not a type
+
+Deliberately. The machinery around ordered text already works without knowing
+what the text is called: Core's `next_child_order` takes a type name from the
+caller, and `_content_hash` takes a set of them.
+
+So another application needing the same thing — an Initiative's expected
+impact, a Trustee's mandate, a Flow's outcomes — declares **its own node type
+names** against this shape rather than importing S-Team's or receiving them
+from Core. Applications may not import one another, and Core's boundary scan
+forbids application vocabulary in its source; sharing the shape rather than
+the type satisfies both, and the rules are written once here instead of three
+times.
+
+What Core would host, if anything, is the type-agnostic helper it does not
+have yet: content hashing over a caller-supplied set of type names. That is
+not this repository's to make.
+
+---
+
 # Roles, and taking part in them
 
 A **role** is defined work. It has 0..n holders, and a vacant role is not a
