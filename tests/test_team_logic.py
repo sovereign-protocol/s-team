@@ -711,7 +711,16 @@ class TeamLogicTests(unittest.TestCase):
 
     def test_filling_trusteeship_ends_all_acting_authority(self):
         runtime = self.runtime(9648)
+        # A real person, because only an Individual may hold a trusteeship
+        # and an actor this replica cannot place is deferred rather than
+        # settled. A fabricated uuid used to serve here and no longer does.
+        replacement = self.runtime(9656)
         team_uuid = runtime.logic.create_team("Authority ends").value
+        connect(runtime, replacement, team_uuid)
+        replacement.logic.accept_team_invitation(
+            replacement.session.protocol.index[team_uuid],
+        )
+        sync(runtime, replacement)
         runtime.logic.resign_identity(team_uuid)
         runtime.logic.enter_trustee_candidacy(team_uuid, "identity")
         team = runtime.session.protocol.index[team_uuid]
@@ -725,7 +734,7 @@ class TeamLogicTests(unittest.TestCase):
         filled = runtime.logic.append_governance_record(team_uuid, {
             "type": "team_trustee_state",
             "trust": "identity",
-            "holder_actor_uuid": "replacement-actor",
+            "holder_actor_uuid": replacement.session.identity.uuid,
             "previous_state_uuid": vacancy_uuid,
             "cause": "resolution",
             "acted_by": runtime.session.identity.uuid,
@@ -746,6 +755,180 @@ class TeamLogicTests(unittest.TestCase):
         self.assertFalse(runtime.logic.identity_payload(
             runtime.session.protocol.index[team_uuid],
         )["can_act"])
+
+    def test_a_team_cannot_hold_a_trusteeship(self):
+        """Only an Individual. A Team holding one would leave admissions,
+        resignations and elections resting on an authority with nobody
+        answerable for it."""
+        runtime = self.runtime(9657)
+        team_uuid = runtime.logic.create_team("Holder kind").value
+        other_uuid = runtime.logic.create_team("A team, not a person").value
+        runtime.logic.resign_identity(team_uuid)
+        team = runtime.session.protocol.index[team_uuid]
+        vacancy_uuid = runtime.logic.trustee_projection(
+            team, "identity",
+        )["current_state_uuid"]
+        trust_basis = runtime.logic.trustee_projection(
+            team, "trust",
+        )["current_state_uuid"]
+
+        refused = runtime.logic.append_governance_record(team_uuid, {
+            "type": "team_trustee_state",
+            "trust": "identity",
+            "holder_actor_uuid": other_uuid,
+            "previous_state_uuid": vacancy_uuid,
+            "cause": "resolution",
+            "acted_by": runtime.session.identity.uuid,
+            "acted_at": "2026-08-07T12:00:00Z",
+            "authority_basis_uuid": trust_basis,
+            "signals": "",
+            "consideration": "",
+            "expectation": "",
+            "process_uuid": "settle-1",
+            "process_result_hash": "sha256:settle-1",
+        })
+
+        self.assertEqual(refused.status, "error")
+        self.assertIn("Individual", refused.reason)
+        self.assertEqual(runtime.logic.trustee_projection(
+            runtime.session.protocol.index[team_uuid], "identity",
+        )["state"], "vacant")
+
+    def test_settling_fills_a_vacancy_without_an_election(self):
+        """The resolution cause, reachable at last. Facilitating authority
+        plus process evidence, and no election record behind it."""
+        runtime = self.runtime(9659)
+        holder = self.runtime(9660)
+        team_uuid = runtime.logic.create_team("Settled").value
+        connect(runtime, holder, team_uuid)
+        holder.logic.accept_team_invitation(
+            holder.session.protocol.index[team_uuid],
+        )
+        sync(runtime, holder)
+        runtime.logic.resign_identity(team_uuid)
+
+        occupied = runtime.logic.settle_trusteeship(
+            team_uuid, "trust", holder.session.identity.uuid,
+            "process-1", "sha256:process-1",
+        )
+        settled = runtime.logic.settle_trusteeship(
+            team_uuid, "identity", holder.session.identity.uuid,
+            "process-1", "sha256:process-1",
+            signals="No election was needed",
+        )
+
+        # Trust is held, so it cannot be settled over.
+        self.assertEqual(occupied.status, "error")
+        self.assertEqual(settled.status, "ok")
+        projection = runtime.logic.trustee_projection(
+            runtime.session.protocol.index[team_uuid], "identity",
+        )
+        self.assertEqual(projection["state"], "held")
+        self.assertEqual(
+            projection["holder_actor_uuid"], holder.session.identity.uuid,
+        )
+        self.assertFalse(runtime.logic.trustee_election_records(
+            runtime.session.protocol.index[team_uuid], "identity",
+        ))
+
+    def test_the_model_allows_settling_over_a_sitting_trustee(self):
+        """Deliberate, and not a hole to be closed. The facade will not do it,
+        the authority model does not forbid it, and the act is signed,
+        attributable and visible - which is what the signatures are for.
+        Preventing it would be a cage."""
+        runtime = self.runtime(9663)
+        holder = self.runtime(9664)
+        team_uuid = runtime.logic.create_team("Replaceable").value
+        connect(runtime, holder, team_uuid)
+        holder.logic.accept_team_invitation(
+            holder.session.protocol.index[team_uuid],
+        )
+        sync(runtime, holder)
+        runtime.logic.resign_identity(team_uuid)
+        runtime.logic.settle_trusteeship(
+            team_uuid, "identity", holder.session.identity.uuid,
+            "process-3", "sha256:process-3",
+        )
+        team = runtime.session.protocol.index[team_uuid]
+        sitting = runtime.logic.trustee_projection(team, "identity")
+        trust_basis = runtime.logic.trustee_projection(
+            team, "trust",
+        )["current_state_uuid"]
+
+        refused = runtime.logic.settle_trusteeship(
+            team_uuid, "identity", runtime.session.identity.uuid,
+            "process-4", "sha256:process-4",
+        )
+        written = runtime.logic.append_governance_record(team_uuid, {
+            "type": "team_trustee_state",
+            "trust": "identity",
+            "holder_actor_uuid": runtime.session.identity.uuid,
+            "previous_state_uuid": sitting["current_state_uuid"],
+            "cause": "resolution",
+            "acted_by": runtime.session.identity.uuid,
+            "acted_at": "2026-08-07T13:00:00Z",
+            "authority_basis_uuid": trust_basis,
+            "signals": "",
+            "consideration": "",
+            "expectation": "",
+            "process_uuid": "process-4",
+            "process_result_hash": "sha256:process-4",
+        })
+
+        self.assertEqual(sitting["state"], "held")
+        self.assertEqual(refused.status, "error")
+        self.assertEqual(written.status, "ok")
+        self.assertEqual(runtime.logic.trustee_projection(
+            runtime.session.protocol.index[team_uuid], "identity",
+        )["holder_actor_uuid"], runtime.session.identity.uuid)
+
+    def test_settling_needs_the_facilitating_trusteeship(self):
+        """Settling rests on the other trusteeship's authority, so somebody
+        holding neither cannot do it. The founder holds both, which is why
+        the refusal has to be tried from outside."""
+        runtime = self.runtime(9661)
+        outsider = self.runtime(9662)
+        team_uuid = runtime.logic.create_team("Self settling").value
+        connect(runtime, outsider, team_uuid)
+        outsider.logic.accept_team_invitation(
+            outsider.session.protocol.index[team_uuid],
+        )
+        runtime.logic.resign_identity(team_uuid)
+        sync(runtime, outsider)
+
+        refused = outsider.logic.settle_trusteeship(
+            team_uuid, "identity", outsider.session.identity.uuid,
+            "process-2", "sha256:process-2",
+        )
+
+        self.assertEqual(refused.status, "error")
+        self.assertEqual(runtime.logic.trustee_projection(
+            runtime.session.protocol.index[team_uuid], "identity",
+        )["state"], "vacant")
+
+    def test_holding_a_trusteeship_is_not_being_on_the_team(self):
+        """A trustee is elected out of the members, so the seat never stands
+        in for membership. Somebody whose membership ended while they still
+        held one is a state worth seeing, not one to paper over."""
+        runtime = self.runtime(9658)
+        team_uuid = runtime.logic.create_team("Seat without standing").value
+        actor_uuid = runtime.session.identity.uuid
+
+        left = runtime.logic.leave_team(team_uuid)
+
+        team = runtime.session.protocol.index[team_uuid]
+        self.assertEqual(left.status, "ok")
+        # The seat is still theirs...
+        self.assertEqual(runtime.logic.trustee_projection(
+            team, "identity",
+        )["holder_actor_uuid"], actor_uuid)
+        # ...and it does not put them back on the team.
+        self.assertEqual(
+            runtime.logic.member_standing(team, actor_uuid), "former",
+        )
+        self.assertFalse(
+            runtime.logic.document_payload(team_uuid)["holds_role"],
+        )
 
     def test_concurrent_acting_decisions_and_reality_remain_visible(self):
         identity = self.runtime(9646)
