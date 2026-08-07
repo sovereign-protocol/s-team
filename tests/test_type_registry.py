@@ -123,9 +123,11 @@ class RegistryTests(unittest.TestCase):
             if name.startswith("team_trustee_")
             or name in TeamLogic.ROLE_RECORD_TYPES
             or name in TeamLogic.CONTENT_TYPES
+            or name in TeamLogic.POOL_FIELDS
             or name in {
                 "team_membership", "team_member_opening",
                 "team_member_application", "team_member_resolution",
+                "team_external_member_resolution",
             }
         }
         self.assertTrue(reviewed, "no reviewed types declared in source")

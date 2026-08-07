@@ -53,7 +53,11 @@ contradiction into a silent fallback; no browser testing.
 | 2 | Membership                     | **5 — done**, bar M4/M8/M12 carried forward |
 | 3 | Roles and holdings             | **5 — done**, bar blueprint-only rows |
 | 4 | Document (sections, clauses)   | **5 — done** |
-| 5 | Pool onboarding                | not started |
+| 5 | Pool onboarding                | **5 — done** |
+
+Every element is through step 5. What remains is the **purge**: the
+*Supersedes* tables under each element are the delete list, and this file goes
+with them.
 
 ---
 
@@ -636,6 +640,80 @@ Suite: **191 tests, green** (was 190).
 | Document | Section | Replaced by |
 | -------- | ------- | ----------- |
 | `DESIGN_ROLES_AND_ACTORS.md` | §1.2's note on accountabilities and domains being nodes rather than lists | `DESIGN_TYPES.md` § The clause shape |
+
+---
+
+# Element 5 — Pool onboarding
+
+## Step 1: extracted
+
+A **Pool** is a separate shared topic holding no Team document — a waiting
+room, so somebody can ask to join without first being given the Team. Four
+types: the `team_pool` topic itself, plus `team_pool_invitation`,
+`team_pool_application` and `team_pool_resolution` in `POOL_FIELDS`. A fifth,
+`team_external_member_resolution`, is a *governance* record on the Team and
+mirrors an accepted Pool resolution there.
+
+The flow: Identity opens a Member opening → publishes a Pool invitation with an
+expiry → an outsider applies in the Pool → Identity resolves → on acceptance a
+`team_external_member_resolution` is written on the Team, a membership admission
+follows it, and the Pool resolution carries the Team's connection coordinates.
+
+**This element starts ahead of the last two.** Pool records are already
+append-only, already have a field contract, and already go through an authority
+assessment. Two things are notably right:
+
+- The application check compares `submitted_at` against the invitation's own
+  `published_at` and `expires_at` — **recorded values, not the clock**. So an
+  application that was valid when made stays valid, which is M11's principle
+  applied correctly and before this review touched anything.
+- A rejected resolution is *forbidden* from carrying Team coordinates, and an
+  accepted one is required to.
+
+## Step 2: contradictions
+
+| #  | Question | Positions | Consequence |
+| -- | -------- | --------- | ----------- |
+| P1 | **The `team_pool` node has no contract** | `S`: `POOL_FIELDS` covers the three records; the topic node itself — `team_uuid`, `team_title`, `title`, `created_by`, `created_at` — is unvalidated | The same gap R1 and D5 closed elsewhere |
+| P2 | **Expiry rests on a self-reported time** | `S`: the assessment compares the applicant's own `submitted_at` against the invitation window. Correct in shape, but `submitted_at` is the applicant's claim, so backdating into an expired window cannot be detected | An expiry that the person it constrains can evade |
+| P3 | **The invitation token is a bearer token in a shared topic** | `S`: `compose_topic_invitation(team.uuid)` composes a **general** Team invitation and stores it in the accepted Pool resolution — a node in the Pool topic, which every Pool participant syncs | Everybody in the waiting room can read the coordinates from somebody else's acceptance and reach the Team topic with them |
+| P4 | **Asymmetric outcomes** | `S`: a Pool resolution may be `accepted` or `rejected`; the Team-side `team_external_member_resolution` must be `accepted` | A rejection leaves no record on the Team — probably right, since nothing about the Team changed, but it is not stated anywhere |
+| P5 | **Where the Team-side record belongs** (was M8) | It is a governance record on the Team that mirrors a Pool decision | Registered here, with the Pool flow, rather than under membership |
+| P6 | **The blueprint has no Pool** | `B`: nothing. §3's Hard Fork says a forked team "must apply to the parent layer", with no mechanism | The one built way into a team from outside is undescribed |
+
+**On P3.** The exposure is bounded — only people Identity has already admitted
+to the Pool topic can see it — and the token grants *topic access*, not
+membership: an interloper who used it would read the Team and still be an
+observer, because only the named applicant gets an admission. But being in the
+waiting room is precisely what should not grant access to the room, and the
+Pool exists to keep the Team unseen until somebody is let in.
+
+## Step 3: decisions
+
+| #  | Decision | Costs |
+| -- | -------- | ----- |
+| P1 | **The `team_pool` node gets a contract.** Added to `POOL_FIELDS`, exempt from the no-children rule because it is the topic. `assess_pool_record` refuses it explicitly — a Pool is not a record within a Pool. | **Applied.** |
+| P2 | **Self-reported `submitted_at` is accepted**, and documented. The claim is signed and attributable, Identity still has to resolve the application before anything happens, and an expiry is a signal to whoever resolves rather than a gate held by force. Checking again at resolution time was rejected: it would reintroduce clock-dependent validity, refused twice already. | Documentation only. |
+| P3 | **The token exposure is accepted and stated plainly.** An accepted Pool resolution carries a general Team invitation, in a topic every Pool participant syncs. What it grants is topic access, not membership — only the named applicant is admitted. Scoping it needs Core to compose a per-actor invitation and is not this repository's to add. | Documented, and **pinned by a test** so that changing it later is a decision rather than an accident. |
+| P4 | The Team-side record is `accepted` only, because a rejection changes nothing about the Team. Now stated. | Documentation only. |
+| P5 | `team_external_member_resolution` is registered here, with the Pool flow, rather than under membership. | Closes M8. |
+| P6 | **Pool added to the blueprint**, §3 as a governance mechanic and §4 as an entity, including the exposure. | Blueprint only. |
+
+## Step 5: enforcement
+
+| Test | Encodes |
+| ---- | ------- |
+| `test_an_accepted_pools_coordinates_are_readable_by_the_whole_pool` | P3 — a bystander in the Pool reads somebody else's coordinates, and is still an observer on the Team while the applicant is a member |
+
+`tests/test_type_registry.py` now covers **every** type S-Team declares —
+governance, participation, content and Pool — field for field, and every
+vocabulary. Suite: **192 tests, green** (was 191).
+
+## Supersedes — element 5
+
+| Document | Section | Replaced by |
+| -------- | ------- | ----------- |
+| `DESIGN_GENESIS_AND_GOVERNANCE_PLAN.md` | §3.1's four Pool rows and `team_external_member_resolution`; §3.2's four Pool rows; Increment 9 | `DESIGN_TYPES.md` § The Pool |
 
 ## Blueprint edits — element 4
 

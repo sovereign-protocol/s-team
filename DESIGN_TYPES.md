@@ -643,6 +643,130 @@ two replicas would disagree.
 
 ---
 
+# The Pool
+
+A **Pool** is a separate shared topic that holds no Team document — a waiting
+room. It exists so somebody can ask to join a team they cannot yet see:
+accepting a Team's invitation is how you get the Team, and there has to be a
+way to ask for one without already having it.
+
+The way in:
+
+1. Identity opens a Member opening on the Team.
+2. Identity publishes a **Pool invitation** naming that opening, with an expiry.
+3. An outsider, invited into the Pool topic, submits an **application**.
+4. Identity **resolves** it. On acceptance, a `team_external_member_resolution`
+   is written on the *Team* and a membership admission follows it, and the Pool
+   resolution carries the Team's connection coordinates so the applicant can
+   reach it.
+
+Both sides are append-only, and both are validated. A rejected resolution is
+**forbidden** from carrying coordinates; an accepted one is required to.
+
+## `team_pool`
+
+The waiting room itself. A topic, and so the one thing here with children.
+
+| Field         | Requirement                     |
+| ------------- | -------------------------------- |
+| `team_uuid`   | required — the Team it is for     |
+| `team_title`  | required                        |
+| `title`       | required                        |
+| `created_by`  | required                        |
+| `created_at`  | required                        |
+
+## `team_pool_invitation`
+
+| Field                  | Requirement                          |
+| ---------------------- | ------------------------------------- |
+| `team_uuid`            | required                             |
+| `team_title`           | required — must match the Pool's       |
+| `opening_uuid`         | required — the Member opening it is for |
+| `published_by`         | required                             |
+| `published_at`         | required                             |
+| `expires_at`           | required — must be after `published_at` |
+| `authority_basis_uuid` | required — Identity's                  |
+
+## `team_pool_application`
+
+| Field                         | Requirement                          |
+| ----------------------------- | ------------------------------------- |
+| `invitation_uuid`             | required                             |
+| `team_uuid`                   | required — must match the invitation's |
+| `opening_uuid`                | required — must match the invitation's |
+| `actor_uuid`                  | required                             |
+| `submitted_at`                | required                             |
+| `state`                       | required — `submitted` or `withdrawn`  |
+| `previous_application_uuid`   | required — empty for the initial record |
+| `withdrawn_at`                | optional — required when `withdrawn`   |
+
+## `team_pool_resolution`
+
+| Field                    | Requirement                                     |
+| ------------------------ | ------------------------------------------------ |
+| `invitation_uuid`        | required                                        |
+| `application_uuid`       | required                                        |
+| `team_uuid`              | required                                        |
+| `opening_uuid`           | required                                        |
+| `actor_uuid`             | required                                        |
+| `outcome`                | required — `accepted` or `rejected`              |
+| `resolved_by`            | required                                        |
+| `resolved_at`            | required                                        |
+| `authority_basis_uuid`   | required — Identity's                            |
+| `signals`                | required — may be empty                          |
+| `consideration`          | required — may be empty                          |
+| `expectation`            | required — may be empty                          |
+| `team_invitation_token`  | optional — an object. **Required** when accepted, and **forbidden** when rejected |
+
+## `team_external_member_resolution`
+
+The Team's own record of an acceptance that happened in a Pool. A governance
+record, so it lives on the Team beside memberships rather than in the Pool, and
+it is what the admission names as the resolution it implements.
+
+| Field                        | Requirement                              |
+| ---------------------------- | ----------------------------------------- |
+| `pool_uuid`                  | required                                 |
+| `pool_invitation_uuid`       | required                                 |
+| `pool_application_uuid`      | required                                 |
+| `opening_uuid`               | required                                 |
+| `actor_uuid`                 | required                                 |
+| `outcome`                    | required — **`accepted` only**            |
+| `resolved_by`                | required                                 |
+| `resolved_at`                | required                                 |
+| `authority_basis_uuid`       | required                                 |
+| `application_evidence_hash`  | required — the state hash of the application it answers |
+| `signals`                    | required — may be empty                   |
+| `consideration`              | required — may be empty                   |
+| `expectation`                | required — may be empty                   |
+
+Only accepted, because a rejection changes nothing about the Team and there is
+nothing for the Team to record. The refusal lives in the Pool, where it
+happened.
+
+## Two properties that are chosen, not overlooked
+
+**Expiry is checked against the application, not the clock.** Whether an
+invitation was live is decided by comparing the applicant's `submitted_at` with
+the invitation's own `published_at` and `expires_at` — all recorded values — so
+an application that was valid when made stays valid however long it takes to
+reach anybody. The consequence is that `submitted_at` is the applicant's own
+claim and backdating into a closed window cannot be detected. Accepted: the
+claim is signed and attributable, Identity still has to resolve the application
+before anything happens, and an expiry is a signal to whoever resolves rather
+than a gate the applicant is held behind by force.
+
+**The coordinates in an accepted resolution are readable by the whole Pool.**
+The token is a general Team invitation, and it sits in a topic every Pool
+participant syncs — so anybody Identity has admitted to the waiting room can
+read somebody else's acceptance and reach the Team with it. What they get is
+*topic access, not membership*: only the named applicant is admitted, so an
+interloper reads the Team and remains an observer. Recorded here as a known
+property. Scoping the token to the applicant would need Core to compose a
+per-actor invitation, which is not this repository's to add.
+
+---
+
 # Trusteeship — blueprint mapping
 
 | Blueprint (`Domain-Driven-Design.md`) | Here                                                             |

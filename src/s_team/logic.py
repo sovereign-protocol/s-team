@@ -219,6 +219,15 @@ class TeamLogic:
         ),
     }
     POOL_FIELDS = {
+        # The waiting room itself, which is a topic and therefore the one
+        # thing here that has children.
+        "team_pool": (
+            frozenset({
+                "type", "team_uuid", "team_title", "title",
+                "created_by", "created_at",
+            }),
+            frozenset(),
+        ),
         "team_pool_invitation": (
             frozenset({
                 "type", "team_uuid", "team_title", "opening_uuid",
@@ -1680,7 +1689,7 @@ class TeamLogic:
         contract = self.POOL_FIELDS.get(node_type)
         if contract is None:
             return "not a Pool record"
-        if node.children:
+        if node_type != "team_pool" and node.children:
             return "Pool records cannot contain children"
         required, optional = contract
         fields = set(node.data)
@@ -4046,6 +4055,9 @@ class TeamLogic:
         schema_error = self.pool_schema_error(node)
         if schema_error:
             return {"status": "invalid", "reason": schema_error}
+        if node.data.get("type") == "team_pool":
+            # The waiting room is a topic, not something written inside one.
+            return {"status": "invalid", "reason": "a Pool is not a record within a Pool"}
         if node.parent_uuid != pool.uuid:
             return {"status": "invalid", "reason": "Pool records must be direct children"}
         data = node.data

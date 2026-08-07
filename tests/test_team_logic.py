@@ -1262,6 +1262,64 @@ class TeamLogicTests(unittest.TestCase):
         self.assertEqual(trail[0]["realities"][0]["reality"],
                          "The expected effect did not occur.")
 
+    def test_an_accepted_pools_coordinates_are_readable_by_the_whole_pool(self):
+        """A chosen property, not an oversight. The token is a general Team
+        invitation sitting in a topic every Pool participant syncs, so anybody
+        Identity put in the waiting room can read somebody else's acceptance
+        and reach the Team. What they get is topic access, not membership:
+        only the named applicant is admitted. Scoping it would need Core to
+        compose a per-actor invitation. Pinned so that changing it is a
+        decision rather than an accident."""
+        identity = self.runtime(9677)
+        applicant = self.runtime(9678)
+        bystander = self.runtime(9679)
+        team_uuid = identity.logic.create_team("Pool exposure").value
+        team = identity.session.protocol.index[team_uuid]
+        pool = identity.logic.pool_for_team(team)
+        opening = identity.logic.open_member_opening(team_uuid)
+        invitation = identity.logic.publish_pool_invitation(
+            team_uuid, opening.value.uuid,
+        )
+        connect_pool(identity, applicant, pool.uuid, team_uuid)
+        connect_pool(identity, bystander, pool.uuid, team_uuid)
+        sync(identity, applicant, bystander)
+
+        application = applicant.logic.submit_pool_application(
+            pool.uuid, invitation.value.uuid,
+        )
+        sync(identity, applicant, bystander)
+        resolved = identity.logic.resolve_pool_application(
+            pool.uuid, application.value.uuid, "accepted",
+        )
+        sync(identity, applicant, bystander)
+
+        self.assertEqual(resolved.status, "ok")
+        seen = [
+            record for record in bystander.logic.pool_records(
+                bystander.session.protocol.index[pool.uuid],
+                "team_pool_resolution",
+            )
+            if record.data.get("actor_uuid")
+            == applicant.session.identity.uuid
+        ]
+        self.assertEqual(len(seen), 1)
+        # Somebody else's coordinates, readable.
+        self.assertTrue(seen[0].data.get("team_invitation_token"))
+        # And still not membership: only the named applicant was admitted.
+        at_home = identity.session.protocol.index[team_uuid]
+        self.assertEqual(
+            identity.logic.member_standing(
+                at_home, bystander.session.identity.uuid,
+            ),
+            "observer",
+        )
+        self.assertEqual(
+            identity.logic.member_standing(
+                at_home, applicant.session.identity.uuid,
+            ),
+            "accepted",
+        )
+
     def test_pool_acceptance_mounts_team_only_after_identity_resolution(self):
         identity = self.runtime(9649)
         applicant = self.runtime(9650)
