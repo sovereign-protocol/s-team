@@ -9,11 +9,10 @@ declared in TeamLogic.
 A source scan like the boundary tests, and per-repository for the same
 reason: it fails in the pull request that breaks it.
 
-Scoped to the new world - the registry, the ledger and src/. Documents the
-review has not reached yet are evidence, not subjects: this suite never fails
-because an old document is wrong, because that would make old-world edits a
-running tax instead of a single purge at the end. DESIGN_REVIEW_LEDGER.md
-names which documents those are.
+The names in RETIRED are checked the way Core checks its own boundary: a
+literal list in the test. They belonged to the schema this application used
+before the review, and a document went on describing them for as long as it
+took somebody to grep.
 """
 
 import re
@@ -25,7 +24,17 @@ from s_team.logic import TeamLogic
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = ROOT / "DESIGN_TYPES.md"
-LEDGER = ROOT / "DESIGN_REVIEW_LEDGER.md"
+
+# The schema this application carried before the review. `agreement_identity`
+# became an append-only chain of `team_trustee_state`; the rest gained the
+# `team_` prefix when the agreement became the team's rather than the team's
+# name for itself.
+RETIRED = frozenset({
+    "agreement_identity", "agreement_role", "agreement_role_offer",
+    "agreement_role_decision", "agreement_role_holding", "agreement_section",
+    "agreement_clause", "agreement_accountability", "agreement_domain",
+    "agreement_link", "agreement_decision",
+})
 
 # Every governance record carries it; the registry says so once instead of
 # repeating a row in each table.
@@ -36,10 +45,6 @@ TYPE_HEADING = re.compile(r"^`([a-z_]+)`$")
 TABLE_ROW = re.compile(r"^\|\s*`([a-z_]+)`\s*\|\s*(\w+)")
 VOCABULARY = re.compile(r"^\*\*Vocabulary\s+—\s+`([A-Z_]+)`:\*\*\s*(.*)$")
 BACKTICKED = re.compile(r"`([a-z_]+)`")
-RETIRED_SECTION = re.compile(r"^##\s+Retired names\s*$")
-# Only the first column. The second names what the type became, which is a
-# live name and must not be swept up as a retired one.
-RETIRED_ROW = re.compile(r"^\|\s*`([a-z_]+)`\s*\|")
 
 
 def registry_text() -> str:
@@ -85,22 +90,6 @@ def documented_vocabularies() -> dict[str, frozenset]:
         )
         if match
     }
-
-
-def retired_names() -> set[str]:
-    """Read from the ledger: supersession is review bookkeeping, not registry."""
-    names: set[str] = set()
-    in_section = False
-    for line in LEDGER.read_text(encoding="utf-8").splitlines():
-        if RETIRED_SECTION.match(line):
-            in_section = True
-            continue
-        if in_section and line.startswith("## "):
-            break
-        row = RETIRED_ROW.match(line) if in_section else None
-        if row:
-            names.add(row.group(1))
-    return names
 
 
 class RegistryTests(unittest.TestCase):
@@ -182,20 +171,21 @@ class RegistryTests(unittest.TestCase):
             self.assertIn(name, documented_vocabularies())
 
     def test_retired_names_appear_in_no_source_file(self):
-        retired = retired_names()
-        self.assertTrue(retired, "the retired-names section parsed as empty")
         for path in sorted((ROOT / "src").rglob("*.py")):
             source = path.read_text(encoding="utf-8")
-            for name in sorted(retired):
+            for name in sorted(RETIRED):
                 self.assertNotIn(name, source, f"{path} names retired {name}")
 
-    def test_the_registry_does_not_depend_on_the_documents_being_replaced(self):
-        # The new world must stand on its own, or the purge cannot happen.
-        superseded = ("ARCHITECTURE.md", "DESIGN_ROLES_AND_ACTORS.md",
-                      "DESIGN_GENESIS_AND_GOVERNANCE_PLAN.md")
-        text = registry_text()
-        for name in superseded:
-            self.assertNotIn(name, text, f"DESIGN_TYPES.md refers to {name}")
+    def test_retired_names_appear_in_no_current_design_document(self):
+        # The failure that started the review: a document went on describing
+        # a schema the source had renamed away from, and nothing noticed.
+        # The changelog is exempt, being a record of what happened.
+        paths = sorted(ROOT.glob("DESIGN_*.md")) + [ROOT / "ARCHITECTURE.md"]
+        self.assertGreater(len(paths), 1, "no design documents found to scan")
+        for path in paths:
+            text = path.read_text(encoding="utf-8")
+            for name in sorted(RETIRED):
+                self.assertNotIn(name, text, f"{path.name} names retired {name}")
 
 
 if __name__ == "__main__":

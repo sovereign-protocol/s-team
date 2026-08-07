@@ -7431,15 +7431,16 @@ class TeamLogic:
         """Who may write the invitation this side is being asked to adopt.
 
         An invitation to a person is any member's to extend, so the guard
-        only asks that the author is one. A seat offered to a *team* is an
-        admission - it brings everybody on that team into this one - so it
-        stays the Identity holder's alone.
+        only asks that the author is one. A seat offered to a *team* stays
+        the Identity holder's alone - not because it admits anybody, which it
+        no longer does, but because it commits this team to containing that
+        one's members.
 
-        A coordination rule, not a security boundary. Nothing in the protocol
-        signs content, so this holds exactly as far as trusting the peers you
-        chose to sync with - recorded in DESIGN_ROLES_AND_ACTORS.md rather
-        than pretended away here. What it does guarantee is that every side
-        reaches the same verdict, because it reads only replicated state.
+        A coordination rule, not a security boundary: what it guarantees is
+        that every side reaches the same verdict, because it reads only
+        replicated state. Authorship is signed and checked elsewhere; this
+        holds as far as trusting the peers you chose to sync with, which is
+        said plainly rather than pretended away.
         """
         node = (
             self.session.get_cached_peer_subtree(peer_addr, node_uuid)
