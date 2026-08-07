@@ -795,6 +795,98 @@ class TeamLogicTests(unittest.TestCase):
             at_home, admission,
         )["status"], "authorized")
 
+    def test_giving_up_a_seat_keeps_the_record_that_it_was_held(self):
+        """Unseating used to delete the holding, so nothing said the seat had
+        ever been taken. It is appended now, and taking it again continues
+        the same chain rather than laying a second claim beside it."""
+        runtime = self.runtime(9671)
+        parent_uuid = runtime.logic.create_team("Cooperative").value
+        child_uuid = runtime.logic.create_subteam(
+            parent_uuid, "Finance circle",
+        ).value
+        parent = runtime.session.protocol.index[parent_uuid]
+        role_uuid = runtime.logic.child_teams(parent)[0][1].uuid
+
+        runtime.logic.unseat_team(role_uuid, child_uuid)
+        child = runtime.session.protocol.index[child_uuid]
+        records = [
+            node for node in child.live_children()
+            if node.data.get("type") == "team_role_holding"
+        ]
+
+        self.assertEqual(runtime.logic.parent_holdings(child), [])
+        self.assertEqual(len(records), 2)
+        self.assertEqual(
+            {record.data["state"] for record in records}, {"held", "given_up"},
+        )
+
+        runtime.logic.seat_team(role_uuid, child_uuid)
+        child = runtime.session.protocol.index[child_uuid]
+        live = runtime.logic.parent_holdings(child)
+        roots = [
+            node for node in child.live_children()
+            if node.data.get("type") == "team_role_holding"
+            and not node.data.get("previous_holding_uuid")
+        ]
+
+        self.assertEqual(len(live), 1)
+        self.assertEqual(live[0].data["state"], "held")
+        # One seat, one chain - not two claims on it.
+        self.assertEqual(len(roots), 1)
+
+    def test_a_team_with_no_members_cannot_take_a_seat(self):
+        """Containment is vacuously true of an empty team, so without this an
+        abandoned subteam would be seatable in every parent there is."""
+        runtime = self.runtime(9672)
+        parent_uuid = runtime.logic.create_team("Cooperative").value
+        child_uuid = runtime.logic.create_subteam(
+            parent_uuid, "Finance circle",
+        ).value
+        parent = runtime.session.protocol.index[parent_uuid]
+        role_uuid = runtime.logic.child_teams(parent)[0][1].uuid
+        runtime.logic.unseat_team(role_uuid, child_uuid)
+        runtime.logic.leave_team(child_uuid)
+
+        refused = runtime.logic.seat_team(role_uuid, child_uuid)
+
+        self.assertEqual(refused.status, "error")
+        self.assertIn("no members", refused.reason)
+        self.assertEqual(runtime.logic.parent_holdings(
+            runtime.session.protocol.index[child_uuid],
+        ), [])
+
+    def test_a_malformed_participation_record_is_refused(self):
+        """These had no contract at all: a peer's offer was whatever they
+        sent, and a person was asked to accept it sight unseen."""
+        left, right = self.runtime(9673), self.runtime(9674)
+        team_uuid = left.logic.create_team("Charter").value
+        role_uuid = left.logic.create_role(team_uuid, "Treasurer").value
+        connect(left, right, team_uuid)
+        right.logic.accept_team_invitation(
+            right.session.protocol.index[team_uuid],
+        )
+        sync(left, right)
+
+        malformed = right.session.create_child(
+            role_uuid,
+            {
+                "type": "team_role_offer",
+                "actor_uuid": right.session.identity.uuid,
+                "actor_kind": "individual",
+                "state": "whatever it likes",
+                "previous_offer_uuid": "",
+                "offered_by": right.session.identity.uuid,
+                "offered_at": "2026-01-01T00:00:00Z",
+            },
+            {},
+        ).value
+        sync(left, right)
+
+        refused = left.logic.accept_peer_node(right.peer_addr, malformed.uuid)
+
+        self.assertEqual(refused.status, "error")
+        self.assertIn("offered or revoked", refused.reason)
+
     def test_a_return_continues_the_membership_chain(self):
         """Coming back resumes the chain that was left, rather than starting
         a second one. One line per Actor is what lets a second root mean
@@ -1569,7 +1661,10 @@ class TeamLogicTests(unittest.TestCase):
         self.assertEqual(decision["decision"], "accepted")
         self.assertTrue(decision["decided_at"].endswith("Z"))
         self.assertTrue(decision["reference_hash"].startswith("sha256:"))
-        self.assertIsNone(decision["expires_at"])
+        # Absent rather than explicitly null, like every other optional
+        # governance field.
+        self.assertNotIn("expires_at", decision)
+        self.assertEqual(decision["previous_decision_uuid"], "")
         # Offers and answers have their own storage nodes, but they are
         # records about the team rather than content of it, so they
         # stay out of the document serialization.
@@ -1606,8 +1701,17 @@ class TeamLogicTests(unittest.TestCase):
             child for child in role.live_children()
             if child.data.get("type") == "team_role_decision"
         ]
-        # Answering again rewrites the one record rather than stacking.
-        self.assertEqual([item.uuid for item in decisions], [original.uuid])
+        # Answering again continues the chain. The first answer stays where
+        # it was made, so when somebody took a role and when they stepped
+        # out of it are both readable; the end of the chain is what counts.
+        self.assertEqual(len(decisions), 2)
+        head = runtime.logic._role_decision_for(
+            role, runtime.session.identity.uuid,
+        )
+        self.assertNotEqual(head.uuid, original.uuid)
+        self.assertEqual(head.data["previous_decision_uuid"], original.uuid)
+        self.assertEqual(head.data["decision"], "refused")
+        self.assertEqual(original.data["decision"], "accepted")
         holder = runtime.logic.role_holders(team, role)[0]
         self.assertEqual(holder["status"], "refused")
         self.assertEqual(holder["expires_at"], "2035-01-01T00:00:00Z")
@@ -2696,6 +2800,8 @@ class TeamLogicTests(unittest.TestCase):
                 "type": "team_role_offer",
                 "actor_uuid": right.session.identity.uuid,
                 "actor_kind": "individual",
+                "state": "offered",
+                "previous_offer_uuid": "",
                 "offered_by": right.session.identity.uuid,
                 "offered_at": "2026-01-01T00:00:00Z",
             },
@@ -2703,6 +2809,8 @@ class TeamLogicTests(unittest.TestCase):
         ).value
         sync(left, right)
 
+        # Well-formed, so it is the authority that turns it down and not the
+        # contract. The two are separate refusals and this is the second.
         rejected = left.logic.accept_peer_node(right.peer_addr, forged.uuid)
         self.assertEqual(rejected.status, "error")
         self.assertIn("Member", rejected.reason)
@@ -3432,8 +3540,9 @@ class TeamLogicTests(unittest.TestCase):
         role = runtime.session.protocol.index[role_uuid]
         self.assertFalse(runtime.logic._team_holds_role(role, child_uuid))
 
-        # Changing its mind rewrites the one answer rather than adding a
-        # second, or which of them counts would be down to iteration order.
+        # Changing its mind continues the chain rather than laying a second
+        # root beside it, so which answer counts is the end of the chain and
+        # not iteration order.
         runtime.logic.seat_team(role_uuid, child_uuid)
         role = runtime.session.protocol.index[role_uuid]
         decisions = [
@@ -3441,10 +3550,18 @@ class TeamLogicTests(unittest.TestCase):
             if node.data.get("type") == "team_role_decision"
             and node.data.get("actor_uuid") == child_uuid
         ]
-        self.assertEqual(len(decisions), 1)
-        self.assertEqual(decisions[0].data["decision"], "accepted")
+        self.assertEqual(len(decisions), 2)
+        head = runtime.logic._role_decision_for(role, child_uuid)
+        self.assertEqual(head.data["decision"], "accepted")
         self.assertEqual(
-            decisions[0].data["decided_by"], runtime.session.identity.uuid,
+            head.data["decided_by"], runtime.session.identity.uuid,
+        )
+        # And it recorded who was on the team when the seat was taken.
+        self.assertEqual(
+            head.data["seated_member_uuids"],
+            runtime.logic.current_member_uuids(
+                runtime.session.protocol.index[child_uuid],
+            ),
         )
         child = runtime.session.protocol.index[child_uuid]
         self.assertEqual(len(runtime.logic.parent_holdings(child)), 1)

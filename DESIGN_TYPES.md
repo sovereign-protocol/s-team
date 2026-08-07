@@ -427,6 +427,137 @@ survives, and a fork carries the work on.
 
 ---
 
+# Roles, and taking part in them
+
+A **role** is defined work. It has 0..n holders, and a vacant role is not a
+problem — it is work nobody has taken. A member takes one by their own record
+and nobody else's; an invitation exists and any member may extend one, but it
+is a suggestion, and withdrawing it withdraws the suggestion and nothing else.
+
+The six types divide on a line that matters:
+
+- **Content** — `team_role`, `team_accountability`, `team_domain`. Part of what
+  people agree to, edited like any other text, and reactable per node so that
+  two people editing different accountabilities diverge separately.
+- **Records about it** — `team_role_offer`, `team_role_decision`,
+  `team_role_holding`. Facts about who is doing what, and therefore
+  **append-only**, with a declared contract, like every other record that
+  carries authority.
+
+That line was not held before. An offer was revived by rewriting the revoked
+one, an answer was rewritten in place, and giving up a seat deleted the holding
+outright — so who held a role, and when, was not recorded anywhere. A decision
+alone is what holds a role, which makes it authority-bearing; it was stored
+like content, and it had no contract at all, so a peer's answer was whatever
+they sent and a person was asked to accept it sight unseen.
+
+Each is one chain per actor per role, read by taking the end of it. **More than
+one root, or more than one successor, holds nothing** — two answers about one
+seat are two people to talk to, not a race to settle by sort order.
+
+## `team_role_offer`
+
+An invitation. Withdrawing one appends a `revoked` link rather than deleting
+it, so the fact that there was an invitation survives.
+
+| Field                  | Requirement                                     |
+| ---------------------- | ------------------------------------------------ |
+| `actor_uuid`           | required                                        |
+| `actor_kind`           | required — `individual` or `team`                |
+| `state`                | required — from `OFFER_STATES`                   |
+| `previous_offer_uuid`  | required — empty for the first offer to an actor |
+| `offered_by`           | required                                        |
+| `offered_at`           | required                                        |
+| `revoked_at`           | optional — required when `revoked`               |
+| `revoked_by`           | optional                                        |
+
+**Vocabulary — `OFFER_STATES`:** `offered`, `revoked`
+
+## `team_role_decision`
+
+The actor's own answer, and on its own enough to hold the role. Changing your
+mind continues the chain, so when somebody took a role and when they stepped
+out of it are both readable.
+
+| Field                       | Requirement                                        |
+| --------------------------- | --------------------------------------------------- |
+| `actor_uuid`                | required                                            |
+| `decision`                  | required — from `ROLE_DECISIONS`                     |
+| `previous_decision_uuid`    | required — empty for a first answer                  |
+| `decided_at`                | required                                            |
+| `reference_hash`            | required — what this answer commits to               |
+| `expires_at`                | optional — absent rather than null when there is none |
+| `decided_by`                | optional — who answered for a Team, which cannot answer for itself |
+| `seated_member_uuids`       | optional — who was on that Team when it took the seat |
+
+**Vocabulary — `ROLE_DECISIONS`:** `accepted`, `refused`
+
+## `team_role_holding`
+
+The child side of a seat: which role in which parent this team holds. Both
+sides must exist for a seat to be live, so a hierarchy is visible only once it
+has been answered on both.
+
+| Field                      | Requirement                                |
+| -------------------------- | ------------------------------------------- |
+| `parent_team_uuid`         | required                                    |
+| `role_uuid`                | required                                    |
+| `order`                    | required — a number, the declared parent order |
+| `state`                    | required — from `HOLDING_STATES`             |
+| `previous_holding_uuid`    | required — empty for a first claim on a seat  |
+
+**Vocabulary — `HOLDING_STATES`:** `held`, `given_up`
+
+## A Team in a seat
+
+A Team may hold a role in another team, which is what a subteam is. Two
+conditions, both checked when the seat is taken:
+
+- the seated team has **at least one member** — containment is vacuously true
+  of an empty team, and an abandoned one would otherwise be seatable anywhere;
+- **every one of its members is already a member of the team it sits in.**
+
+Membership of a team by a team is *inferred, not assigned*: nobody grants it,
+the team either contains no strangers or it does not. **Seating admits
+nobody.** It was described the other way once — a team in a role brought
+everybody on it into the parent — which made a subteam a way into a team you
+had never been admitted to. Containment is the precondition now, and the people
+come first.
+
+Checked at the moment of the act, with the member set recorded on the decision
+as `seated_member_uuids`. Not re-derived on every read: each team is an
+independently shared topic and a parent replica need not have the subteam
+mounted at all, so a rule evaluated continuously would leave a team unable to
+tell whether its own role was held — and would let the subteam's Identity
+revoke the seat by admitting one person. Later drift is a divergence to be
+seen, not a silent revocation.
+
+Seats form a DAG, and it is *drawn* as a tree by projecting through home, the
+first holding in order that reaches a root.
+
+## What an acceptance covers, and the cost of that
+
+`role_reference_hash` is the document body plus that one role's definition.
+Scoped that way, editing the Treasurer's accountabilities does not re-open the
+Secretary's acceptance.
+
+Editing the **body** still re-opens everyone's, at every level below. That is
+accepted rather than worked around: if the document people agreed to has
+changed, their agreement to it is genuinely stale, and being asked again is the
+honest answer. A grace period was considered and rejected — it would make
+whether somebody holds a role depend on the clock and on local settings, and
+two replicas would disagree.
+
+## Where the blueprint's vocabulary lands
+
+| Blueprint (`Domain-Driven-Design.md`) | Here                                                             |
+| ------------------------------------- | ---------------------------------------------------------------- |
+| `Role: 1 Team, 1 Name, 0-1 Purpose, 0-n Domains, 0-n Accountabilities, 0-n Actors` | Right, except that "Actors" is two different facts — who was invited (`team_role_offer`) and who holds it (`team_role_decision`) — and only the second is holding |
+| The Pull Principle                    | Built. A member takes a role by their own answer; nobody countersigns |
+| *(nothing)*                           | `team_role_holding` — the blueprint has no way to express a subteam as built |
+
+---
+
 # Trusteeship — blueprint mapping
 
 | Blueprint (`Domain-Driven-Design.md`) | Here                                                             |
