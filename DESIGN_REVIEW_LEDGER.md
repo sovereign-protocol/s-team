@@ -507,7 +507,48 @@ for field and their three vocabularies. Suite: **190 tests, green** (was 186).
 ## Element 3 — remaining
 
 - `team_accountability` and `team_domain` are content and go with element 4.
-- The blueprint rows (R10, R11) change `../Domain-Driven-Design.md`.
+
+---
+
+# Blueprint edits — applied
+
+`../Domain-Driven-Design.md` carried the decisions from elements 1–3 that
+change the *target* rather than the record of what is built:
+
+| Row | Change |
+| --- | ------ |
+| T3  | Trustee is no longer "a specialized Role" — the mechanics are opposite, and it is named as a distinct kind |
+| T5  | Five Trusteeships stay the target; adding a third is gated on saying which one facilitates |
+| T8  | Trustee assignments and Team Membership moved from category B to C, and B narrowed to genuinely scarce quantities. B is recorded as having no built implementation, with the reason both tie-breaks were rejected |
+| T9  | Bet kept as the domain concept, with a line saying it is built and that observations are written under another Trusteeship's authority |
+| T10 | Decision Point is a versioned S-Flow process definition, not "access to a python function", with the remote-execution reasoning and the liveness guard |
+| T11 | Mandate kept as an unbuilt target |
+| M5  | Member is a standing, not an entity |
+| M9  | `1-n Members` → `0-n`, with the terminal state named |
+| M10 | Recorded as accepted, with the reason |
+| R6  | Semantic versioning says acceptances go stale at every level, and why a grace period was rejected |
+| R8  | Sub-team containment added to §3 as a governance mechanic |
+| R10 | `0-n Actors` split into Invitations and Holdings, and the content/record line drawn |
+| R11 | **Seat** added — the blueprint previously had no way to express a sub-team |
+
+Also removed a duplicate `Flow` stub, and added a pointer to `DESIGN_TYPES.md`
+as the checked record of what exists.
+
+## Forward — not yet placed in any element
+
+**C-Text and Clause are about to become cross-repo.** The blueprint uses
+C-Text in Initiative, Trustee, Bet, Resource, Flow and History — that is
+s-team, s-initiative and s-flow. Today it is `team_section` / `team_clause`,
+owned by S-Team. Duplicating it three times is untenable; sharing it means
+promoting it to Core under a domain-neutral name, and Core's boundary test
+scans its own source for agreement vocabulary, so the promotion only works if
+the type is renamed away from that language. Element 4 owns the s-team half;
+the cross-repo half needs deciding before s-initiative or s-flow adopt it.
+
+**`Domain-Driven-Design.md` is not in a repository.** The workspace root is
+not a git repo, so the blueprint, `backlog.md` and `CODEBASE_REVIEW.md` are
+unversioned and ship with nothing. Fine for a working draft; not fine for the
+document the registry now points at.
 
 ## Retired names
 
