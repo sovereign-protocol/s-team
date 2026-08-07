@@ -2964,10 +2964,37 @@ class TeamLogic:
             return ("unauthorized", "the acting candidate is not a current Member")
         return ("authorized", "")
 
+    # One row per governance record type: the field naming its author, and
+    # the assessor that knows what else has to be true of it. Adding a type
+    # is a row and a short method beside its siblings, rather than another
+    # branch in a function that ran to four hundred lines and was touched by
+    # every change to any of them.
+    GOVERNANCE_ASSESSMENT = {
+        "team_trustee_state": ("acted_by", "_assess_trustee_state"),
+        "team_membership": ("acted_by", "_assess_membership"),
+        "team_member_opening": ("opened_by", "_assess_member_opening"),
+        "team_member_application": ("actor_uuid", "_assess_member_application"),
+        "team_member_resolution": ("resolved_by", "_assess_member_resolution"),
+        "team_trustee_election": ("triggered_by", "_assess_trustee_election"),
+        "team_trustee_candidacy": ("actor_uuid", "_assess_trustee_candidacy"),
+        "team_trustee_action": ("acted_by", "_assess_trustee_action"),
+        "team_trustee_reality": ("observed_by", "_assess_trustee_reality"),
+        "team_external_member_resolution": (
+            "resolved_by", "_assess_external_member_resolution",
+        ),
+    }
+
     def assess_governance_record(
         self, team: ProtocolNode, node: ProtocolNode,
         verification: str | None = None,
     ) -> dict:
+        """Whether a governance record may be adopted here.
+
+        Four questions every record answers - is it signed, is it the shape
+        its type declares, is it in the right place, and did the Actor it
+        names write it - and then whatever its own type requires, which is
+        its assessor's business rather than this one's.
+        """
         verification = verification or self.session.revision_verification(node)
         if verification == "unknown":
             return {"status": "deferred", "reason": "the signing key is not known"}
@@ -2982,385 +3009,420 @@ class TeamLogic:
                 "reason": "Governance records must be direct children of their Team.",
             }
         data = node.data
-        node_type = data["type"]
-        actor_field = {
-            "team_trustee_state": "acted_by",
-            "team_membership": "acted_by",
-            "team_member_opening": "opened_by",
-            "team_member_application": "actor_uuid",
-            "team_member_resolution": "resolved_by",
-            "team_trustee_election": "triggered_by",
-            "team_trustee_candidacy": "actor_uuid",
-            "team_trustee_action": "acted_by",
-            "team_trustee_reality": "observed_by",
-            "team_external_member_resolution": "resolved_by",
-        }[node_type]
-        actor_uuid = data.get(actor_field) or ""
+        author_field, assessor = self.GOVERNANCE_ASSESSMENT[data["type"]]
+        actor_uuid = data.get(author_field) or ""
         status, reason = self._signed_actor_status(node, actor_uuid)
         if status != "authorized":
             return {"status": status, "reason": reason}
+        return getattr(self, assessor)(team, data, actor_uuid) or {
+            "status": "authorized", "reason": "",
+        }
 
-        if node_type == "team_trustee_state":
-            trust = data["trust"]
-            holder_status, holder_reason = self._holder_may_be_a_trustee(
-                str(data.get("holder_actor_uuid") or ""),
+    # Every assessor below answers with an objection, or with nothing when it
+    # has none, so each reads as the list of ways one record can be wrong.
+
+    def _authority_refusal(
+        self, team: ProtocolNode, trust: str, actor_uuid: str, basis_uuid: str,
+    ) -> dict | None:
+        """The trusteeship check, as an objection or nothing."""
+        status, reason = self._trust_authority(
+            team, trust, actor_uuid, basis_uuid,
+        )
+        if status == "authorized":
+            return None
+        return {"status": status, "reason": reason}
+
+    def _membership_authority_refusal(
+        self, team: ProtocolNode, data: dict, actor_uuid: str,
+    ) -> dict | None:
+        return self._authority_refusal(
+            team, self.MEMBERSHIP_TRUST, actor_uuid,
+            data["authority_basis_uuid"],
+        )
+
+    def _assess_trustee_state(
+        self, team: ProtocolNode, data: dict, actor_uuid: str,
+    ) -> dict | None:
+        trust = data["trust"]
+        holder_status, holder_reason = self._holder_may_be_a_trustee(
+            str(data.get("holder_actor_uuid") or ""),
+        )
+        if holder_status != "authorized":
+            return {"status": holder_status, "reason": holder_reason}
+        same_trust = [
+            state
+            for state in self.governance_records(team, "team_trustee_state")
+            if state.data.get("trust") == trust
+        ]
+        if data["cause"] == "genesis":
+            if same_trust:
+                return {"status": "unauthorized", "reason": "trusteeship genesis already exists"}
+            if data["holder_actor_uuid"] != actor_uuid:
+                return {"status": "unauthorized", "reason": "genesis must be authored by its holder"}
+            return None
+        previous = self._governance_node(
+            team, data["previous_state_uuid"], "team_trustee_state",
+        )
+        if previous is None or previous.data.get("trust") != trust:
+            return {"status": "deferred", "reason": "previous trustee state is not available"}
+        if previous.uuid != self.trustee_projection(team, trust).get(
+            "current_state_uuid",
+        ):
+            competing = any(
+                state.data.get("previous_state_uuid") == previous.uuid
+                for state in same_trust
             )
-            if holder_status != "authorized":
-                return {"status": holder_status, "reason": holder_reason}
-            existing = self.governance_records(team, "team_trustee_state")
-            same_trust = [state for state in existing if state.data.get("trust") == trust]
-            if data["cause"] == "genesis":
-                if same_trust:
-                    return {"status": "unauthorized", "reason": "trusteeship genesis already exists"}
-                if data["holder_actor_uuid"] != actor_uuid:
-                    return {"status": "unauthorized", "reason": "genesis must be authored by its holder"}
-            else:
-                previous = self._governance_node(
-                    team, data["previous_state_uuid"], "team_trustee_state",
-                )
-                if previous is None or previous.data.get("trust") != trust:
-                    return {"status": "deferred", "reason": "previous trustee state is not available"}
-                projection = self.trustee_projection(team, trust)
-                if previous.uuid != projection.get("current_state_uuid"):
-                    competing = any(
-                        state.data.get("previous_state_uuid") == previous.uuid
-                        for state in same_trust
-                    )
-                    if not competing:
-                        return {"status": "unauthorized", "reason": "previous trustee state is stale"}
-                if data["cause"] == "resignation":
-                    if data["authority_basis_uuid"] != previous.uuid:
-                        return {"status": "unauthorized", "reason": "resignation basis must be the previous state"}
-                    if previous.data.get("holder_actor_uuid") != actor_uuid:
-                        return {"status": "unauthorized", "reason": "only the incumbent may resign"}
-                    if data["holder_actor_uuid"]:
-                        return {"status": "invalid", "reason": "resignation must leave the trusteeship vacant"}
-                else:
-                    if data["cause"] == "election":
-                        elections = [
-                            election
-                            for election in self.trustee_election_records(
-                                team, trust,
-                            )
-                            if election.data.get("process_uuid")
-                            == data.get("process_uuid")
-                        ]
-                        if not elections:
-                            return {"status": "deferred", "reason": "the trustee election record is not available"}
-                        if len(elections) != 1:
-                            return {"status": "invalid", "reason": "the process is named by competing election records"}
-                        election = elections[0]
-                        if not self._election_target_predecessor_is_valid(
-                            team, election, previous,
-                        ):
-                            return {"status": "unauthorized", "reason": "the election targets an obsolete trusteeship state"}
-                        checked = self._validated_election_result(
-                            team,
-                            election,
-                            str(data.get("process_result_hash") or ""),
-                        )
-                        if not checked.get("valid"):
-                            deferred = checked.get("status") in {
-                                "unavailable", "incomplete",
-                            }
-                            return {
-                                "status": "deferred" if deferred else "invalid",
-                                "reason": checked.get("reason") or "the election result is invalid",
-                            }
-                        result = checked["result"]
-                        if (
-                            result.get("terminal_outcome") != "elected"
-                            or result.get("selected_candidate_uuid")
-                            != data.get("holder_actor_uuid")
-                        ):
-                            return {"status": "invalid", "reason": "the trustee state does not implement the election result"}
-                    facilitator = self._sole_facilitating_trust(trust)
-                    if not facilitator:
-                        return {
-                            "status": "invalid",
-                            "reason": (
-                                "the facilitating trusteeship is ambiguous"
-                            ),
-                        }
-                    status, reason = self._trust_authority(
-                        team, facilitator, actor_uuid, data["authority_basis_uuid"],
-                    )
-                    if status != "authorized":
-                        return {"status": status, "reason": reason}
-        elif node_type == "team_membership":
-            subject_uuid = str(data.get("actor_uuid") or "")
-            cause = data["cause"]
-            if cause == "genesis":
-                # The first membership of a team is its founder's own, and
-                # there can only ever be one: everybody after them is
-                # admitted by somebody who is already here.
-                if self.governance_records(team, "team_membership"):
-                    return {"status": "unauthorized", "reason": "the team already has a founding membership"}
-                if subject_uuid != actor_uuid:
-                    return {"status": "unauthorized", "reason": "a founding membership is the founder's own"}
-            elif cause == "admission":
-                resolution = self._governance_node(
-                    team, str(data.get("resolution_uuid") or ""),
-                    "team_member_resolution",
-                ) or self._governance_node(
-                    team, str(data.get("resolution_uuid") or ""),
-                    "team_external_member_resolution",
-                )
-                if resolution is None:
-                    return {"status": "deferred", "reason": "the admitting resolution is not available"}
-                if (
-                    resolution.data.get("actor_uuid") != subject_uuid
-                    or resolution.data.get("outcome") != "accepted"
-                ):
-                    return {"status": "invalid", "reason": "the admission does not implement its resolution"}
-                # A return names the membership it resumes. Checked as a
-                # record rather than against the current standing, so a
-                # later ending does not reach back and unauthorize it.
-                returning = str(data["previous_membership_uuid"] or "")
-                if returning:
-                    resumed = self._governance_node(
-                        team, returning, "team_membership",
-                    )
-                    if resumed is None:
-                        return {"status": "deferred", "reason": "the membership being resumed is not available"}
-                    if resumed.data.get("actor_uuid") != subject_uuid:
-                        return {"status": "invalid", "reason": "the admission resumes somebody else's membership"}
-                status, reason = self._trust_authority(
-                    team, self.MEMBERSHIP_TRUST, actor_uuid, data["authority_basis_uuid"],
-                )
-                if status != "authorized":
-                    return {"status": status, "reason": reason}
-            else:
-                # An ending always points at the membership it ends. There
-                # used to be an exception for standing written before
-                # membership records existed, which had nothing to name;
-                # without it, naming nothing is a way to end a membership
-                # without pointing at it.
-                named = str(data["previous_membership_uuid"] or "")
-                if not named:
-                    return {"status": "unauthorized", "reason": "there is no current membership to end"}
-                previous = self._governance_node(
-                    team, named, "team_membership",
-                )
-                if previous is None:
-                    return {"status": "deferred", "reason": "the membership being ended is not available"}
-                if previous.data.get("actor_uuid") != subject_uuid:
-                    return {"status": "invalid", "reason": "the ending names somebody else's membership"}
-                # Checked as a record: what it names must be a standing
-                # membership. Not that it is still the current one - that
-                # would make an ending stop being authorized as soon as
-                # anything followed it, which is the order-dependence a
-                # trustee's own trail was already losing.
-                if previous.data.get("state") != "member":
-                    return {"status": "invalid", "reason": "the membership being ended is not a standing one"}
-                if cause == "departure":
-                    # Leaving is the member's own act and nobody else's,
-                    # which is the counterpart of Identity's power to remove.
-                    if subject_uuid != actor_uuid:
-                        return {"status": "unauthorized", "reason": "only the member themselves may leave"}
-                else:
-                    status, reason = self._trust_authority(
-                        team, self.MEMBERSHIP_TRUST, actor_uuid,
-                        data["authority_basis_uuid"],
-                    )
-                    if status != "authorized":
-                        return {"status": status, "reason": reason}
-        elif node_type == "team_member_opening":
-            if data["state"] == "closed":
-                previous = self._governance_node(
-                    team, data["previous_opening_uuid"],
-                    "team_member_opening",
-                )
-                if previous is None:
-                    return {"status": "deferred", "reason": "previous Member opening is not available"}
-                if previous.data.get("state") != "open":
-                    return {"status": "invalid", "reason": "opening closure does not match an open Member opening"}
-            status, reason = self._trust_authority(
-                team, self.MEMBERSHIP_TRUST, actor_uuid, data["authority_basis_uuid"],
+            if not competing:
+                return {"status": "unauthorized", "reason": "previous trustee state is stale"}
+        if data["cause"] == "resignation":
+            return self._assess_resignation(data, previous, actor_uuid)
+        if data["cause"] == "election":
+            objection = self._assess_election_implementation(
+                team, data, previous, trust,
             )
-            if status != "authorized":
-                return {"status": status, "reason": reason}
-        elif node_type == "team_member_application":
-            opening = self._governance_node(
-                team, data["opening_uuid"], "team_member_opening",
+            if objection:
+                return objection
+        facilitator = self._sole_facilitating_trust(trust)
+        if not facilitator:
+            return {
+                "status": "invalid",
+                "reason": "the facilitating trusteeship is ambiguous",
+            }
+        return self._authority_refusal(
+            team, facilitator, actor_uuid, data["authority_basis_uuid"],
+        )
+
+    def _assess_resignation(
+        self, data: dict, previous: ProtocolNode, actor_uuid: str,
+    ) -> dict | None:
+        if data["authority_basis_uuid"] != previous.uuid:
+            return {"status": "unauthorized", "reason": "resignation basis must be the previous state"}
+        if previous.data.get("holder_actor_uuid") != actor_uuid:
+            return {"status": "unauthorized", "reason": "only the incumbent may resign"}
+        if data["holder_actor_uuid"]:
+            return {"status": "invalid", "reason": "resignation must leave the trusteeship vacant"}
+        return None
+
+    def _assess_election_implementation(
+        self, team: ProtocolNode, data: dict, previous: ProtocolNode,
+        trust: str,
+    ) -> dict | None:
+        elections = [
+            election
+            for election in self.trustee_election_records(team, trust)
+            if election.data.get("process_uuid") == data.get("process_uuid")
+        ]
+        if not elections:
+            return {"status": "deferred", "reason": "the trustee election record is not available"}
+        if len(elections) != 1:
+            return {"status": "invalid", "reason": "the process is named by competing election records"}
+        election = elections[0]
+        if not self._election_target_predecessor_is_valid(
+            team, election, previous,
+        ):
+            return {"status": "unauthorized", "reason": "the election targets an obsolete trusteeship state"}
+        checked = self._validated_election_result(
+            team, election, str(data.get("process_result_hash") or ""),
+        )
+        if not checked.get("valid"):
+            deferred = checked.get("status") in {"unavailable", "incomplete"}
+            return {
+                "status": "deferred" if deferred else "invalid",
+                "reason": checked.get("reason") or "the election result is invalid",
+            }
+        result = checked["result"]
+        if (
+            result.get("terminal_outcome") != "elected"
+            or result.get("selected_candidate_uuid")
+            != data.get("holder_actor_uuid")
+        ):
+            return {"status": "invalid", "reason": "the trustee state does not implement the election result"}
+        return None
+
+    def _assess_membership(
+        self, team: ProtocolNode, data: dict, actor_uuid: str,
+    ) -> dict | None:
+        subject_uuid = str(data.get("actor_uuid") or "")
+        cause = data["cause"]
+        if cause == "genesis":
+            # The first membership of a team is its founder's own, and there
+            # can only ever be one: everybody after them is admitted by
+            # somebody who is already here.
+            if self.governance_records(team, "team_membership"):
+                return {"status": "unauthorized", "reason": "the team already has a founding membership"}
+            if subject_uuid != actor_uuid:
+                return {"status": "unauthorized", "reason": "a founding membership is the founder's own"}
+            return None
+        if cause == "admission":
+            return self._assess_admission(team, data, actor_uuid, subject_uuid)
+        return self._assess_membership_ending(
+            team, data, actor_uuid, subject_uuid, cause,
+        )
+
+    def _assess_admission(
+        self, team: ProtocolNode, data: dict, actor_uuid: str,
+        subject_uuid: str,
+    ) -> dict | None:
+        resolution = self._governance_node(
+            team, str(data.get("resolution_uuid") or ""),
+            "team_member_resolution",
+        ) or self._governance_node(
+            team, str(data.get("resolution_uuid") or ""),
+            "team_external_member_resolution",
+        )
+        if resolution is None:
+            return {"status": "deferred", "reason": "the admitting resolution is not available"}
+        if (
+            resolution.data.get("actor_uuid") != subject_uuid
+            or resolution.data.get("outcome") != "accepted"
+        ):
+            return {"status": "invalid", "reason": "the admission does not implement its resolution"}
+        # A return names the membership it resumes. Checked as a record
+        # rather than against the current standing, so a later ending does
+        # not reach back and unauthorize it.
+        returning = str(data["previous_membership_uuid"] or "")
+        if returning:
+            resumed = self._governance_node(team, returning, "team_membership")
+            if resumed is None:
+                return {"status": "deferred", "reason": "the membership being resumed is not available"}
+            if resumed.data.get("actor_uuid") != subject_uuid:
+                return {"status": "invalid", "reason": "the admission resumes somebody else's membership"}
+        return self._membership_authority_refusal(team, data, actor_uuid)
+
+    def _assess_membership_ending(
+        self, team: ProtocolNode, data: dict, actor_uuid: str,
+        subject_uuid: str, cause: str,
+    ) -> dict | None:
+        # An ending always points at the membership it ends. There used to be
+        # an exception for standing written before membership records
+        # existed, which had nothing to name; without it, naming nothing is a
+        # way to end a membership without pointing at it.
+        named = str(data["previous_membership_uuid"] or "")
+        if not named:
+            return {"status": "unauthorized", "reason": "there is no current membership to end"}
+        previous = self._governance_node(team, named, "team_membership")
+        if previous is None:
+            return {"status": "deferred", "reason": "the membership being ended is not available"}
+        if previous.data.get("actor_uuid") != subject_uuid:
+            return {"status": "invalid", "reason": "the ending names somebody else's membership"}
+        # Checked as a record: what it names must be a standing membership.
+        # Not that it is still the current one - that would make an ending
+        # stop being authorized as soon as anything followed it.
+        if previous.data.get("state") != "member":
+            return {"status": "invalid", "reason": "the membership being ended is not a standing one"}
+        if cause == "departure":
+            # Leaving is the member's own act and nobody else's, which is the
+            # counterpart of Identity's power to remove.
+            if subject_uuid != actor_uuid:
+                return {"status": "unauthorized", "reason": "only the member themselves may leave"}
+            return None
+        return self._membership_authority_refusal(team, data, actor_uuid)
+
+    def _assess_member_opening(
+        self, team: ProtocolNode, data: dict, actor_uuid: str,
+    ) -> dict | None:
+        if data["state"] == "closed":
+            previous = self._governance_node(
+                team, data["previous_opening_uuid"], "team_member_opening",
             )
-            if opening is None:
-                return {"status": "deferred", "reason": "Member opening is not available"}
-            if data["state"] == "submitted":
-                projection = self.member_opening_projection(
-                    team, opening.uuid,
-                )
-                if projection.get("state") != "open":
-                    return {"status": "unauthorized", "reason": "Member opening is closed or contested"}
-            else:
-                previous = self._governance_node(
-                    team, data["previous_application_uuid"],
-                    "team_member_application",
-                )
-                if previous is None:
-                    return {"status": "deferred", "reason": "previous application is not available"}
-                if (
-                    previous.data.get("actor_uuid") != actor_uuid
-                    or previous.data.get("opening_uuid") != opening.uuid
-                    or previous.data.get("state") != "submitted"
-                ):
-                    return {"status": "invalid", "reason": "withdrawal does not match the submitted application"}
-                if self.member_resolution_projection(
-                    team, previous.uuid,
-                )["state"] != "pending":
-                    return {"status": "unauthorized", "reason": "a resolved application cannot be withdrawn"}
-        elif node_type == "team_member_resolution":
-            opening = self._governance_node(
-                team, data["opening_uuid"], "team_member_opening",
+            if previous is None:
+                return {"status": "deferred", "reason": "previous Member opening is not available"}
+            if previous.data.get("state") != "open":
+                return {"status": "invalid", "reason": "opening closure does not match an open Member opening"}
+        return self._membership_authority_refusal(team, data, actor_uuid)
+
+    def _assess_member_application(
+        self, team: ProtocolNode, data: dict, actor_uuid: str,
+    ) -> dict | None:
+        opening = self._governance_node(
+            team, data["opening_uuid"], "team_member_opening",
+        )
+        if opening is None:
+            return {"status": "deferred", "reason": "Member opening is not available"}
+        if data["state"] == "submitted":
+            if self.member_opening_projection(
+                team, opening.uuid,
+            ).get("state") != "open":
+                return {"status": "unauthorized", "reason": "Member opening is closed or contested"}
+            return None
+        previous = self._governance_node(
+            team, data["previous_application_uuid"], "team_member_application",
+        )
+        if previous is None:
+            return {"status": "deferred", "reason": "previous application is not available"}
+        if (
+            previous.data.get("actor_uuid") != actor_uuid
+            or previous.data.get("opening_uuid") != opening.uuid
+            or previous.data.get("state") != "submitted"
+        ):
+            return {"status": "invalid", "reason": "withdrawal does not match the submitted application"}
+        if self.member_resolution_projection(
+            team, previous.uuid,
+        )["state"] != "pending":
+            return {"status": "unauthorized", "reason": "a resolved application cannot be withdrawn"}
+        return None
+
+    def _assess_member_resolution(
+        self, team: ProtocolNode, data: dict, actor_uuid: str,
+    ) -> dict | None:
+        opening = self._governance_node(
+            team, data["opening_uuid"], "team_member_opening",
+        )
+        application = self._governance_node(
+            team, data["application_uuid"], "team_member_application",
+        )
+        if opening is None or application is None:
+            return {"status": "deferred", "reason": "application prerequisites are not available"}
+        if (
+            application.data.get("opening_uuid") != opening.uuid
+            or application.data.get("actor_uuid") != data["actor_uuid"]
+        ):
+            return {"status": "invalid", "reason": "resolution does not match its application"}
+        if self.member_application_projection(
+            team, application.uuid,
+        )["state"] != "submitted":
+            return {"status": "unauthorized", "reason": "only a pending application can be resolved"}
+        return self._membership_authority_refusal(team, data, actor_uuid)
+
+    def _assess_external_member_resolution(
+        self, team: ProtocolNode, data: dict, actor_uuid: str,
+    ) -> dict | None:
+        opening = self._governance_node(
+            team, data["opening_uuid"], "team_member_opening",
+        )
+        if opening is None or opening.data.get("previous_opening_uuid"):
+            return {"status": "deferred", "reason": "Member opening is not available"}
+        if not all((
+            data.get("pool_uuid"), data.get("pool_invitation_uuid"),
+            data.get("pool_application_uuid"), data.get("actor_uuid"),
+            data.get("application_evidence_hash"),
+        )):
+            return {"status": "invalid", "reason": "external application evidence is incomplete"}
+        return self._membership_authority_refusal(team, data, actor_uuid)
+
+    def _assess_trustee_election(
+        self, team: ProtocolNode, data: dict, actor_uuid: str,
+    ) -> dict | None:
+        if not self._is_current_member(team, actor_uuid):
+            return {"status": "unauthorized", "reason": "only a current Member may trigger an election"}
+        if data.get("process_definition_id") != "integrative-election":
+            return {"status": "invalid", "reason": "trustee elections require Integrative Election"}
+        target = self._governance_node(
+            team, data["target_state_uuid"], "team_trustee_state",
+        )
+        if target is None:
+            return {"status": "deferred", "reason": "the election trusteeship snapshots are not available"}
+        if (
+            target.data.get("trust") != data["trust"]
+            or self.trustee_projection(team, data["trust"]).get(
+                "current_state_uuid",
+            ) != target.uuid
+        ):
+            return {"status": "unauthorized", "reason": "the target trusteeship snapshot is stale"}
+        objection = self._authority_refusal(
+            team,
+            data["facilitator_trust"],
+            data["facilitator_actor_uuid"],
+            data["facilitator_authority_basis_uuid"],
+        )
+        if objection:
+            return objection
+        if actor_uuid not in data["electorate_actor_uuids"]:
+            return {"status": "invalid", "reason": "the triggering Member is absent from the electorate"}
+        if set(data["electorate_actor_uuids"]) != set(
+            self.current_member_uuids(team),
+        ):
+            return {"status": "unauthorized", "reason": "the electorate does not snapshot current Members"}
+        return None
+
+    def _assess_trustee_candidacy(
+        self, team: ProtocolNode, data: dict, actor_uuid: str,
+    ) -> dict | None:
+        vacancy = self._governance_node(
+            team, data["vacant_state_uuid"], "team_trustee_state",
+        )
+        if vacancy is None:
+            return {"status": "deferred", "reason": "vacant trustee state is not available"}
+        projection = self.trustee_projection(team, data["trust"])
+        if (
+            projection.get("state") != "vacant"
+            or projection.get("current_state_uuid") != vacancy.uuid
+            or vacancy.data.get("trust") != data["trust"]
+        ):
+            return {"status": "unauthorized", "reason": "trusteeship is not currently vacant"}
+        if data["state"] == "withdrawn":
+            objection = self._assess_candidacy_withdrawal(
+                team, data, actor_uuid,
             )
-            application = self._governance_node(
-                team, data["application_uuid"], "team_member_application",
-            )
-            if opening is None or application is None:
-                return {"status": "deferred", "reason": "application prerequisites are not available"}
-            if (
-                application.data.get("opening_uuid") != opening.uuid
-                or application.data.get("actor_uuid") != data["actor_uuid"]
-            ):
-                return {"status": "invalid", "reason": "resolution does not match its application"}
-            application_state = self.member_application_projection(
-                team, application.uuid,
-            )["state"]
-            if application_state != "submitted":
-                return {"status": "unauthorized", "reason": "only a pending application can be resolved"}
-            status, reason = self._trust_authority(
-                team, self.MEMBERSHIP_TRUST, actor_uuid, data["authority_basis_uuid"],
-            )
-            if status != "authorized":
-                return {"status": status, "reason": reason}
-        elif node_type == "team_external_member_resolution":
-            opening = self._governance_node(
-                team, data["opening_uuid"], "team_member_opening",
-            )
-            if opening is None or opening.data.get("previous_opening_uuid"):
-                return {"status": "deferred", "reason": "Member opening is not available"}
-            if not all((
-                data.get("pool_uuid"), data.get("pool_invitation_uuid"),
-                data.get("pool_application_uuid"), data.get("actor_uuid"),
-                data.get("application_evidence_hash"),
-            )):
-                return {"status": "invalid", "reason": "external application evidence is incomplete"}
-            status, reason = self._trust_authority(
-                team, self.MEMBERSHIP_TRUST, actor_uuid, data["authority_basis_uuid"],
-            )
-            if status != "authorized":
-                return {"status": status, "reason": reason}
-        elif node_type == "team_trustee_election":
-            if not self._is_current_member(team, actor_uuid):
-                return {"status": "unauthorized", "reason": "only a current Member may trigger an election"}
-            if data.get("process_definition_id") != "integrative-election":
-                return {"status": "invalid", "reason": "trustee elections require Integrative Election"}
-            target = self._governance_node(
-                team, data["target_state_uuid"], "team_trustee_state",
-            )
-            if target is None:
-                return {"status": "deferred", "reason": "the election trusteeship snapshots are not available"}
-            target_projection = self.trustee_projection(team, data["trust"])
-            if (
-                target.data.get("trust") != data["trust"]
-                or target_projection.get("current_state_uuid") != target.uuid
-            ):
-                return {"status": "unauthorized", "reason": "the target trusteeship snapshot is stale"}
-            status, reason = self._trust_authority(
-                team,
-                data["facilitator_trust"],
-                data["facilitator_actor_uuid"],
-                data["facilitator_authority_basis_uuid"],
-            )
-            if status != "authorized":
-                return {"status": status, "reason": reason}
-            if actor_uuid not in data["electorate_actor_uuids"]:
-                return {"status": "invalid", "reason": "the triggering Member is absent from the electorate"}
-            if set(data["electorate_actor_uuids"]) != set(
-                self.current_member_uuids(team),
-            ):
-                return {"status": "unauthorized", "reason": "the electorate does not snapshot current Members"}
-        elif node_type == "team_trustee_candidacy":
-            vacancy = self._governance_node(
-                team, data["vacant_state_uuid"], "team_trustee_state",
-            )
-            projection = self.trustee_projection(team, data["trust"])
-            if vacancy is None:
-                return {"status": "deferred", "reason": "vacant trustee state is not available"}
-            if (
-                projection.get("state") != "vacant"
-                or projection.get("current_state_uuid") != vacancy.uuid
-                or vacancy.data.get("trust") != data["trust"]
-            ):
-                return {"status": "unauthorized", "reason": "trusteeship is not currently vacant"}
-            if data["state"] == "withdrawn":
-                previous = self._governance_node(
-                    team,
-                    data["previous_candidacy_uuid"],
-                    "team_trustee_candidacy",
-                )
-                if previous is None:
-                    return {"status": "deferred", "reason": "previous candidacy is not available"}
-                root = next((
-                    candidate
-                    for candidate in self.trustee_candidacy_roots(
-                        team, data["trust"],
-                    )
-                    if candidate.uuid == previous.uuid
-                    or self.trustee_candidacy_projection(
-                        team, candidate.uuid,
-                    ).get("current_uuid") == previous.uuid
-                ), None)
-                if (
-                    root is None
-                    or root.data.get("actor_uuid") != actor_uuid
-                    or root.data.get("vacant_state_uuid")
-                    != data["vacant_state_uuid"]
-                    or self.trustee_candidacy_projection(
-                        team, root.uuid,
-                    ).get("current_uuid") != previous.uuid
-                    or previous.data.get("state") != "active"
-                ):
-                    return {"status": "invalid", "reason": "withdrawal does not match the active candidacy"}
-            elif any(
-                candidate.data.get("actor_uuid") == actor_uuid
-                and candidate.data.get("vacant_state_uuid") == vacancy.uuid
-                and self.trustee_candidacy_projection(
-                    team, candidate.uuid,
-                ).get("state") == "active"
-                for candidate in self.trustee_candidacy_roots(
-                    team, data["trust"],
-                )
-            ):
-                return {"status": "unauthorized", "reason": "the Actor is already a candidate"}
-            if not self._is_current_member(team, actor_uuid):
-                return {"status": "unauthorized", "reason": "only a current Member may become a candidate"}
-        elif node_type == "team_trustee_action":
-            status, reason = self._trust_authority(
-                team, data["trust"], actor_uuid, data["authority_basis_uuid"],
-            )
-            if status != "authorized":
-                return {"status": status, "reason": reason}
-        elif node_type == "team_trustee_reality":
-            action = self._governance_node(
-                team, data["action_uuid"], "team_trustee_action",
-            )
-            if action is None:
-                return {"status": "deferred", "reason": "observed trustee action is not available"}
-            facilitator = self._sole_facilitating_trust(
-                str(action.data.get("trust") or ""),
-            )
-            if not facilitator:
-                return {
-                    "status": "invalid",
-                    "reason": "the facilitating trusteeship is ambiguous",
-                }
-            status, reason = self._trust_authority(
-                team, facilitator, actor_uuid, data["authority_basis_uuid"],
-            )
-            if status != "authorized":
-                return {"status": status, "reason": reason}
-        return {"status": "authorized", "reason": ""}
+            if objection:
+                return objection
+        elif any(
+            candidate.data.get("actor_uuid") == actor_uuid
+            and candidate.data.get("vacant_state_uuid") == vacancy.uuid
+            and self.trustee_candidacy_projection(
+                team, candidate.uuid,
+            ).get("state") == "active"
+            for candidate in self.trustee_candidacy_roots(team, data["trust"])
+        ):
+            return {"status": "unauthorized", "reason": "the Actor is already a candidate"}
+        if not self._is_current_member(team, actor_uuid):
+            return {"status": "unauthorized", "reason": "only a current Member may become a candidate"}
+        return None
+
+    def _assess_candidacy_withdrawal(
+        self, team: ProtocolNode, data: dict, actor_uuid: str,
+    ) -> dict | None:
+        previous = self._governance_node(
+            team, data["previous_candidacy_uuid"], "team_trustee_candidacy",
+        )
+        if previous is None:
+            return {"status": "deferred", "reason": "previous candidacy is not available"}
+        root = next((
+            candidate
+            for candidate in self.trustee_candidacy_roots(team, data["trust"])
+            if candidate.uuid == previous.uuid
+            or self.trustee_candidacy_projection(
+                team, candidate.uuid,
+            ).get("current_uuid") == previous.uuid
+        ), None)
+        if (
+            root is None
+            or root.data.get("actor_uuid") != actor_uuid
+            or root.data.get("vacant_state_uuid") != data["vacant_state_uuid"]
+            or self.trustee_candidacy_projection(
+                team, root.uuid,
+            ).get("current_uuid") != previous.uuid
+            or previous.data.get("state") != "active"
+        ):
+            return {"status": "invalid", "reason": "withdrawal does not match the active candidacy"}
+        return None
+
+    def _assess_trustee_action(
+        self, team: ProtocolNode, data: dict, actor_uuid: str,
+    ) -> dict | None:
+        return self._authority_refusal(
+            team, data["trust"], actor_uuid, data["authority_basis_uuid"],
+        )
+
+    def _assess_trustee_reality(
+        self, team: ProtocolNode, data: dict, actor_uuid: str,
+    ) -> dict | None:
+        action = self._governance_node(
+            team, data["action_uuid"], "team_trustee_action",
+        )
+        if action is None:
+            return {"status": "deferred", "reason": "observed trustee action is not available"}
+        facilitator = self._sole_facilitating_trust(
+            str(action.data.get("trust") or ""),
+        )
+        if not facilitator:
+            return {
+                "status": "invalid",
+                "reason": "the facilitating trusteeship is ambiguous",
+            }
+        return self._authority_refusal(
+            team, facilitator, actor_uuid, data["authority_basis_uuid"],
+        )
 
     def append_governance_record(
         self, team_uuid: str, data: dict,
