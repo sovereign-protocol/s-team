@@ -1,10 +1,20 @@
 # Rules — S-Team
 
-Rules that are not about any one type, and so have no home in
-`DESIGN_TYPES.md`. What each type is and carries lives there; this is what
-holds across them.
+What is true of the domain regardless of which type it is written in. What each
+type is and carries lives in `DESIGN_TYPES.md`; where the boundaries are is in
+`ARCHITECTURE.md`.
 
-## 1. Peers and actors are two populations
+## 1. Organization is derived, not stored
+
+- **Team** is the stored node type and the Actor kind.
+- A root Team — one with no live parent seat — is presented as an
+  **Organization**.
+- A Team becomes one when it loses its last parent, and stops being one when it
+  takes a seat in another. Nothing records it.
+- Organization is not a third Actor kind. It is contextual wording, and
+  S-Cockpit uses the same word for the same reason.
+
+## 2. Peers and actors are two populations
 
 - **Peers** — who you sync this topic with. A transport fact.
 - **Actors** — who is on the team and what they have taken on. A governance
@@ -31,7 +41,7 @@ that fully syncs on it.** Subteams are not only a governance device, they are
 the replication scaling mechanism — the load-bearing reason the structure is
 recursive rather than one large membership list.
 
-## 2. Templates are a state, not a type
+## 3. Templates are a state, not a type
 
 | Members | State                 |
 | ------- | --------------------- |
@@ -58,7 +68,7 @@ exception to get.
 Taking Identity in an empty template is the same write as anywhere else, with
 nobody to diverge against.
 
-## 3. Cycles are rejected best-effort, per replica
+## 4. Cycles are rejected best-effort, per replica
 
 Cycles among Team actors are refused when a seat is taken, by walking the
 parents already known. Enforcement is **per replica and best-effort**: you can
@@ -68,7 +78,7 @@ no single peer can see.
 This is the same shape as everything else here — a replica answers from what it
 has, and is honest about the difference between "no" and "I cannot tell".
 
-## 4. Names are made distinct, not refused
+## 5. Names are made distinct, not refused
 
 A name is the whole of how a role or a team is referred to — a badge, an offer,
 a seat in a parent, a line in the organization tree. Two of them called the same

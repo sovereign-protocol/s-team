@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Sorted the documents so each answers one question and no two answer the
+  same: `ARCHITECTURE.md` for ownership, trust and structure; `DESIGN_TYPES.md`
+  for the node types; `DESIGN_RULES.md` for what holds across them;
+  `DESIGN_UI.md` for presentation; `ROADMAP.md` for what is ahead and what will
+  not be built. The genesis-and-governance plan was dissolved into those three
+  rather than renamed — its semantics were rules, its trust model and
+  repository boundary were architecture, and its remaining increments and
+  non-goals were roadmap. README lists the set, and stops describing roles as
+  held only while an offer and an answer both stand, which stopped being true
+  when a member's own answer became enough.
 - Reviewed the design corpus element by element against the source, and
   retired what it replaced. Every node type S-Team declares is now registered
   in `DESIGN_TYPES.md` field for field and checked by `test_type_registry.py`,
