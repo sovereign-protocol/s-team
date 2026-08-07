@@ -46,10 +46,20 @@ main {
   align-items: start;
 }
 /* Every application separates header from content with a rule; Team had
-   none, which is why its header read as floating. */
+   none, which is why its header read as floating.
+
+   It stays put while the page scrolls. The header carries the topic
+   selector, the connection state and the panes, so a page long enough to
+   scroll - which a team with a document and a decision trail always is -
+   used to take all of that away exactly when it was being read. It sits
+   under the shell's sibling alarm, which is deliberately above everything. */
 header {
+  position: sticky;
+  top: 0;
+  z-index: 50;
   border-bottom: 1px solid var(--line);
   padding: 10px 24px;
+  background: var(--page);
 }
 article { background: var(--panel); color: var(--text); padding: 32px 48px; border-radius: 8px; }
 section { padding: 6px 0; }
@@ -61,7 +71,10 @@ button, select { padding: 8px 11px; border-radius: 6px; border: 1px solid var(--
 
 #organization {
   position: sticky;
-  top: 18px;
+  /* Below the sticky header rather than under it. The height is measured
+     and published by the page, because the shell decides what the header
+     holds and so how tall it is. */
+  top: calc(var(--header-height, 58px) + 18px);
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -131,6 +144,25 @@ button, select { padding: 8px 11px; border-radius: 6px; border: 1px solid var(--
   font-size: 12px;
   line-height: 1.45;
 }
+
+/* This client's own files, under the list they left. */
+.archive-shelf { margin-top: 12px; font-size: 12px; }
+.archive-shelf summary { color: var(--text-muted); cursor: pointer; }
+.archive-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+}
+.archive-row span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.archive-row button { padding: 2px 8px; font-size: 11px; }
+.archive-team { margin: 0 0 10px; padding: 4px 10px; font-size: 12px; }
 
 /* One row shape at every level: status on the left with the name, actions on
    the right. Same grid for the team, its sections, and its clauses, so
@@ -459,6 +491,7 @@ h2.element-label { margin: 0 0 4px; }
   color: var(--text-muted);
 }
 .role-unheld { margin: 2px 0; font-size: 13px; color: var(--text-muted); }
+.role-apply { margin-top: 8px; padding: 4px 8px; font-size: 12px; }
 
 /* Who holds a role is a line of faces and names. Everything else about the
    holding - when it was answered, against which version, who offered it - is
@@ -559,6 +592,16 @@ h2.element-label { margin: 0 0 4px; }
   text-transform: capitalize;
 }
 .membership-actions { display: inline-flex; gap: 5px; }
+.membership-roster { margin: 8px 0; }
+.membership-member {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 13px;
+}
+.membership-member strong { flex: 1; min-width: 0; font-weight: 500; }
+.membership-member button { padding: 3px 8px; font-size: 12px; }
 .membership-apply { margin-top: 8px; }
 
 .elections-panel {
@@ -594,13 +637,19 @@ h2.element-label { margin: 0 0 4px; }
 }
 .election-card-head { font-size: 13px; }
 .election-state { color: var(--text-muted); text-transform: capitalize; }
+.election-electorate {
+  margin: 6px 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
 .election-process {
   display: block;
   overflow: hidden;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 12px;
   text-overflow: ellipsis;
 }
+a.election-process { color: var(--proposal); }
 .election-implement { margin-top: 8px; }
 
 .trustee-candidacies {
@@ -611,7 +660,11 @@ h2.element-label { margin: 0 0 4px; }
 .trustee-candidacies h6 { margin: 0 0 6px; font-size: 12px; }
 .trustee-candidacies p { margin: 6px 0; color: var(--text-muted); font-size: 12px; }
 .trustee-candidate { display: flex; align-items: center; gap: 8px; margin: 5px 0; }
-.trustee-candidate span { flex: 1; font-size: 13px; }
+/* The name, not everything shaped like one. An avatar is a span too, and
+   `.trustee-candidate span` used to stretch it from a 26px circle into a
+   lozenge the width of the row - the shared .ui-avatar sets flex: 0 0 auto
+   for exactly that reason, and a descendant selector here outranks it. */
+.trustee-candidate-name { flex: 1; font-size: 13px; }
 .trustee-candidate button,
 .trustee-candidacies > button { padding: 4px 8px; font-size: 12px; }
 
@@ -635,29 +688,43 @@ h2.element-label { margin: 0 0 4px; }
 .trustee-action-form input { box-sizing: border-box; width: 100%; }
 .trustee-action-form button { justify-self: start; padding: 4px 8px; font-size: 12px; }
 .trustee-actions-empty { color: var(--text-muted); font-size: 13px; }
-.trustee-action-card {
-  margin-top: 8px;
-  padding: 9px 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--hover);
+
+/* One row per record: when, who, what they were doing, how it came out.
+   Four columns rather than a card each, because a trail is read down the
+   date column and only ever opened at the one row you came for. */
+.decision-trail { margin: 8px 0 0; padding: 0; list-style: none; }
+.decision-record {
+  display: grid;
+  grid-template-columns: max-content max-content minmax(0, 1fr) minmax(0, 1fr);
+  gap: 2px 10px;
+  padding: 6px 2px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
 }
-.trustee-action-card.is-contested { border-color: var(--warning, #b7791f); }
-.trustee-action-heading { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
-.action-contested,
-.action-recorded { color: var(--text-muted); font-size: 11px; }
-.action-contested { color: var(--warning, #b7791f); }
-.trustee-action-decision { margin: 8px 0; white-space: pre-wrap; }
-.trustee-action-context {
+.decision-record:first-child { border-top: 0; }
+.decision-record.is-contested { background: var(--hover); }
+.decision-when,
+.decision-who { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.decision-intent { font-weight: 600; }
+.decision-result { color: var(--text-muted); }
+.decision-record.is-contested .decision-result {
+  color: var(--warning, #b7791f);
+}
+.decision-context { grid-column: 3 / -1; margin-top: 4px; font-size: 12px; }
+.decision-context summary { color: var(--text-muted); cursor: pointer; }
+.decision-context dl {
   display: grid;
   grid-template-columns: max-content 1fr;
   gap: 3px 8px;
-  margin: 8px 0;
-  font-size: 12px;
+  margin: 6px 0;
 }
-.trustee-action-context dt { color: var(--text-muted); }
-.trustee-action-context dd { margin: 0; white-space: pre-wrap; }
-.trustee-action-context .is-missing { color: var(--warning, #b7791f); font-weight: 600; }
+.decision-context dt { color: var(--text-muted); }
+.decision-context dd { margin: 0; white-space: pre-wrap; }
+.decision-context .is-missing { color: var(--warning, #b7791f); font-weight: 600; }
+@media (max-width: 720px) {
+  .decision-record { grid-template-columns: minmax(0, 1fr); }
+  .decision-context { grid-column: 1; }
+}
 .trustee-reality { margin: 8px 0; padding-left: 9px; border-left: 3px solid var(--line); font-size: 12px; }
 .trustee-reality-form { display: flex; gap: 6px; margin-top: 8px; }
 .trustee-reality-form input { flex: 1; min-width: 0; }

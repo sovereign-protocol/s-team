@@ -29,9 +29,48 @@ An Actor is anything that can hold a role. Actor is `{Individual, Team}`.
 That doc is the road not taken; `DESIGN_MULTI_CLIENT_PAIRING.md` is **[DONE]**
 and already gives one identity uuid per person.
 
-**To be on a team, an Actor takes a role.** There is no membership
-independent of role-holding — and that is what §2.4 extends upward: being on
-a team below is being on the team above.
+**To be on a team, an Actor is a member of it.** Membership is its own
+relationship, not a role — and that is what §2.4 extends upward: being on a
+team below is being on the team above.
+
+This reverses the original rule, and the reversal is the point. The first
+version said the opposite: _"To be on a team, an Actor takes a role. There is
+no membership independent of role-holding."_ Membership was then modelled as
+a system **Member** role, and every team shipped with one.
+
+Two things were wrong with it. **Membership and work are different
+questions.** A member who has taken nothing on is still on the team; under
+the old rule they read as somebody who was not there. And it put role
+assignment in Identity's hands, because a role was held only while both an
+Identity offer and the actor's answer existed — so a member could describe
+work they were already doing and then wait to be permitted to do it.
+
+The split now is:
+
+- **Identity decides membership**, and only that: it admits (through an
+  opening, an application and a resolution) and it can end a membership on
+  behalf of the team. That is the whole of what Identity decides about a
+  person.
+- **A member takes any role**, by their own record and nobody else's. An
+  invitation still exists and any member may extend one, but it is a
+  suggestion: what holds a role is the answer, and withdrawing the
+  invitation withdraws the suggestion and nothing else. Stepping out of a
+  role is the holder's.
+- **Seating a Team is the exception, and is not really one.** A team in a
+  role brings everybody on it into this one, so it is an admission — and
+  admissions are Identity's.
+
+A membership is an append-only chain of `team_membership` records, one per
+Actor, with causes `genesis | admission | departure | removal`. The
+resolution is the *decision* about an application; the membership record is
+the *standing* — the same split as `team_trustee_election` and the
+`team_trustee_state` it fills, and it is what lets a membership be ended
+without rewriting the decision that began it.
+
+Teams stored before this keep their Member role as an ordinary role, and
+their founder's standing is still read off its genesis offer. Read, never
+rewritten: appending records while answering a read would make every replica
+diverge on being looked at.
 
 ### 1.2 Node schema
 
@@ -39,13 +78,19 @@ a team below is being on the team above.
 team                          (topic)
 ├── team_section
 │   └── team_clause
+├── team_membership           one chain per Actor: data.actor_uuid,
+│                             data.state (member|former), data.cause,
+│                             data.previous_membership_uuid
 ├── team_trustee              data.trust names which trusteeship;
 │                             data.holder_actor_uuid, data.held_since
 ├── team_role                 data.name, data.purpose, data.order
 │   ├── team_accountability   data.text, data.order
 │   ├── team_domain           data.text, data.order
-│   ├── team_role_offer       one per (role, actor); authored by the trustee
-│   └── team_role_decision    one per (role, actor); by the actor
+│   ├── team_role_offer       one per (role, actor); an invitation any
+│   │                         member may write. Identity's alone when the
+│   │                         actor is a Team, because that is an admission
+│   └── team_role_decision    one per (role, actor); by the actor, and on
+│                             its own enough to hold the role
 └── team_role_holding         this team's seat elsewhere:
                               data.parent_team_uuid, data.role_uuid,
                               data.order — the ordered parent list
@@ -59,8 +104,8 @@ clauses are nodes: reactions are per-node, and a JSON list collapses two
 people editing different accountabilities into one undiffable divergence.
 
 `agreement_link` is retired — a subteam is a Team actor holding a role in the
-parent. `agreement_decision` is retired in favour of `team_role_decision` on
-the system Member role.
+parent. `agreement_decision` is retired in favour of `team_membership`, which
+is what being on a team now is.
 
 Which of these may be reacted to, and which are somebody else's fact rather
 than a thing to agree with, is Core's question rather than this document's —
@@ -97,7 +142,9 @@ holding Identity; they have to hand Identity on, or resign it (§2.2).
 
 ### 2.1 Authority
 
-The Identity holder is the only actor whose role offers others adopt.
+An invitation into a role is adopted if a **member** wrote it. An offer of a
+seat to a **Team** is adopted only if the **Identity holder** wrote it,
+because seating a team admits everybody on it (§1.1).
 
 This is a **coordination rule, not a security boundary.** Core has no content
 signing — every crypto path is SFTP transport key material, `identity_key` is
@@ -116,7 +163,8 @@ It applies in two independent layers:
   does not hold the trusteeship from their own perspective. Prevents
   accidents.
 - **Adoption predicate** — a proposed offer node is not adopted unless its
-  author holds Identity in the observed state. Prevents intent.
+  author is a member in the observed state, or holds Identity when the offer
+  seats a team. Prevents intent.
 
 Plus one condition: **if the trustee node is diverged in my view, adopt no
 internal offers and surface it.**
@@ -281,9 +329,10 @@ other end. Three things follow, all built:
   out of their own team by accepting an invitation. The refusal names the
   people who are not yet in the parent, because that is the work to do
   first.
-- **Losing a role above is losing the team below**, for that person, derived
-  and never recorded, so it reverses itself when the role above is taken up
-  again.
+- **Losing your membership above is losing the team below**, for that
+  person, derived and never recorded, so it reverses itself when they are
+  admitted above again. Stepping out of a *role* above does not do this:
+  that is stepping out of some work, not out of the team.
 - **The roster has to say so.** Invalidity above was derived only for
   whoever was reading, so everybody else went on being shown as `accepted`
   and a team's own member list stated something untrue about them. Holders
@@ -291,8 +340,10 @@ other end. Three things follow, all built:
   which the containment could be satisfied one level down by somebody the
   level above had already lost.
 
-The role above may be the smallest "member" role there is; what matters is
-that it exists. The system Member role is exactly that.
+What is read above is **membership**, and nothing else. It used to be "holds
+any role, and the smallest of them is the system Member role" — which is the
+same statement only for as long as membership is a role, and it stopped
+being one.
 
 Computing it reads strictly **upward**. Asking a team who is on it, in order
 to decide who is on it, is circular; the question goes to the parents alone,
@@ -303,26 +354,27 @@ The constraint is **observable, not enforceable**: a role held on a replica
 this session cannot reach reads as unheld. The seat check therefore refuses
 and names the people it cannot place, rather than guessing.
 
-#### 2.4b A request is a decision with no offer
+#### 2.4b A decision is enough; an offer is a suggestion
 
-**[DONE]** Only Identity may offer (§2.1), so somebody who has just accepted
-a topic invitation holds nothing and cannot be let in by anyone else. Asking
-is the move available to them; confirming is the move available to Identity.
+**[DONE]** A member's own answer holds a role. An offer is an invitation any
+member may extend, and neither the invitation nor its withdrawal decides
+anything:
 
-This needs **no new node type**. A holding is live only while both records
-exist, so the two halves already mean something on their own:
+| Offer   | Decision | Meaning                                     |
+| ------- | -------- | ------------------------------------------- |
+| yes     | no       | invited, not taken up — _pending_           |
+| no      | yes      | held, nobody having suggested it            |
+| yes     | yes      | held                                        |
+| revoked | no       | nothing: the suggestion was taken back      |
+| revoked | yes      | still held — the answer stands on its own   |
 
-| Offer   | Decision | Meaning                       |
-| ------- | -------- | ----------------------------- |
-| yes     | no       | an unfilled seat — _pending_  |
-| no      | yes      | somebody asking — _requested_ |
-| yes     | yes      | held                          |
-| revoked | yes      | withdrawn — _revoked_ (§2.3)  |
+The retired reading of the second row was _requested_: somebody asking, with
+the Identity holder expected to confirm by offering. That existed only
+because Identity assigned roles. It does not, so there is nothing to confirm.
 
-Confirming a request is an ordinary `offer_role`. The asker's answer is
-already on file, so the holding goes live the moment both records exist and
-the newcomer is never asked to answer twice. Neither side writes the other's
-record at any point, so §2.3 is untouched.
+What is refused is taking a role on a team you are not on — which is the
+same statement as "membership is how you are on a team", read from the other
+end.
 
 Consent to a seat works the same way, and is worth saying plainly because
 all three seat records are one-author facts rather than things anybody
@@ -562,9 +614,11 @@ The parts worth recording:
   offers, answers or holdings. A clone-then-strip pass would have had to know
   the same list inverted, and would have been a second place to forget a node
   type when one is added.
-- **The system Member role travels**, because it is content. A template that
-  arrived with no role at all would make its first user invent one before
-  taking part, which is the thing §2.8 says a template should spare them.
+- **Roles travel, membership does not.** Roles are content, and a template
+  that arrived with none would make its first user invent one before there
+  was anything to do — which is the thing §2.8 says a template should spare
+  them. Membership is not content: a copy is a team nobody is on yet, and
+  whoever instantiates it becomes its founding member.
 - **Copying is not gated on standing in the original.** It reads that team
   and writes only a new one of this session's own, so a team you can see
   read-only is one you can fork. That is a feature, not a leak: you could

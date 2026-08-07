@@ -16,6 +16,7 @@ import json
 import re
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from sovereign import ApplicationRegistration, ProtocolNode, Session, SessionResult
 
@@ -31,6 +32,7 @@ FLOW_DECISION_RESULT_CONTRACT_VERSION = 1
 class TeamLogic:
     GOVERNANCE_RECORD_TYPES = frozenset({
         "team_trustee_state",
+        "team_membership",
         "team_member_opening",
         "team_member_application",
         "team_member_resolution",
@@ -49,6 +51,12 @@ class TeamLogic:
     TRUSTEE_CAUSES = frozenset({
         "genesis", "election", "resignation", "resolution",
     })
+    # How somebody came to be, or stop being, a member. Founding and
+    # leaving are the actor's own; admitting and removing are Identity's,
+    # which is the whole of what Identity decides about a person.
+    MEMBERSHIP_CAUSES = frozenset({
+        "genesis", "admission", "departure", "removal",
+    })
     ACTION_KINDS = frozenset({
         "member_opening", "member_resolution", "trustee_resignation",
         "election_implementation", "domain_action",
@@ -62,9 +70,21 @@ class TeamLogic:
             }),
             frozenset({"process_uuid", "process_result_hash"}),
         ),
+        # Standing, not the decision that produced it - the same split as
+        # team_trustee_election (the decision) and team_trustee_state (who
+        # holds the seat). An admission names the resolution it implements;
+        # genesis, departure and removal name none.
+        "team_membership": (
+            frozenset({
+                "type", "actor_uuid", "state", "previous_membership_uuid",
+                "cause", "acted_by", "acted_at", "authority_basis_uuid",
+                "signals", "consideration", "expectation",
+            }),
+            frozenset({"resolution_uuid"}),
+        ),
         "team_member_opening": (
             frozenset({
-                "type", "member_role_uuid", "previous_opening_uuid", "state",
+                "type", "previous_opening_uuid", "state",
                 "opened_by", "opened_at", "authority_basis_uuid",
             }),
             frozenset({"closed_at"}),
@@ -421,7 +441,7 @@ class TeamLogic:
             {},
         )
         if result.status == "ok":
-            member = self._create_default_member(result.value)
+            member = self._found_membership(result.value)
             identity = self._create_trusteeship(result.value, "identity")
             trust = self._create_trusteeship(result.value, "trust")
             pool = self._create_pool(result.value)
@@ -489,7 +509,7 @@ class TeamLogic:
         if created.status != "ok":
             return created
         child = created.value
-        member = self._create_default_member(child)
+        member = self._found_membership(child)
         identity = self._create_trusteeship(child, "identity")
         trust = self._create_trusteeship(child, "trust")
         pool = self._create_pool(child)
@@ -762,6 +782,145 @@ class TeamLogic:
         self._remember_team(remaining[0].uuid if remaining else "")
         return result
 
+    ARCHIVE_FORMAT = "s-team.archive"
+    ARCHIVE_FORMAT_VERSION = 1
+
+    def _archive_directory(self) -> Path:
+        configured = str(self.config.get("archive_directory") or "").strip()
+        if configured:
+            return Path(configured)
+        # Beside this client's own data, because that is what an archive is.
+        # Never the working directory: that is shared with whatever else is
+        # running there and belongs to nobody in particular.
+        return Path(
+            str(self.config.get("data_directory") or "").strip() or ".",
+        ) / "team-archive"
+
+    def archives(self) -> list[dict]:
+        """Every archive this client has written, newest first."""
+        directory = self._archive_directory()
+        if not directory.is_dir():
+            return []
+        found = []
+        for path in directory.glob("*.json"):
+            try:
+                with path.open(encoding="utf-8") as handle:
+                    document = json.load(handle)
+            except (OSError, ValueError):
+                continue
+            if document.get("format") != self.ARCHIVE_FORMAT:
+                continue
+            found.append({
+                "file": path.name,
+                "title": document.get("title") or "Untitled team",
+                "team_uuid": (document.get("team") or {}).get("uuid") or "",
+                "archived_at": document.get("archived_at") or "",
+                "restorable": not self.session.has_node(
+                    (document.get("team") or {}).get("uuid") or "",
+                ),
+            })
+        return sorted(found, key=lambda item: item["archived_at"], reverse=True)
+
+    def archive_team(self, team_uuid: str) -> SessionResult:
+        """Write a team out as a file and take it off this client.
+
+        Local, and only local. Nothing is sent: sharing ends, so this
+        client stops publishing and polling, and every other client keeps
+        its own copy and its own access. Archiving is not deleting for
+        everybody, and it is not a decision about the team.
+
+        The file carries **no relay coordinates**. An archive is a record of
+        what the team was, not a way back onto a channel - restoring one
+        brings the content back as a private topic that has to be put on a
+        bridge again deliberately, by somebody who still has the invitation.
+
+        And it leaves **no stub**. A row saying "there used to be a team
+        here" is a second thing to keep in step with the file, and the file
+        is the record.
+        """
+        team = self._node(team_uuid, "team")
+        if not team:
+            return SessionResult("error", reason="team not found")
+        pool = self.pool_for_team(team)
+        document = {
+            "format": self.ARCHIVE_FORMAT,
+            "format_version": self.ARCHIVE_FORMAT_VERSION,
+            "archived_at": self._now(),
+            "archived_by": self._identity_uuid,
+            "title": team.data.get("title") or "Untitled team",
+            "team": team.to_dict(),
+            "pool": pool.to_dict() if pool else None,
+        }
+        directory = self._archive_directory()
+        stem = re.sub(r"[^A-Za-z0-9._-]+", "-", document["title"]).strip("-")
+        path = directory / f"{stem or 'team'}-{team.uuid[:8]}.json"
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            # Written and closed before anything is removed. A half-written
+            # archive beside a deleted team is the one outcome worth ruling
+            # out, and it costs one flush to do it.
+            with path.open("w", encoding="utf-8") as handle:
+                json.dump(document, handle, ensure_ascii=False, indent=2)
+        except OSError as error:
+            return SessionResult(
+                "error", reason=f"could not write the archive: {error}",
+            )
+        removed = self.delete_team(team.uuid)
+        if removed.status != "ok":
+            path.unlink(missing_ok=True)
+            return removed
+        return SessionResult(
+            "ok", value=str(path), effects=removed.effects,
+        )
+
+    def restore_team(self, file_name: str) -> SessionResult:
+        """Graft an archived team back in, as a private topic.
+
+        The same graft a topic invitation uses, because it is the same act:
+        a subtree arriving from outside. What it does not bring back is any
+        channel - the archive never carried one - so a restored team is
+        private until somebody puts it back on one.
+        """
+        path = self._archive_directory() / Path(str(file_name or "")).name
+        if not path.is_file():
+            return SessionResult("error", reason="archive not found")
+        try:
+            with path.open(encoding="utf-8") as handle:
+                document = json.load(handle)
+        except (OSError, ValueError) as error:
+            return SessionResult(
+                "error", reason=f"could not read the archive: {error}",
+            )
+        if document.get("format") != self.ARCHIVE_FORMAT:
+            return SessionResult("error", reason="not a Team archive")
+        restored = []
+        for key, container in (
+            ("team", self._team_container()),
+            ("pool", self._apps_folder()),
+        ):
+            stored = document.get(key)
+            if not stored:
+                continue
+            subtree = ProtocolNode.from_dict(stored)
+            if self.session.has_node(subtree.uuid):
+                return SessionResult(
+                    "error", reason=f"that {key} is already here",
+                )
+            grafted = self.session.accept_topic_invitation(
+                subtree, container.uuid,
+            )
+            if grafted.status != "ok":
+                return grafted
+            restored.append(grafted)
+        if not restored:
+            return SessionResult("error", reason="the archive holds no team")
+        self._remember_team(restored[0].value)
+        return SessionResult(
+            "ok",
+            value=restored[0].value,
+            effects=[effect for item in restored for effect in item.effects],
+        )
+
     def delete_section(self, section_uuid: str) -> SessionResult:
         # Deleting a section takes its clauses with it. That is safe here
         # only because the request is local and explicit; adopting a peer's
@@ -846,7 +1005,7 @@ class TeamLogic:
                 "error",
                 reason="Identity changes require a facilitated decision",
             )
-        member = self._create_default_member(team)
+        member = self._found_membership(team)
         identity = self._create_trusteeship(team, "identity")
         trust = self._create_trusteeship(team, "trust")
         pool = self._create_pool(team)
@@ -911,53 +1070,100 @@ class TeamLogic:
             "expectation": str(expectation or "").strip(),
         })
 
-    def _create_default_member(
-        self, team: ProtocolNode,
-    ) -> SessionResult:
-        """Every team starts with one role, taken by its creator.
+    def _found_membership(self, team: ProtocolNode) -> SessionResult:
+        """Every team starts with one member: whoever made it.
 
-        Without it a new team has nobody in it, and taking part would
-        mean first inventing the role to take. The name and purpose are
-        ordinary editable content - this is a starting point, not a fixture.
+        This used to be written as a system Member role offered to the
+        creator and accepted by them, because being on a team meant holding
+        a role on it. It does not any more: membership is its own record,
+        Identity decides it, and roles are work a member picks up. A new
+        team therefore has a member and no roles at all - the first role is
+        content somebody writes, not a fixture the team ships with.
         """
-        role = self.member_role(team)
-        effects = []
-        if role is None:
-            created = self.session.create_child(
-                team.uuid,
-                {
-                    "type": "team_role",
-                    "name": "Member",
-                    "purpose": "Belong to this team",
-                    "system_key": "member",
-                    "order": 0.0,
-                },
-                {},
-            )
-            if created.status != "ok":
-                return created
-            role = created.value
-            effects.extend(created.effects)
-        offered = self.session.create_child(
-            role.uuid,
+        return self.session.create_child(
+            team.uuid,
             {
-                "type": "team_role_offer",
+                "type": "team_membership",
                 "actor_uuid": self._identity_uuid,
-                "actor_kind": "individual",
-                "offered_by": self._identity_uuid,
-                "offered_at": self._now(),
-                "system_genesis": True,
+                "state": "member",
+                "previous_membership_uuid": "",
+                "cause": "genesis",
+                "acted_by": self._identity_uuid,
+                "acted_at": self._now(),
+                "authority_basis_uuid": "",
+                "signals": "",
+                "consideration": "",
+                "expectation": "",
             },
             {},
         )
-        decided = self._record_role_decision(
-            team, role, "accepted", None,
-        )
-        return SessionResult(
-            "ok",
-            value=role.uuid,
-            effects=[*effects, *offered.effects, *decided.effects],
-        )
+
+    def end_membership(
+        self, team_uuid: str, actor_uuid: str,
+        signals: str = "", consideration: str = "", expectation: str = "",
+    ) -> SessionResult:
+        """Identity ends somebody's membership, on behalf of the team.
+
+        The counterpart of admitting them, and the only thing Identity
+        decides about a person. Their roles are not touched one by one:
+        a role is work a *member* holds, so the holdings simply stop being
+        live when the membership does, and come back if they are readmitted.
+        """
+        team = self._node(team_uuid, "team")
+        if not team:
+            return SessionResult("error", reason="team not found")
+        subject = str(actor_uuid or "").strip()
+        if not subject:
+            return SessionResult("error", reason="an actor is required")
+        if not self._is_current_member(team, subject):
+            return SessionResult(
+                "error", reason="that actor is not a current Member",
+            )
+        return self.append_governance_record(team.uuid, {
+            "type": "team_membership",
+            "actor_uuid": subject,
+            "state": "former",
+            # Empty for a membership written before this record existed:
+            # there is nothing to point at, and the assessment reads the
+            # standing instead.
+            "previous_membership_uuid": self.membership_projection(
+                team, subject,
+            )["current_uuid"],
+            "cause": "removal",
+            "acted_by": self._identity_uuid,
+            "acted_at": self._now(),
+            "authority_basis_uuid": self._authority_basis_for_actor(
+                team, "identity", self._identity_uuid,
+            ),
+            "signals": str(signals or "").strip(),
+            "consideration": str(consideration or "").strip(),
+            "expectation": str(expectation or "").strip(),
+        })
+
+    def leave_team(self, team_uuid: str) -> SessionResult:
+        """Stop being a member. Nobody's decision but your own."""
+        team = self._node(team_uuid, "team")
+        if not team:
+            return SessionResult("error", reason="team not found")
+        if not self._is_current_member(team, self._identity_uuid):
+            return SessionResult(
+                "error", reason="you are not a current Member",
+            )
+        return self.append_governance_record(team.uuid, {
+            "type": "team_membership",
+            "actor_uuid": self._identity_uuid,
+            "state": "former",
+            "previous_membership_uuid": self.membership_projection(
+                team, self._identity_uuid,
+            )["current_uuid"],
+            "cause": "departure",
+            "acted_by": self._identity_uuid,
+            "acted_at": self._now(),
+            "authority_basis_uuid": "",
+            "signals": "",
+            "consideration": "",
+            "expectation": "",
+        })
 
     def _create_trusteeship(
         self, team: ProtocolNode, trust: str,
@@ -1059,15 +1265,11 @@ class TeamLogic:
     def roles(self, team: ProtocolNode) -> list[ProtocolNode]:
         return self._ordered(team, "team_role")
 
+    # Teams made before membership became its own record carry a role
+    # marked this way, and their founder's standing is written on it. New
+    # teams never create one, and nothing treats it as special any more -
+    # in a team that has it, it is an ordinary role called "Member".
     MEMBER_ROLE_SYSTEM_KEY = "member"
-
-    def member_role(self, team: ProtocolNode) -> ProtocolNode | None:
-        """Return the uniquely marked constitutional Member role."""
-        marked = [
-            role for role in self.roles(team)
-            if role.data.get("system_key") == self.MEMBER_ROLE_SYSTEM_KEY
-        ]
-        return marked[0] if len(marked) == 1 else None
 
     def governance_records(
         self, team: ProtocolNode, node_type: str | None = None,
@@ -1124,6 +1326,34 @@ class TeamLogic:
                 not data.get("process_uuid") or not data.get("process_result_hash")
             ):
                 return "election state requires process evidence"
+        elif node_type == "team_membership":
+            if data.get("state") not in {"member", "former"}:
+                return "membership state must be member or former"
+            if data.get("cause") not in self.MEMBERSHIP_CAUSES:
+                return "unsupported membership cause"
+            cause = data.get("cause")
+            if cause == "genesis":
+                if (
+                    data.get("previous_membership_uuid")
+                    or data.get("authority_basis_uuid")
+                ):
+                    return (
+                        "genesis membership cannot name a predecessor "
+                        "or authority basis"
+                    )
+                if data.get("state") != "member":
+                    return "genesis membership must be a membership"
+            if cause == "admission":
+                if not data.get("resolution_uuid"):
+                    return "an admission must name the resolution it implements"
+                if data.get("state") != "member":
+                    return "an admission must be a membership"
+            if cause in {"departure", "removal"} and data.get("state") != "former":
+                return "leaving must end the membership"
+            if cause == "departure" and data.get("authority_basis_uuid"):
+                # Leaving is nobody's decision but your own, so it rests on
+                # no authority - naming one would claim it did.
+                return "a departure rests on no authority basis"
         elif node_type == "team_member_opening":
             if data.get("state") not in {"open", "closed"}:
                 return "opening state must be open or closed"
@@ -1439,7 +1669,70 @@ class TeamLogic:
             "records": [record.uuid for record in resolutions],
         }
 
+    def membership_records(
+        self, team: ProtocolNode, actor_uuid: str | None = None,
+    ) -> list[ProtocolNode]:
+        return [
+            record for record in self.governance_records(
+                team, "team_membership",
+            )
+            if actor_uuid is None
+            or record.data.get("actor_uuid") == actor_uuid
+        ]
+
+    def membership_projection(
+        self, team: ProtocolNode, actor_uuid: str,
+    ) -> dict:
+        """Where one Actor's membership chain has got to.
+
+        A chain per Actor, not per team: somebody admitted, gone and
+        admitted again has one history, and reading only the latest record
+        would make re-admission indistinguishable from never having left.
+        """
+        records = self.membership_records(team, actor_uuid)
+        roots = [
+            record for record in records
+            if not record.data.get("previous_membership_uuid")
+        ]
+        if not roots:
+            return {"current_uuid": "", "state": "observer", "contenders": []}
+        # Re-admission starts a new root rather than continuing the ended
+        # chain, so the standing is the newest root's chain.
+        root = roots[-1]
+        projection = self._record_chain_projection(
+            team, "team_membership", root.uuid, "previous_membership_uuid",
+        )
+        return {
+            "current_uuid": projection.get("current_uuid") or root.uuid,
+            "state": projection.get("state") or "observer",
+            "contenders": projection.get("contenders") or [],
+        }
+
     def member_standing(self, team: ProtocolNode, actor_uuid: str) -> str:
+        if self.membership_records(team, actor_uuid):
+            return {
+                "member": "accepted",
+                "contested": "contested",
+                "former": "former",
+            }.get(
+                self.membership_projection(team, actor_uuid)["state"],
+                "observer",
+            )
+        return self._legacy_member_standing(team, actor_uuid)
+
+    def _legacy_member_standing(
+        self, team: ProtocolNode, actor_uuid: str,
+    ) -> str:
+        """Standing for an Actor from before membership was its own record.
+
+        Teams made under the old model said "member" three different ways:
+        an accepted application, a Pool resolution, or - for the founder - a
+        genesis offer on the system Member role. Read, never rewritten:
+        appending records while answering a read would make every replica
+        diverge on being looked at. It is per-Actor rather than per-team, so
+        a team that admits somebody under the new rules does not thereby
+        un-member everyone who was already on it.
+        """
         for application in self.member_application_roots(team):
             if application.data.get("actor_uuid") != actor_uuid:
                 continue
@@ -1450,16 +1743,32 @@ class TeamLogic:
                 return "accepted"
             if resolution["state"] == "contested":
                 return "contested"
-        external = [
-            record for record in self.governance_records(
+        if any(
+            record.data.get("actor_uuid") == actor_uuid
+            and record.data.get("outcome") == "accepted"
+            for record in self.governance_records(
                 team, "team_external_member_resolution",
             )
-            if record.data.get("actor_uuid") == actor_uuid
-            and record.data.get("outcome") == "accepted"
-        ]
-        if external:
+        ):
             return "accepted"
-        return "observer"
+        role = next(
+            (
+                item for item in self.roles(team)
+                if item.data.get("system_key") == self.MEMBER_ROLE_SYSTEM_KEY
+            ),
+            None,
+        )
+        if role is None:
+            return "observer"
+        offer = self._offer_for(role, actor_uuid)
+        decision = self._role_decision_for(role, actor_uuid)
+        return (
+            "accepted"
+            if offer and offer.data.get("system_genesis") and decision
+            and decision.data.get("decision") == "accepted"
+            and not self._is_expired(decision.data.get("expires_at"))
+            else "observer"
+        )
 
     def membership_payload(self, team: ProtocolNode) -> dict:
         people = self._known_people()
@@ -1522,11 +1831,25 @@ class TeamLogic:
                 "opened_at": opening.data.get("opened_at"),
                 "applications": applications,
             })
+        can_resolve = bool(self._authority_basis_for_actor(
+            team, "identity", self._identity_uuid,
+        ))
+        # The roster, which the page had no way to show because membership
+        # was only ever visible as a badge on the Member role. Ending one is
+        # Identity's, leaving is your own, and both are on this list because
+        # this is where being on the team is stated.
+        members = [
+            {
+                **actor_payload(actor_uuid),
+                "can_remove": can_resolve and actor_uuid != self._identity_uuid,
+                "can_leave": actor_uuid == self._identity_uuid,
+            }
+            for actor_uuid in self.current_member_uuids(team)
+        ]
         return {
             "openings": openings,
-            "can_resolve": bool(self._authority_basis_for_actor(
-                team, "identity", self._identity_uuid,
-            )),
+            "members": members,
+            "can_resolve": can_resolve,
             "is_member": self._is_current_member(team, self._identity_uuid),
         }
 
@@ -1703,21 +2026,30 @@ class TeamLogic:
         )
 
     def current_member_uuids(self, team: ProtocolNode) -> list[str]:
+        """Everyone on this team right now, however they got here."""
         candidates = {
+            str(record.data.get("actor_uuid") or "")
+            for record in self.membership_records(team)
+        }
+        # Anybody whose standing is still only written the old way. Once
+        # every team has been through an admission or a departure this is
+        # empty, and the legacy branch of member_standing goes with it.
+        candidates.update(
             str(application.data.get("actor_uuid") or "")
             for application in self.member_application_roots(team)
-        }
+        )
         candidates.update(
             str(record.data.get("actor_uuid") or "")
             for record in self.governance_records(
                 team, "team_external_member_resolution",
             )
         )
-        member = self.member_role(team)
-        if member is not None:
+        for role in self.roles(team):
+            if role.data.get("system_key") != self.MEMBER_ROLE_SYSTEM_KEY:
+                continue
             candidates.update(
                 str(offer.data.get("actor_uuid") or "")
-                for offer in self._all_role_offers(member)
+                for offer in self._all_role_offers(role)
                 if offer.data.get("system_genesis")
             )
         return sorted(
@@ -1740,6 +2072,23 @@ class TeamLogic:
     def _validated_election_result(
         self, team: ProtocolNode, election: ProtocolNode,
         expected_result_hash: str | None = None,
+    ) -> dict:
+        # One payload asks this of every election three times over - for the
+        # election cards, for the trail, and again for the concurrency
+        # guard - and each ask crosses into S-Flow. The unhashed answer is
+        # the same one every time within a read, so it is memoised there.
+        if expected_result_hash is None:
+            return self._cached(
+                ("election_result", election.uuid),
+                lambda: self._verified_election_result(team, election, None),
+            )
+        return self._verified_election_result(
+            team, election, expected_result_hash,
+        )
+
+    def _verified_election_result(
+        self, team: ProtocolNode, election: ProtocolNode,
+        expected_result_hash: str | None,
     ) -> dict:
         verification = self.verify_flow_decision_result(
             str(election.data.get("process_uuid") or ""),
@@ -1800,6 +2149,54 @@ class TeamLogic:
                 return False
             cursor = parent
         return False
+
+    def elections_under_way(
+        self, team: ProtocolNode, trust: str,
+    ) -> list[ProtocolNode]:
+        """Elections for this trusteeship that can still land on it.
+
+        One already implemented is over, and one that ended void decided
+        nothing; an elected result that nobody has implemented yet is very
+        much still in play, because implementing it is the remaining step.
+        The target check is the same one the record assessment applies, so
+        an election aimed at a state another decision has replaced does not
+        count - it can no longer be implemented either.
+
+        An election whose Flow process this session cannot see does not
+        count. This client cannot tell whether it is running, and a record
+        it can never resolve must not be able to freeze the seat for good.
+        """
+        head = self._governance_node(
+            team,
+            str(self.trustee_projection(team, trust).get(
+                "current_state_uuid",
+            ) or ""),
+            "team_trustee_state",
+        )
+        if head is None:
+            return []
+        states = self.governance_records(team, "team_trustee_state")
+        under_way = []
+        for election in self.trustee_election_records(team, trust):
+            if any(
+                state.data.get("cause") == "election"
+                and state.data.get("process_uuid")
+                == election.data.get("process_uuid")
+                for state in states
+            ):
+                continue
+            if not self._election_target_predecessor_is_valid(
+                team, election, head,
+            ):
+                continue
+            checked = self._validated_election_result(team, election)
+            result = checked.get("result")
+            if not isinstance(result, dict):
+                continue
+            if result.get("terminal_outcome") == "void":
+                continue
+            under_way.append(election)
+        return under_way
 
     def _authority_basis_for_actor(
         self, team: ProtocolNode, trust: str, actor_uuid: str,
@@ -1935,6 +2332,17 @@ class TeamLogic:
             return SessionResult(
                 "error", reason="the target trusteeship is not configured",
             )
+        # One seat, one decision at a time. Two elections running side by
+        # side would each be a valid basis for a different holder, and
+        # whichever was implemented second would only contest the first.
+        if self.elections_under_way(team, normalized_trust):
+            return SessionResult(
+                "error",
+                reason=(
+                    f"an election for {normalized_trust.title()} is already "
+                    "under way; finish or implement it first"
+                ),
+            )
         if not facilitator_actor_uuid or not facilitator_basis_uuid:
             return SessionResult(
                 "error",
@@ -1972,6 +2380,15 @@ class TeamLogic:
             return SessionResult(
                 "error", reason="S-Flow did not expose the created election",
             )
+        # An election is the team's act, so it travels the way the team
+        # does. Without this the process stays on whoever started it and
+        # every other elector sees a record naming a process they cannot
+        # reach - which is what "the election is unavailable" meant.
+        #
+        # Not required to succeed: a team nobody shares has nothing to put
+        # the election on, and an election held alone is still a perfectly
+        # good record of a decision made alone.
+        self._bridge_to_team(process_uuid, team)
         recorded = self.append_governance_record(team.uuid, {
             "type": "team_trustee_election",
             "trust": normalized_trust,
@@ -1994,6 +2411,50 @@ class TeamLogic:
             return recorded
         recorded.effects = [*created.effects, *recorded.effects]
         return recorded
+
+    def _bridge_to_team(self, topic_uuid: str, team: ProtocolNode) -> bool:
+        """Publish a topic the team owns wherever the team is published."""
+        bridge = getattr(self.collaboration, "bridge_topic_like", None)
+        if not callable(bridge):
+            return False
+        return bool(getattr(bridge(topic_uuid, team.uuid), "ok", False))
+
+    def join_trustee_election(
+        self, team_uuid: str, election_uuid: str,
+    ) -> SessionResult:
+        """Take up an election the team put on its own channel.
+
+        The receiving half of the same act, and deliberately a separate
+        one: Core will not graft a topic into this tree because it happens
+        to share a relay with one that is already here. Being an elector is
+        what entitles somebody to ask; consenting is still their client's.
+        """
+        team = self._node(team_uuid, "team")
+        election = self._governance_node(
+            team, election_uuid, "team_trustee_election",
+        ) if team else None
+        if not team or not election:
+            return SessionResult("error", reason="trustee election not found")
+        if self._identity_uuid not in (
+            election.data.get("electorate_actor_uuids") or []
+        ):
+            return SessionResult(
+                "error", reason="you are not an elector in this election",
+            )
+        follow = getattr(self.collaboration, "follow_bridged_topic", None)
+        if not callable(follow):
+            return SessionResult(
+                "error", reason="this client cannot follow shared topics",
+            )
+        followed = follow(
+            str(election.data.get("process_uuid") or ""), team.uuid,
+        )
+        if not getattr(followed, "ok", False):
+            return SessionResult(
+                "error",
+                reason=getattr(followed, "reason", "could not join the election"),
+            )
+        return SessionResult("ok", value=election.data.get("process_uuid"))
 
     def implement_trustee_election(
         self, team_uuid: str, election_uuid: str,
@@ -2098,6 +2559,16 @@ class TeamLogic:
                 "result_hash": result.get("result_hash") or "",
                 "implemented": bool(implemented),
                 "implementation_uuids": [state.uuid for state in implemented],
+                # An elector who cannot see the process can ask for it,
+                # because the team put it on its own channel. Offering that
+                # only when it would do something keeps "unavailable" from
+                # reading as a dead end when it is one click from not being.
+                "can_join": bool(
+                    not result
+                    and self._identity_uuid in (
+                        election.data.get("electorate_actor_uuids") or []
+                    )
+                ),
                 "can_implement": bool(
                     checked.get("valid")
                     and result.get("terminal_outcome") == "elected"
@@ -2140,20 +2611,14 @@ class TeamLogic:
         }
 
     def _is_current_member(self, team: ProtocolNode, actor_uuid: str) -> bool:
-        if self.member_standing(team, actor_uuid) == "accepted":
-            return True
-        role = self.member_role(team)
-        if role is None or not self._offer_for(role, actor_uuid):
-            return False
-        offer = self._offer_for(role, actor_uuid)
-        if not offer.data.get("system_genesis"):
-            return False
-        decision = self._role_decision_for(role, actor_uuid)
-        return bool(
-            decision
-            and decision.data.get("decision") == "accepted"
-            and not self._is_expired(decision.data.get("expires_at"))
-        )
+        """Membership is one question with one answer, asked here.
+
+        It used to be two: a standing read from the application records,
+        plus a second look at the system Member role for whoever founded
+        the team. Both now go through member_standing, which is the only
+        place that knows how membership was written.
+        """
+        return self.member_standing(team, actor_uuid) == "accepted"
 
     def _signed_actor_status(
         self, node: ProtocolNode, actor_uuid: str,
@@ -2234,6 +2699,7 @@ class TeamLogic:
         node_type = data["type"]
         actor_field = {
             "team_trustee_state": "acted_by",
+            "team_membership": "acted_by",
             "team_member_opening": "opened_by",
             "team_member_application": "actor_uuid",
             "team_member_resolution": "resolved_by",
@@ -2323,10 +2789,74 @@ class TeamLogic:
                     )
                     if status != "authorized":
                         return {"status": status, "reason": reason}
+        elif node_type == "team_membership":
+            subject_uuid = str(data.get("actor_uuid") or "")
+            cause = data["cause"]
+            if cause == "genesis":
+                # The first membership of a team is its founder's own, and
+                # there can only ever be one: everybody after them is
+                # admitted by somebody who is already here.
+                if self.governance_records(team, "team_membership"):
+                    return {"status": "unauthorized", "reason": "the team already has a founding membership"}
+                if subject_uuid != actor_uuid:
+                    return {"status": "unauthorized", "reason": "a founding membership is the founder's own"}
+            elif cause == "admission":
+                resolution = self._governance_node(
+                    team, str(data.get("resolution_uuid") or ""),
+                    "team_member_resolution",
+                ) or self._governance_node(
+                    team, str(data.get("resolution_uuid") or ""),
+                    "team_external_member_resolution",
+                )
+                if resolution is None:
+                    return {"status": "deferred", "reason": "the admitting resolution is not available"}
+                if (
+                    resolution.data.get("actor_uuid") != subject_uuid
+                    or resolution.data.get("outcome") != "accepted"
+                ):
+                    return {"status": "invalid", "reason": "the admission does not implement its resolution"}
+                status, reason = self._trust_authority(
+                    team, "identity", actor_uuid, data["authority_basis_uuid"],
+                )
+                if status != "authorized":
+                    return {"status": status, "reason": reason}
+            else:
+                named = str(data["previous_membership_uuid"] or "")
+                if named:
+                    previous = self._governance_node(
+                        team, named, "team_membership",
+                    )
+                    if previous is None:
+                        return {"status": "deferred", "reason": "the membership being ended is not available"}
+                    if previous.data.get("actor_uuid") != subject_uuid:
+                        return {"status": "invalid", "reason": "the ending names somebody else's membership"}
+                    if previous.uuid != self.membership_projection(
+                        team, subject_uuid,
+                    ).get("current_uuid"):
+                        return {"status": "unauthorized", "reason": "the membership being ended is not the current one"}
+                # A membership from before this record existed has nothing
+                # to name, so the standing itself is what is checked. Only
+                # that case: naming nothing while a record does exist would
+                # be a way to end a membership without pointing at it.
+                elif (
+                    self.membership_records(team, subject_uuid)
+                    or self._legacy_member_standing(team, subject_uuid)
+                    != "accepted"
+                ):
+                    return {"status": "unauthorized", "reason": "there is no current membership to end"}
+                if cause == "departure":
+                    # Leaving is the member's own act and nobody else's,
+                    # which is the counterpart of Identity's power to remove.
+                    if subject_uuid != actor_uuid:
+                        return {"status": "unauthorized", "reason": "only the member themselves may leave"}
+                else:
+                    status, reason = self._trust_authority(
+                        team, "identity", actor_uuid,
+                        data["authority_basis_uuid"],
+                    )
+                    if status != "authorized":
+                        return {"status": status, "reason": reason}
         elif node_type == "team_member_opening":
-            member = self.member_role(team)
-            if member is None or data["member_role_uuid"] != member.uuid:
-                return {"status": "invalid", "reason": "opening does not name the system Member role"}
             if data["state"] == "closed":
                 previous = self._governance_node(
                     team, data["previous_opening_uuid"],
@@ -2334,10 +2864,7 @@ class TeamLogic:
                 )
                 if previous is None:
                     return {"status": "deferred", "reason": "previous Member opening is not available"}
-                if (
-                    previous.data.get("state") != "open"
-                    or previous.data.get("member_role_uuid") != member.uuid
-                ):
+                if previous.data.get("state") != "open":
                     return {"status": "invalid", "reason": "opening closure does not match an open Member opening"}
             status, reason = self._trust_authority(
                 team, "identity", actor_uuid, data["authority_basis_uuid"],
@@ -2543,15 +3070,11 @@ class TeamLogic:
         team = self._node(team_uuid, "team")
         if not team:
             return SessionResult("error", reason="team not found")
-        member = self.member_role(team)
-        if member is None:
-            return SessionResult("error", reason="Member role not found")
         authority_basis_uuid = self._authority_basis_for_actor(
             team, "identity", self._identity_uuid,
         )
         return self.append_governance_record(team.uuid, {
             "type": "team_member_opening",
-            "member_role_uuid": member.uuid,
             "previous_opening_uuid": "",
             "state": "open",
             "opened_by": self._identity_uuid,
@@ -2577,7 +3100,6 @@ class TeamLogic:
         now = self._now()
         return self.append_governance_record(team.uuid, {
             "type": "team_member_opening",
-            "member_role_uuid": opening.data["member_role_uuid"],
             "previous_opening_uuid": projection["current_uuid"],
             "state": "closed",
             "opened_by": self._identity_uuid,
@@ -2672,7 +3194,7 @@ class TeamLogic:
         authority_basis_uuid = self._authority_basis_for_actor(
             team, "identity", self._identity_uuid,
         )
-        return self.append_governance_record(team.uuid, {
+        resolved = self.append_governance_record(team.uuid, {
             "type": "team_member_resolution",
             "opening_uuid": application.data["opening_uuid"],
             "application_uuid": application.uuid,
@@ -2680,6 +3202,44 @@ class TeamLogic:
             "outcome": normalized,
             "resolved_by": self._identity_uuid,
             "resolved_at": self._now(),
+            "authority_basis_uuid": authority_basis_uuid,
+            "signals": str(signals or "").strip(),
+            "consideration": str(consideration or "").strip(),
+            "expectation": str(expectation or "").strip(),
+        })
+        if resolved.status != "ok" or normalized != "accepted":
+            return resolved
+        admitted = self._admit(
+            team, str(application.data["actor_uuid"]), resolved.value.uuid,
+            authority_basis_uuid, signals, consideration, expectation,
+        )
+        if admitted.status == "ok":
+            admitted.effects = [*resolved.effects, *admitted.effects]
+        return admitted
+
+    def _admit(
+        self, team: ProtocolNode, actor_uuid: str, resolution_uuid: str,
+        authority_basis_uuid: str, signals: str, consideration: str,
+        expectation: str,
+    ) -> SessionResult:
+        """Turn an accepted resolution into a standing membership.
+
+        Two records, deliberately: the resolution is the decision about an
+        application and stays true whatever happens later, and the
+        membership is where the person stands now. It is the same split as
+        an election and the trusteeship it fills, and it is what makes
+        ending a membership possible without rewriting the decision that
+        began it.
+        """
+        return self.append_governance_record(team.uuid, {
+            "type": "team_membership",
+            "actor_uuid": actor_uuid,
+            "state": "member",
+            "previous_membership_uuid": "",
+            "cause": "admission",
+            "resolution_uuid": resolution_uuid,
+            "acted_by": self._identity_uuid,
+            "acted_at": self._now(),
             "authority_basis_uuid": authority_basis_uuid,
             "signals": str(signals or "").strip(),
             "consideration": str(consideration or "").strip(),
@@ -2816,6 +3376,254 @@ class TeamLogic:
                 )),
             })
         return payload
+
+    def decision_trail_payload(self, team: ProtocolNode) -> list[dict]:
+        """Everything that has been decided here, newest first.
+
+        One row per record: when it happened, who did it, what they were
+        doing and how it came out. The panel used to show only trustee
+        actions, which left the acts that actually move a team - stepping
+        out of a trusteeship, admitting a member, taking a role - asking
+        for their signals and then recording them nowhere anybody reads.
+
+        A Reality is not a row: it is an observation of an action, so it
+        stays on the action it observes.
+        """
+        people = self._known_people()
+        trail: list[dict] = []
+
+        def named(actor_uuid: str | None) -> tuple[str, bool]:
+            normalized = str(actor_uuid or "").strip()
+            if not normalized:
+                return ("Nobody", False)
+            # A result reads as a sentence about somebody, so it says "You"
+            # rather than falling back to your own address - which is what a
+            # profile with no display name would otherwise be called here.
+            if normalized == self._identity_uuid:
+                return ("You", True)
+            person = people.get(normalized)
+            if person:
+                name = person.get("name") or person.get("address")
+            else:
+                seated = self._node(normalized, "team")
+                name = seated.data.get("title") if seated else ""
+            return (name or "Somebody you have not met", False)
+
+        def entry(record: ProtocolNode, at, actor_uuid, intent, result,
+                  asked: bool = False, **extra) -> dict:
+            actor_name, is_self = named(actor_uuid)
+            signals = str(record.data.get("signals") or "")
+            return {
+                "uuid": record.uuid,
+                "kind": record.data.get("type"),
+                # Records written before this application knew to stamp
+                # them still have the node's own creation time.
+                "at": str(at or record.created_at or ""),
+                "actor_uuid": str(actor_uuid or ""),
+                "actor_name": actor_name,
+                "actor_is_self": is_self,
+                "intent": intent,
+                "result": result,
+                "signals": signals,
+                # Only a record that asked for signals can be missing them.
+                # Genesis and a role decision were never asked, so marking
+                # them would make every trail open with a warning.
+                "signals_missing": bool(asked and not signals.strip()),
+                "consideration": str(record.data.get("consideration") or ""),
+                "expectation": str(record.data.get("expectation") or ""),
+                "contested": False,
+                "realities": [],
+                "can_observe": False,
+                "process_uuid": "",
+                **extra,
+            }
+
+        def trust_label(record: ProtocolNode) -> str:
+            return str(record.data.get("trust") or "").title() or "Trusteeship"
+
+        for state in self.governance_records(team, "team_trustee_state"):
+            label = trust_label(state)
+            cause = str(state.data.get("cause") or "")
+            holder, holder_is_self = named(state.data.get("holder_actor_uuid"))
+            holds = f"{holder} {'hold' if holder_is_self else 'holds'} {label}"
+            intent, result = {
+                "genesis": (f"{label} genesis", holds),
+                "election": (f"{label} election implemented", holds),
+                "resignation": (f"Step out of {label}", f"{label} is vacant"),
+                "resolution": (f"{label} resolution", holds),
+            }.get(cause, (f"{label} change", holds))
+            trail.append(entry(
+                state, state.data.get("acted_at"), state.data.get("acted_by"),
+                intent, result,
+                asked=cause != "genesis",
+                process_uuid=str(state.data.get("process_uuid") or ""),
+            ))
+
+        for election in self.trustee_election_records(team):
+            label = trust_label(election)
+            result = self._validated_election_result(
+                team, election,
+            ).get("result") or {}
+            outcome = result.get("terminal_outcome")
+            if outcome == "elected":
+                chosen, chosen_is_self = named(
+                    result.get("selected_candidate_uuid"),
+                )
+                standing = (
+                    f"{chosen} {'were' if chosen_is_self else 'was'} selected"
+                )
+            elif outcome == "void":
+                standing = "Ended without a selection"
+            elif result:
+                standing = str(
+                    result.get("current_stage")
+                    or result.get("lifecycle")
+                    or "Under way",
+                )
+            else:
+                standing = "Not visible from here"
+            trail.append(entry(
+                election, election.data.get("triggered_at"),
+                election.data.get("triggered_by"),
+                f"{label} election", standing,
+                process_uuid=str(election.data.get("process_uuid") or ""),
+            ))
+
+        for candidacy in self.governance_records(
+            team, "team_trustee_candidacy",
+        ):
+            label = trust_label(candidacy)
+            withdrawn = candidacy.data.get("state") == "withdrawn"
+            trail.append(entry(
+                candidacy,
+                candidacy.data.get("withdrawn_at") if withdrawn
+                else candidacy.data.get("submitted_at"),
+                candidacy.data.get("actor_uuid"),
+                f"Act for {label}",
+                "Stood down" if withdrawn else "Standing in",
+            ))
+
+        for membership in self.governance_records(team, "team_membership"):
+            subject, subject_is_self = named(membership.data.get("actor_uuid"))
+            cause = str(membership.data.get("cause") or "")
+            is_are = "are" if subject_is_self else "is"
+            trail.append(entry(
+                membership, membership.data.get("acted_at"),
+                membership.data.get("acted_by"),
+                {
+                    "genesis": "Found the team",
+                    "admission": "Admit a Member",
+                    "departure": "Leave the team",
+                    "removal": "End a membership",
+                }.get(cause, "Membership"),
+                f"{subject} {is_are} "
+                + ("no longer a Member"
+                   if membership.data.get("state") == "former"
+                   else "a Member"),
+                asked=cause == "removal",
+            ))
+
+        for opening in self.governance_records(team, "team_member_opening"):
+            closed = opening.data.get("state") == "closed"
+            trail.append(entry(
+                opening,
+                opening.data.get("closed_at") if closed
+                else opening.data.get("opened_at"),
+                opening.data.get("opened_by"),
+                "Member applications",
+                "Closed" if closed else "Opened",
+            ))
+
+        for application in self.governance_records(
+            team, "team_member_application",
+        ):
+            withdrawn = application.data.get("state") == "withdrawn"
+            trail.append(entry(
+                application,
+                application.data.get("withdrawn_at") if withdrawn
+                else application.data.get("submitted_at"),
+                application.data.get("actor_uuid"),
+                "Apply for Member",
+                "Withdrawn" if withdrawn else "Submitted",
+            ))
+
+        for resolution in self.governance_records(
+            team, "team_member_resolution",
+        ):
+            applicant, _ = named(resolution.data.get("actor_uuid"))
+            trail.append(entry(
+                resolution, resolution.data.get("resolved_at"),
+                resolution.data.get("resolved_by"),
+                "Decide a Member application",
+                f"{applicant} {resolution.data.get('outcome') or 'decided'}",
+                asked=True,
+            ))
+
+        for resolution in self.governance_records(
+            team, "team_external_member_resolution",
+        ):
+            applicant, _ = named(resolution.data.get("actor_uuid"))
+            trail.append(entry(
+                resolution, resolution.data.get("resolved_at"),
+                resolution.data.get("resolved_by"),
+                "Admit a Member from the Pool",
+                f"{applicant} accepted",
+                asked=True,
+            ))
+
+        for action in self.trustee_actions_payload(team):
+            actor_name, actor_is_self = named(action.get("acted_by"))
+            trail.append({
+                **action,
+                "kind": "team_trustee_action",
+                "at": str(action.get("acted_at") or ""),
+                "actor_uuid": action.get("acted_by") or "",
+                "actor_name": actor_name,
+                "actor_is_self": actor_is_self,
+                "intent": (
+                    f"{str(action.get('trust') or '').title()} action"
+                    f" · {action.get('subject_uuid') or ''}"
+                ).strip(" ·"),
+                "result": (
+                    (action.get("payload") or {}).get("decision")
+                    or "Recorded"
+                ),
+                "process_uuid": "",
+            })
+
+        for role in self.roles(team):
+            name = str(role.data.get("name") or "Role")
+            for offer in self._all_role_offers(role):
+                revoked = str(offer.data.get("revoked_at") or "")
+                holder, _ = named(offer.data.get("actor_uuid"))
+                trail.append(entry(
+                    offer,
+                    revoked or offer.data.get("offered_at"),
+                    offer.data.get("revoked_by") if revoked
+                    else offer.data.get("offered_by"),
+                    f"Offer {name}",
+                    f"Withdrawn from {holder}" if revoked
+                    else f"Offered to {holder}",
+                ))
+            for child in role.live_children():
+                if child.data.get("type") != "team_role_decision":
+                    continue
+                # A team cannot answer for itself, so the actor is who
+                # answered and the answer is about the team.
+                answered_for = str(child.data.get("actor_uuid") or "")
+                subject, _ = named(answered_for)
+                decision = str(child.data.get("decision") or "answered")
+                asked = self._offer_for(role, answered_for) is not None
+                trail.append(entry(
+                    child, child.data.get("decided_at"),
+                    child.data.get("decided_by") or answered_for,
+                    f"{'Answer' if asked else 'Ask for'} {name}",
+                    f"{subject} {decision}" if asked
+                    else f"{subject} asked to take it",
+                ))
+
+        trail.sort(key=lambda item: (item["at"], item["uuid"]), reverse=True)
+        return trail
 
     def _pool_node(self, pool_uuid: str | None) -> ProtocolNode | None:
         if not pool_uuid:
@@ -3216,6 +4024,16 @@ class TeamLogic:
             })
             if team_record.status != "ok":
                 return team_record
+            admitted = self._admit(
+                team, str(application.data["actor_uuid"]),
+                team_record.value.uuid, basis_uuid,
+                signals, consideration, expectation,
+            )
+            if admitted.status != "ok":
+                return admitted
+            team_record.effects = [
+                *team_record.effects, *admitted.effects,
+            ]
         data = {
             "type": "team_pool_resolution",
             "invitation_uuid": invitation.uuid,
@@ -3574,6 +4392,17 @@ class TeamLogic:
         ]
 
     def offer_role(self, role_uuid: str, actor_uuid: str) -> SessionResult:
+        """Invite an Actor into a role.
+
+        An invitation, not an assignment: what makes a holding is the
+        actor's own answer, and a member needs no invitation to take a role
+        (see decide_role). So any member may extend one - suggesting work
+        to somebody is not an exercise of authority.
+
+        Seating a *Team* is the exception, and not really an exception: a
+        team in a role brings everybody on it into this one, so it is an
+        admission, and admissions are Identity's.
+        """
         role = self._node(role_uuid, "team_role")
         if not role:
             return SessionResult("error", reason="role not found")
@@ -3581,18 +4410,24 @@ class TeamLogic:
         allowed = self._interaction_guard(team)
         if allowed.status != "ok":
             return allowed
-        if role.data.get("system_key") == self.MEMBER_ROLE_SYSTEM_KEY:
-            return SessionResult(
-                "error",
-                reason="Members join through an opening and application",
-            )
-        if not self.holds_identity(team):
-            return SessionResult(
-                "error", reason="only the Identity holder can offer a role",
-            )
         normalized = str(actor_uuid or "").strip()
         if not normalized:
             return SessionResult("error", reason="an actor is required")
+        seating_team = self._node(normalized, "team") is not None
+        if seating_team and not self.holds_identity(team):
+            return SessionResult(
+                "error",
+                reason=(
+                    "seating a team admits everybody on it, so only the "
+                    "Identity holder can offer it a role"
+                ),
+            )
+        if not seating_team and not self._is_current_member(
+            team, self._identity_uuid,
+        ):
+            return SessionResult(
+                "error", reason="only a current Member can invite somebody",
+            )
         if self._offer_for(role, normalized):
             return SessionResult(
                 "error", reason="that actor has already been offered this role",
@@ -3601,10 +4436,7 @@ class TeamLogic:
             "type": "team_role_offer",
             "actor_uuid": normalized,
             # A team can be offered a seat as readily as a person.
-            "actor_kind": (
-                "team"
-                if self._node(normalized, "team") else "individual"
-            ),
+            "actor_kind": "team" if seating_team else "individual",
             "offered_by": self._identity_uuid,
             "offered_at": self._now(),
             "revoked_at": None,
@@ -3620,14 +4452,13 @@ class TeamLogic:
     def revoke_role_offer(
         self, role_uuid: str, actor_uuid: str,
     ) -> SessionResult:
-        """Withdraw an offer. The actor's own decision is theirs and stays.
+        """Withdraw an invitation. Only from whoever extended it.
 
-        The offer is marked rather than deleted. Deleting it would leave the
-        actor's surviving answer indistinguishable from somebody asking for
-        the role unprompted, so the Identity holder would immediately be
-        asked to re-offer what they had just withdrawn. Marking is still a
-        withdrawal of what Identity itself wrote, so the authorship rule
-        holds; it just keeps the fact that there was an offer.
+        The offer is marked rather than deleted, so the fact that there was
+        an invitation survives. It no longer takes the role away: a member's
+        own answer is what holds a role, so withdrawing the invitation
+        withdraws the invitation and nothing else. Taking somebody out of a
+        team is end_membership, and taking them out of a role is theirs.
         """
         role = self._node(role_uuid, "team_role")
         if not role:
@@ -3636,17 +4467,19 @@ class TeamLogic:
         allowed = self._interaction_guard(team)
         if allowed.status != "ok":
             return allowed
-        if role.data.get("system_key") == self.MEMBER_ROLE_SYSTEM_KEY:
-            return SessionResult(
-                "error", reason="Member standing is governed by resolutions",
-            )
-        if not self.holds_identity(team):
-            return SessionResult(
-                "error", reason="only the Identity holder can revoke a role",
-            )
         offer = self._offer_for(role, str(actor_uuid or "").strip())
         if not offer:
             return SessionResult("error", reason="offer not found")
+        if offer.data.get("actor_kind") == "team":
+            if not self.holds_identity(team):
+                return SessionResult(
+                    "error",
+                    reason="only the Identity holder can unseat a team",
+                )
+        elif offer.data.get("offered_by") != self._identity_uuid:
+            return SessionResult(
+                "error", reason="only whoever invited them can withdraw it",
+            )
         data = dict(offer.data)
         data["revoked_at"] = self._now()
         data["revoked_by"] = self._identity_uuid
@@ -3655,16 +4488,16 @@ class TeamLogic:
     def decide_role(
         self, role_uuid: str, decision: str, expires_at: str | None = None,
     ) -> SessionResult:
-        """Record this participant's own answer about a role.
+        """Take a role, or turn one down. A member's own act.
 
-        An answer with no matching offer is a *request*: somebody saying they
-        will take this role, waiting on the Identity holder to confirm it.
-        Nothing else is needed to express that, because a holding is live
-        only while both records exist - so an offer alone is an unfilled
-        seat, and a decision alone is a request. It is also how a newcomer
-        gets their first role at all: they hold nothing, so they cannot be
-        offered anything by anyone but Identity, and asking is the move
-        available to them.
+        Identity decides membership, not what a member does once they are
+        here - so an answer with no invitation behind it is not a request
+        waiting to be confirmed, it is somebody taking on work. That is the
+        whole of it: no offer is needed, and nobody countersigns.
+
+        Being a member is what it turns on. Somebody who is not on this team
+        cannot take a role on it, which is the same statement as "membership
+        is how you are on a team" read from the other end.
         """
         role = self._node(role_uuid, "team_role")
         if not role:
@@ -3674,17 +4507,16 @@ class TeamLogic:
         if allowed.status != "ok":
             return allowed
         mine = self._identity_uuid
-        if role.data.get("system_key") == self.MEMBER_ROLE_SYSTEM_KEY:
-            genesis = self._offer_for(role, mine)
-            if not genesis or not genesis.data.get("system_genesis"):
-                return SessionResult(
-                    "error",
-                    reason="apply through an open Member opening",
-                )
+        if not self._is_current_member(team, mine):
+            return SessionResult(
+                "error",
+                reason="only a current Member can take a role on this team",
+            )
         if not self._offer_for(role, mine):
-            # There may be an offer that has only reached this session as a
-            # proposal. If there is, answering it should take it up; if there
-            # is not, this answer stands on its own as a request.
+            # An invitation may have reached this session only as a
+            # proposal. Taking it up adopts it, so the invitation and the
+            # answer end up on the same replica; without one, the answer
+            # stands perfectly well on its own.
             self._adopt_offer_proposal(team, role, mine)
             role = self._node(role_uuid, "team_role") or role
         normalized_decision = str(decision or "").strip().lower()
@@ -4179,6 +5011,25 @@ class TeamLogic:
             lambda: self._build_role_holders(team, role),
         )
 
+    def _answer_status(self, record: dict | None, current: str) -> str:
+        """What an actor's own answer says about the holding.
+
+        Read the same way whether or not anybody invited them, because a
+        member's answer is what holds a role either way. It used to be read
+        only for invited actors; an uninvited one was "requested" no matter
+        what they had said, which is how an expired or superseded answer
+        went on looking like somebody waiting to be let in.
+        """
+        if not record:
+            return "pending"
+        if record.get("decision") == "refused":
+            return "refused"
+        if self._is_expired(record.get("expires_at")):
+            return "expired"
+        if record.get("reference_hash") != current:
+            return "outdated"
+        return "accepted"
+
     def _build_role_holders(
         self, team: ProtocolNode, role: ProtocolNode,
     ) -> list[dict]:
@@ -4223,20 +5074,21 @@ class TeamLogic:
                 bool(offer and offer.data.get("revoked_at"))
                 or actor_uuid in withdrawn
             )
-            if revoked:
-                # Withdrawal is the trustee's own act on their own record,
-                # and it is final: the holding is gone whether or not the
-                # actor had answered. Showing the survivors said otherwise -
-                # a withdrawn offer that had been accepted stayed on the
-                # roster, greyed but still there, and on the actor's own
-                # side it stayed *clickable*, so the one person the offer
-                # had been taken away from could put themselves back.
+            if revoked and not record:
+                # An invitation taken back before it was answered leaves
+                # nothing: no invitation and no holding.
                 #
-                # The actor's answer is not deleted - it is theirs (2.3) -
-                # it simply stops being half of a live holding. Offering
-                # again revives the same offer record, and their surviving
-                # answer makes it live at once.
+                # It used to leave nothing even when it *had* been answered,
+                # because a holding needed both records. It does not any
+                # more - a member's own answer is what holds a role - so
+                # withdrawing the invitation now withdraws the invitation
+                # and nothing else. Taking somebody out of a team is
+                # end_membership; taking them out of a role is theirs.
                 continue
+            if revoked and record:
+                # Their answer stands on its own from here on, exactly as it
+                # would have if nobody had ever invited them.
+                offer = None
             # A Team actor is never among the people on this topic, so
             # the member test below would call every one of them a stranger.
             # Its standing is read from the answer given on its behalf.
@@ -4249,8 +5101,10 @@ class TeamLogic:
                 # is the same fact and calls for the same act.
                 status = "pending"
             elif not offer:
-                # An answer nobody offered: somebody asking to take this.
-                status = "requested"
+                # An answer nobody invited. Not a request any more: a member
+                # takes a role by answering, so this is a holding like any
+                # other and is judged on the answer alone.
+                status = self._answer_status(record, current)
             elif not member and not is_team:
                 status = "uninvited" if known else "unobserved"
             elif not record:
@@ -4262,14 +5116,8 @@ class TeamLogic:
                         actor_uuid,
                     ) else "pending"
                 )
-            elif record.get("decision") == "refused":
-                status = "refused"
-            elif self._is_expired(record.get("expires_at")):
-                status = "expired"
-            elif record.get("reference_hash") != current:
-                status = "outdated"
             else:
-                status = "accepted"
+                status = self._answer_status(record, current)
             # A Team actor is not among the people on this topic, so it
             # is named by the team it is, when that is joined here.
             seated = (
@@ -4279,16 +5127,6 @@ class TeamLogic:
             )
             holders.append({
                 "actor_uuid": actor_uuid,
-                # A request that has since been confirmed: the offer exists,
-                # but only as a proposal on the peer that wrote it. Nothing
-                # merges here without somebody's act, so the person who asked
-                # still has to take it up - they are told, rather than left
-                # watching a request that looks unanswered forever.
-                "confirmed_elsewhere": (
-                    status == "requested"
-                    and actor_uuid == self._identity_uuid
-                    and self._offer_proposed_to(team, role, actor_uuid)
-                ),
                 # The offer for this one exists only on the author's replica.
                 # Nothing else about it differs, so it is a note on the
                 # record rather than a status of its own.
@@ -4335,17 +5173,22 @@ class TeamLogic:
     def _withdrawn_by_trustee(
         self, team: ProtocolNode, role: ProtocolNode,
     ) -> set[str]:
-        """Offers the trustee's own replica shows withdrawn.
+        """Invitations the Identity holder's own replica shows withdrawn.
 
-        An offer is the trustee's record, so their replica is what it says -
-        the same credibility rule 2.6 applies to an answer, pointed at the
-        other author. Without it a withdrawal has to be adopted by everybody
-        it is news to, and until they do the person goes on being shown as
-        holding a role that was taken back: on their own client the badge
-        stayed active, which is the one place it must not.
+        An invitation is its author's record, so their replica is what it
+        says - the same credibility rule 2.6 applies to an answer, pointed
+        at the other author. Without it a withdrawal has to be adopted by
+        everybody it is news to.
+
+        It reads the Identity holder's replica only, which is exact for the
+        invitations that matter most - seats offered to a Team, which are
+        theirs alone (2.1) - and approximate for the rest, now that any
+        member may invite. The approximation costs nothing it used to: a
+        withdrawal no longer ends a holding, so the worst it can do is
+        leave an unanswered invitation showing for one more sync.
 
         Only consulted when somebody else holds Identity. When it is this
-        session, the local record already *is* the trustee's.
+        session, the local record already *is* theirs.
         """
         holder = self.identity_holder(team)
         if not holder or holder == self._identity_uuid:
@@ -5221,6 +6064,9 @@ class TeamLogic:
             "identity_uuid": self._identity_uuid,
             "known_identities": self.session.known_identities(),
             "organization": self.organization_payload(),
+            # Local to this client and to nobody else, which is why they are
+            # listed beside the organization rather than inside a team.
+            "archives": self.archives(),
             "is_organization": (
                 self.is_organization(selected) if selected else False
             ),
@@ -5243,8 +6089,12 @@ class TeamLogic:
             "trustee_elections": (
                 self.trustee_elections_payload(selected) if selected else []
             ),
-            "trustee_actions": (
-                self.trustee_actions_payload(selected) if selected else []
+            # Trustee actions are rows in the trail like every other record,
+            # so they are not sent twice. The facade still answers for them
+            # on their own, because another application asking about them is
+            # asking a different question.
+            "decision_trail": (
+                self.decision_trail_payload(selected) if selected else []
             ),
             "pool": (
                 {
@@ -5557,40 +6407,43 @@ class TeamLogic:
                     "decided_at": holder["decided_at"],
                     "expires_at": holder["expires_at"],
                 })
-        member = self.member_role(team)
+        # Membership is a fact about the person, not a badge among their
+        # roles. It used to be pushed into the roles list as the system
+        # Member role, which made "on this team" and "doing this work"
+        # the same kind of thing and read as a role nobody could refuse.
         known = self._known_people()
-        if member is not None:
-            for application in self.member_application_roots(team):
-                actor_uuid = str(application.data.get("actor_uuid") or "")
-                resolution = self.member_resolution_projection(
-                    team, application.uuid,
-                )
-                if resolution["state"] not in {"accepted", "contested"}:
-                    continue
-                person = people.get(actor_uuid)
-                if person is None:
-                    identity = known.get(actor_uuid) or {}
-                    person = people[actor_uuid] = {
-                        "uuid": actor_uuid,
-                        "name": identity.get("name") or identity.get("address") or "Member",
-                        "picture": identity.get("picture") or "",
-                        "actor_kind": "individual",
-                        "address": identity.get("address") or "",
-                        "addresses": identity.get("addresses") or [],
-                        "is_self": actor_uuid == self._identity_uuid,
-                        "roles": [],
-                    }
-                if not any(role["uuid"] == member.uuid for role in person["roles"]):
-                    person["roles"].append({
-                        "uuid": member.uuid,
-                        "name": member.data.get("name") or "Member",
-                        "status": resolution["state"],
-                        "decided_at": None,
-                        "expires_at": None,
-                    })
+        for actor_uuid in self.current_member_uuids(team):
+            if actor_uuid in people:
+                continue
+            identity = known.get(actor_uuid) or {}
+            people[actor_uuid] = {
+                "uuid": actor_uuid,
+                "name": (
+                    identity.get("name") or identity.get("address")
+                    or "Member"
+                ),
+                "picture": identity.get("picture") or "",
+                "actor_kind": "individual",
+                "address": identity.get("address") or "",
+                "addresses": identity.get("addresses") or [],
+                "is_self": actor_uuid == self._identity_uuid,
+                "roles": [],
+            }
         for person in people.values():
-            person["is_observer"] = not any(
-                item["status"] == "accepted" for item in person["roles"]
+            standing = (
+                "accepted" if person["actor_kind"] == "team"
+                else self.member_standing(team, person["uuid"])
+            )
+            person["membership"] = standing
+            person["is_member"] = standing in {"accepted", "contested"}
+            # An observer is here without being on the team. A member who
+            # has taken no work is not an observer - they are a member with
+            # nothing to do yet.
+            person["is_observer"] = not (
+                person["is_member"]
+                or any(
+                    item["status"] == "accepted" for item in person["roles"]
+                )
             )
         return sorted(
             people.values(),
@@ -5604,36 +6457,35 @@ class TeamLogic:
     # to switch: a template becomes real by being joined and goes back to
     # being one by being left.
     def actor_uuids(self, team: ProtocolNode) -> set[str]:
-        """Every actor currently holding something here.
+        """Every actor on this team.
 
-        Identity counts, because holding Identity is holding a role. A
-        request does not: an answer with no offer behind it is somebody
-        asking to be in, which is not the same as being in.
+        Membership is the whole of it for an individual: being here is
+        being a member, and what roles they have taken since is their own
+        business. This used to add up role-holders instead, which made
+        somebody who had taken no work look like somebody who was not here.
 
-        Nor does somebody who has dropped out of a team above this one.
-        Their answer here stands and is untouched, but being on a team below
-        is being on the team above, so it is no longer a holding - and
-        counting it here would let the containment be satisfied one level
-        down by somebody the level above had already lost.
+        A seated Team is not a member - it is an actor holding a role - so
+        those are still counted from the roles. So are the trustees, since
+        a trusteeship can be held from a team above.
+
+        Somebody who has dropped out of a team above this one does not
+        count. Their answer here stands and is untouched, but being on a
+        team below is being on the team above, so counting it would let the
+        containment be satisfied one level down by somebody the level above
+        had already lost.
         """
-        actors = set()
+        actors = set(self.current_member_uuids(team))
         if holder := self.identity_holder(team):
             actors.add(holder)
         if holder := self.trust_holder(team):
             actors.add(holder)
-        actors.update(
-            str(application.data.get("actor_uuid") or "")
-            for application in self.member_application_roots(team)
-            if self.member_resolution_projection(
-                team, application.uuid,
-            )["state"] == "accepted"
-        )
         actors.discard("")
         for role in self.roles(team):
             actors.update(
                 holder["actor_uuid"]
                 for holder in self.role_holders(team, role)
-                if holder["status"] == "accepted"
+                if holder["actor_kind"] == "team"
+                and holder["status"] == "accepted"
                 and not holder["outside_parent"]
             )
         return actors
@@ -5840,37 +6692,23 @@ class TeamLogic:
         }[kind])
 
     def _has_current_acceptance(self, team: ProtocolNode) -> bool:
-        """Whether this participant currently holds a role in this team.
+        """Whether this participant is on this team.
 
-        Taking a role is the only way to be part of a team, so this is
-        what "accepted" now means. Deliberately local-only: it runs inside
-        the ancestor walk of every guard, and what matters there is this
-        session's own standing, which needs no peer lookup.
+        Membership, now that membership is a thing of its own. It used to
+        walk the roles looking for one this session had accepted, because
+        holding a role was the only way to be on a team; a member who had
+        taken no work therefore read as not being here at all.
+
+        Membership alone, and not "or holds a trusteeship": a trustee is
+        elected out of the members, so the shortcut only ever fired for
+        somebody whose membership had ended while they still held a seat.
+        That is a state worth seeing rather than papering over - the trail
+        records it, and the remedy is to fill the trusteeship.
+
+        Deliberately local-only: it runs inside the ancestor walk of every
+        guard, and what matters there is this session's own standing.
         """
-        # Identity is a role - singular, and shaped differently only for that
-        # reason - so holding it is being part of the team. Otherwise the
-        # person who speaks for a team could be told to take a role in
-        # it before they may act, which is nonsense.
-        if (
-            self.holds_identity(team)
-            or self.holds_trust(team)
-            or self._is_current_member(team, self._identity_uuid)
-        ):
-            return True
-        mine = self._identity_uuid
-        for role in self.roles(team):
-            if not self._offer_for(role, mine):
-                continue
-            own = self._own_role_decision(role)
-            if (
-                own
-                and own.data.get("decision") == "accepted"
-                and not self._is_expired(own.data.get("expires_at"))
-                and own.data.get("reference_hash")
-                == self.role_reference_hash(team, role)
-            ):
-                return True
-        return False
+        return self._is_current_member(team, self._identity_uuid)
 
     def _known_people(self) -> dict[str, dict]:
         """Everyone this session can put a name to, on this topic or not."""
@@ -6108,7 +6946,12 @@ class TeamLogic:
     def _offer_authority_guard(
         self, peer_addr: str, node_uuid: str,
     ) -> SessionResult:
-        """Only the Identity holder's role offers are adopted.
+        """Who may write the invitation this side is being asked to adopt.
+
+        An invitation to a person is any member's to extend, so the guard
+        only asks that the author is one. A seat offered to a *team* is an
+        admission - it brings everybody on that team into this one - so it
+        stays the Identity holder's alone.
 
         A coordination rule, not a security boundary. Nothing in the protocol
         signs content, so this holds exactly as far as trusting the peers you
@@ -6125,18 +6968,27 @@ class TeamLogic:
         team = self._team_for_reaction(peer_addr, node_uuid)
         if not team:
             return SessionResult("ok")
-        identity = self.identity_payload(team)
-        if identity.get("state") not in {"held", "contested"}:
+        author = str(node.data.get("offered_by") or "")
+        if node.data.get("actor_kind") == "team":
+            identity = self.identity_payload(team)
+            if identity.get("state") not in {"held", "contested"}:
+                return SessionResult(
+                    "error",
+                    reason=(
+                        "Identity is vacant, so seating a team has no"
+                        " authority"
+                    ),
+                )
+            if author != identity.get("holder_actor_uuid"):
+                return SessionResult(
+                    "error",
+                    reason="only the Identity holder can seat a team",
+                )
+            return SessionResult("ok")
+        if not self._is_current_member(team, author):
             return SessionResult(
                 "error",
-                reason=(
-                    "Identity is vacant, so role offers have no authority"
-                ),
-            )
-        if node.data.get("offered_by") != identity.get("holder_actor_uuid"):
-            return SessionResult(
-                "error",
-                reason="this role offer was not made by the Identity holder",
+                reason="this invitation was not written by a Member",
             )
         return SessionResult("ok")
 

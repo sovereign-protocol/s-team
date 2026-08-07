@@ -61,11 +61,28 @@ class TeamFacade:
     def roles(self, team: ProtocolNode) -> list[ProtocolNode]:
         return self._logic.roles(team)
 
-    def member_role(self, team: ProtocolNode) -> ProtocolNode | None:
-        return self._logic.member_role(team)
-
     def membership(self, team: ProtocolNode) -> dict:
         return self._logic.membership_payload(team)
+
+    def current_member_uuids(self, team: ProtocolNode) -> list[str]:
+        """Who is on this team. The question other applications ask.
+
+        `member_role` used to stand here, which handed out a node and left
+        every caller to work out what holding it meant. Membership is a
+        record now, so the answer is the answer.
+        """
+        return self._logic.current_member_uuids(team)
+
+    def end_membership(
+        self, team_uuid: str, actor_uuid: str, signals: str = "",
+        consideration: str = "", expectation: str = "",
+    ):
+        return self._logic.end_membership(
+            team_uuid, actor_uuid, signals, consideration, expectation,
+        )
+
+    def leave_team(self, team_uuid: str):
+        return self._logic.leave_team(team_uuid)
 
     def verify_flow_decision_result(
         self,

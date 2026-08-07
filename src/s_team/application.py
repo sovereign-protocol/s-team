@@ -28,7 +28,10 @@ APPLICATION_MANIFEST = ApplicationManifest(
 def create_application(services: ApplicationServices) -> ApplicationInstance:
     logic = TeamLogic(
         services.session,
-        dict(services.settings),
+        # Where this client keeps its files is Core's answer, not a setting
+        # to be repeated per application - but a deployment may still say
+        # where archives go, so an explicit setting wins.
+        {"data_directory": services.data_directory, **dict(services.settings)},
         services.collaboration,
         services.facades,
     )
