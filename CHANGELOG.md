@@ -2,12 +2,24 @@
 
 ## Unreleased
 
+- Reviewed the design corpus element by element against the source, and
+  retired what it replaced. Every node type S-Team declares is now registered
+  in `DESIGN_TYPES.md` field for field and checked by `test_type_registry.py`,
+  so a design document can no longer drift without failing the build; what
+  holds across types is in `DESIGN_RULES.md`, and the interface design moved
+  unchanged to `DESIGN_UI.md`. `DESIGN_ROLES_AND_ACTORS.md` is gone,
+  `ARCHITECTURE.md` is down to boundaries, and the governance plan keeps only
+  what is still ahead. The changes the review made to the code have their own
+  entries below.
 - Added Pool/DMZ onboarding as a separate shared topic and channel. Signed,
   expiring invitations reference an open Member round; unknown Actors apply
   in the Pool without receiving Team state. Identity can accept or reject the
   signed application. Rejection publishes no Team coordinates; acceptance
-  records Team membership and publishes an applicant-specific normal Core
-  connection token, which contains channel coordinates but no Team document.
+  records Team membership and publishes a normal Core connection token, which
+  contains channel coordinates but no Team document. The token is a general
+  Team invitation and it sits in the Pool, so everybody in the Pool can read
+  it — topic access, not membership, since only the named applicant is
+  admitted. Scoping it needs a per-actor invitation from Core.
   Expired invitations remain in Pool history and disappear from active
   discovery. The Pool has its own view and Share/settings context. This is
   clean schema version 10 with no migration path; Hard Fork remains deferred.

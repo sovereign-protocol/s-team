@@ -24,8 +24,8 @@ asserted here, and each application repository asserts its own.
 - Governance records are **flat children of the `team` topic** and may not
   contain children.
 
-Only reviewed and decided types appear here. What has not been reviewed yet is
-absent rather than marked, and `DESIGN_REVIEW_LEDGER.md` tracks the progress.
+Every node type S-Team declares is here. `DESIGN_RULES.md` holds what applies
+across them, and `DESIGN_UI.md` how they are presented.
 
 ---
 
