@@ -170,6 +170,26 @@ class RegistryTests(unittest.TestCase):
         for name in ("TRUSTS", "TRUSTEE_CAUSES", "ACTION_KINDS"):
             self.assertIn(name, documented_vocabularies())
 
+    def test_every_governance_record_type_has_an_assessor(self):
+        # The dispatch table and the type list are two statements of the same
+        # thing. A type in one and not the other is a KeyError raised while
+        # assessing somebody else's record, which is the worst place for one.
+        self.assertEqual(
+            set(TeamLogic.GOVERNANCE_ASSESSMENT),
+            set(TeamLogic.GOVERNANCE_RECORD_TYPES),
+        )
+
+    def test_each_assessor_exists_and_its_author_field_is_declared(self):
+        for node_type, (author_field, assessor) in sorted(
+            TeamLogic.GOVERNANCE_ASSESSMENT.items(),
+        ):
+            with self.subTest(node_type=node_type):
+                self.assertTrue(
+                    callable(getattr(TeamLogic, assessor, None)), assessor,
+                )
+                required, _ = TeamLogic.GOVERNANCE_FIELDS[node_type]
+                self.assertIn(author_field, required)
+
     def test_retired_names_appear_in_no_source_file(self):
         for path in sorted((ROOT / "src").rglob("*.py")):
             source = path.read_text(encoding="utf-8")
