@@ -11,9 +11,18 @@ from starlette.routing import Route
 def build_routes(logic, runtime) -> list[Route]:
     async def api_document(request: Request):
         requested = request.query_params.get("team_uuid")
-        requested_pool = request.query_params.get("pool_uuid")
+        # Taking part in an election is what being a member means here, so
+        # a member's client asks for the process rather than waiting to be
+        # told to. Before the read and not inside it: following a topic
+        # takes a lock that may not be held under Session's.
+        logic.adopt_live_elections()
+        # Identity-owned membership definitions also reconcile on the read
+        # cycle. A non-Identity local rewrite produces no new inbound packet
+        # from Identity, so relying only on peer-update callbacks would leave
+        # that unauthorized copy visible indefinitely.
+        logic.reconcile_governance_updates()
         return runtime.composite_response(
-            lambda: logic.document_snapshot(requested, requested_pool),
+            lambda: logic.document_snapshot(requested),
             lambda snapshot: runtime.collaboration.network_info(
                 snapshot.get("topic_uuid"),
             ),
@@ -86,6 +95,12 @@ def build_routes(logic, runtime) -> list[Route]:
         data = await request.json()
         return await _json_result(runtime, logic.rename_agreement(
             data["team_uuid"], data.get("title", ""),
+        ))
+
+    async def api_set_agreement_version(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.set_agreement_version(
+            data["team_uuid"], data.get("version", ""),
         ))
 
     async def api_rename_section(request: Request):
@@ -169,60 +184,61 @@ def build_routes(logic, runtime) -> list[Route]:
             data.get("reality", ""),
         ))
 
-    async def api_publish_pool_invitation(request: Request):
+    async def api_create_membership_type(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.publish_pool_invitation(
-            data["team_uuid"], data["opening_uuid"],
-            data.get("expires_at", ""),
+        return await _json_result(runtime, logic.create_membership_type(
+            data["team_uuid"], data.get("name", ""),
+            data.get("requirements", ""), data.get("acceptance", ""),
         ))
 
-    async def api_submit_pool_application(request: Request):
+    async def api_rename_membership_type(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.submit_pool_application(
-            data["pool_uuid"], data["invitation_uuid"],
+        return await _json_result(runtime, logic.rename_membership_type(
+            data["membership_type_uuid"], data.get("name", ""),
         ))
 
-    async def api_withdraw_pool_application(request: Request):
+    async def api_set_membership_requirements(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.withdraw_pool_application(
-            data["pool_uuid"], data["application_uuid"],
+        return await _json_result(runtime, logic.set_membership_requirements(
+            data["membership_type_uuid"], data.get("requirements", ""),
         ))
 
-    async def api_resolve_pool_application(request: Request):
+    async def api_set_membership_acceptance(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.resolve_pool_application(
-            data["pool_uuid"], data["application_uuid"],
-            data.get("outcome", ""), data.get("signals", ""),
-            data.get("consideration", ""), data.get("expectation", ""),
+        return await _json_result(runtime, logic.set_membership_acceptance(
+            data["membership_type_uuid"], data.get("acceptance", ""),
         ))
 
-    async def api_mount_accepted_team(request: Request):
+    async def api_delete_membership_type(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.mount_accepted_team(
-            data["pool_uuid"], data["application_uuid"],
+        return await _json_result(runtime, logic.delete_membership_type(
+            data["membership_type_uuid"],
         ))
 
     async def api_open_membership(request: Request):
         data = await request.json()
-        return await _json_result(
-            runtime, logic.open_member_opening(data["team_uuid"]),
-        )
+        return await _json_result(runtime, logic.open_membership_invitation(
+            data["team_uuid"], data["membership_type_uuid"],
+            data.get("expires_at", ""),
+        ))
 
     async def api_close_membership(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.close_member_opening(
-            data["team_uuid"], data["opening_uuid"],
+        return await _json_result(runtime, logic.close_membership_invitation(
+            data["team_uuid"], data["membership_type_uuid"],
         ))
 
-    async def api_apply_membership(request: Request):
+    async def api_apply_for_membership(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.submit_member_application(
-            data["team_uuid"], data["opening_uuid"],
+        return await _json_result(runtime, logic.apply_for_membership(
+            data["team_uuid"], data["invitation_uuid"],
+            data.get("agreement_accepted") is True,
+            data.get("acceptance_text", ""),
         ))
 
-    async def api_withdraw_membership(request: Request):
+    async def api_issue_membership_badge(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.withdraw_member_application(
+        return await _json_result(runtime, logic.issue_membership_badge(
             data["team_uuid"], data["application_uuid"],
         ))
 
@@ -240,14 +256,6 @@ def build_routes(logic, runtime) -> list[Route]:
             runtime, logic.leave_team(data["team_uuid"]),
         )
 
-    async def api_resolve_membership(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.resolve_member_application(
-            data["team_uuid"], data["application_uuid"],
-            data.get("outcome", ""), data.get("signals", ""),
-            data.get("consideration", ""), data.get("expectation", ""),
-        ))
-
     async def api_start_trustee_election(request: Request):
         data = await request.json()
         return await _json_result(runtime, logic.start_trustee_election(
@@ -255,16 +263,12 @@ def build_routes(logic, runtime) -> list[Route]:
             data.get("facilitator_actor_uuid", ""),
         ))
 
-    async def api_join_trustee_election(request: Request):
+    async def api_settle_trusteeship(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.join_trustee_election(
-            data["team_uuid"], data["election_uuid"],
-        ))
-
-    async def api_implement_trustee_election(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.implement_trustee_election(
-            data["team_uuid"], data["election_uuid"],
+        return await _json_result(runtime, logic.settle_trusteeship(
+            data["team_uuid"], data.get("trust", ""),
+            data.get("holder_actor_uuid", ""),
+            data.get("process_uuid", ""),
             data.get("signals", ""), data.get("consideration", ""),
             data.get("expectation", ""),
         ))
@@ -297,18 +301,6 @@ def build_routes(logic, runtime) -> list[Route]:
             data["role_uuid"], int(data.get("index", 0)),
         ))
 
-    async def api_offer_role(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.offer_role(
-            data["role_uuid"], data.get("actor_uuid", ""),
-        ))
-
-    async def api_revoke_role(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.revoke_role_offer(
-            data["role_uuid"], data.get("actor_uuid", ""),
-        ))
-
     async def api_decide_role(request: Request):
         data = await request.json()
         return await _json_result(runtime, logic.decide_role(
@@ -329,10 +321,31 @@ def build_routes(logic, runtime) -> list[Route]:
             data["role_uuid"], data.get("team_uuid", ""),
         ))
 
-    async def api_decline_seat(request: Request):
+    async def api_create_item(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.decline_seat(
-            data["role_uuid"], data.get("team_uuid", ""),
+        return await _json_result(runtime, logic.create_team_item(
+            data["team_uuid"],
+            data.get("application_id", ""),
+            data.get("title", ""),
+            data.get("template", ""),
+        ))
+
+    async def api_offer_item(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.offer_team_item(
+            data["team_uuid"], data.get("topic_uuid", ""),
+        ))
+
+    async def api_connect_item(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.connect_team_item(
+            data["team_uuid"], data.get("topic_uuid", ""),
+        ))
+
+    async def api_remove_item(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.remove_team_item(
+            data["team_uuid"], data.get("topic_uuid", ""),
         ))
 
     async def api_unseat_team(request: Request):
@@ -442,6 +455,11 @@ def build_routes(logic, runtime) -> list[Route]:
             api_rename_agreement,
             methods=["POST"],
         ),
+        Route(
+            "/api/team/agreement/version",
+            api_set_agreement_version,
+            methods=["POST"],
+        ),
         Route("/api/team/sections/create", api_create_section, methods=["POST"]),
         Route("/api/team/sections/rename", api_rename_section, methods=["POST"]),
         Route("/api/team/sections/delete", api_delete_section, methods=["POST"]),
@@ -489,28 +507,24 @@ def build_routes(logic, runtime) -> list[Route]:
             methods=["POST"],
         ),
         Route(
-            "/api/team/pool/invitations/publish",
-            api_publish_pool_invitation,
+            "/api/team/memberships/create", api_create_membership_type,
             methods=["POST"],
         ),
         Route(
-            "/api/team/pool/applications/submit",
-            api_submit_pool_application,
+            "/api/team/memberships/rename", api_rename_membership_type,
             methods=["POST"],
         ),
         Route(
-            "/api/team/pool/applications/withdraw",
-            api_withdraw_pool_application,
+            "/api/team/memberships/requirements",
+            api_set_membership_requirements,
             methods=["POST"],
         ),
         Route(
-            "/api/team/pool/applications/resolve",
-            api_resolve_pool_application,
+            "/api/team/memberships/acceptance", api_set_membership_acceptance,
             methods=["POST"],
         ),
         Route(
-            "/api/team/pool/team/mount",
-            api_mount_accepted_team,
+            "/api/team/memberships/delete", api_delete_membership_type,
             methods=["POST"],
         ),
         Route(
@@ -522,15 +536,11 @@ def build_routes(logic, runtime) -> list[Route]:
             methods=["POST"],
         ),
         Route(
-            "/api/team/membership/apply", api_apply_membership,
+            "/api/team/membership/apply", api_apply_for_membership,
             methods=["POST"],
         ),
         Route(
-            "/api/team/membership/withdraw", api_withdraw_membership,
-            methods=["POST"],
-        ),
-        Route(
-            "/api/team/membership/resolve", api_resolve_membership,
+            "/api/team/membership/issue", api_issue_membership_badge,
             methods=["POST"],
         ),
         Route(
@@ -546,11 +556,7 @@ def build_routes(logic, runtime) -> list[Route]:
             methods=["POST"],
         ),
         Route(
-            "/api/team/elections/join", api_join_trustee_election,
-            methods=["POST"],
-        ),
-        Route(
-            "/api/team/elections/implement", api_implement_trustee_election,
+            "/api/team/trusteeships/settle", api_settle_trusteeship,
             methods=["POST"],
         ),
         Route("/api/team/roles/create", api_create_role, methods=["POST"]),
@@ -562,13 +568,7 @@ def build_routes(logic, runtime) -> list[Route]:
         ),
         Route("/api/team/roles/delete", api_delete_role, methods=["POST"]),
         Route("/api/team/roles/move", api_move_role, methods=["POST"]),
-        Route("/api/team/roles/offer", api_offer_role, methods=["POST"]),
         Route("/api/team/roles/seat", api_seat_team, methods=["POST"]),
-        Route(
-            "/api/team/roles/decline_seat",
-            api_decline_seat,
-            methods=["POST"],
-        ),
         Route(
             "/api/team/roles/unseat",
             api_unseat_team,
@@ -579,8 +579,11 @@ def build_routes(logic, runtime) -> list[Route]:
             api_create_seated_team,
             methods=["POST"],
         ),
+        Route("/api/team/items/create", api_create_item, methods=["POST"]),
+        Route("/api/team/items/offer", api_offer_item, methods=["POST"]),
+        Route("/api/team/items/connect", api_connect_item, methods=["POST"]),
+        Route("/api/team/items/remove", api_remove_item, methods=["POST"]),
         Route("/api/team/parents/move", api_move_parent, methods=["POST"]),
-        Route("/api/team/roles/revoke", api_revoke_role, methods=["POST"]),
         Route("/api/team/roles/decide", api_decide_role, methods=["POST"]),
         Route("/api/team/roles/resign", api_resign_role, methods=["POST"]),
         Route(

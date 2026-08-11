@@ -34,6 +34,18 @@ RETIRED = frozenset({
     "agreement_role_decision", "agreement_role_holding", "agreement_section",
     "agreement_clause", "agreement_accountability", "agreement_domain",
     "agreement_link", "agreement_decision",
+    # The invitation. A role is taken, never handed out, so the record that
+    # said somebody had been asked is gone and nothing writes one.
+    "team_role_offer",
+    # The waiting room, and the round of applications it fed. The pool is
+    # derived now - whoever publishes on the channel without being on the
+    # team - so there is no topic to be let into, nothing to apply for and
+    # nobody to resolve an application. Identity opens a membership type and
+    # the Actor answers for themselves.
+    "team_pool", "team_pool_invitation", "team_pool_application",
+    "team_pool_resolution", "team_external_member_resolution",
+    "team_member_opening", "team_member_application",
+    "team_member_resolution",
 })
 
 # Every governance record carries it; the registry says so once instead of
@@ -98,7 +110,6 @@ class RegistryTests(unittest.TestCase):
         self.documented = documented_contracts()
         self.declared = {
             **TeamLogic.GOVERNANCE_FIELDS,
-            **TeamLogic.POOL_FIELDS,
             **TeamLogic.ROLE_RECORD_FIELDS,
             **TeamLogic.CONTENT_FIELDS,
         }
@@ -112,11 +123,8 @@ class RegistryTests(unittest.TestCase):
             if name.startswith("team_trustee_")
             or name in TeamLogic.ROLE_RECORD_TYPES
             or name in TeamLogic.CONTENT_TYPES
-            or name in TeamLogic.POOL_FIELDS
             or name in {
-                "team_membership", "team_member_opening",
-                "team_member_application", "team_member_resolution",
-                "team_external_member_resolution",
+                "team_membership", "team_membership_invitation",
             }
         }
         self.assertTrue(reviewed, "no reviewed types declared in source")
@@ -163,7 +171,7 @@ class RegistryTests(unittest.TestCase):
 
     def test_the_participation_vocabularies_are_all_registered(self):
         documented = documented_vocabularies()
-        for name in ("OFFER_STATES", "ROLE_DECISIONS", "HOLDING_STATES"):
+        for name in ("ROLE_DECISIONS", "HOLDING_STATES"):
             self.assertIn(name, documented)
 
     def test_the_trusteeship_vocabularies_are_all_registered(self):
@@ -194,20 +202,16 @@ class RegistryTests(unittest.TestCase):
                         callable(getattr(TeamLogic, checker, None)), checker,
                     )
 
-    def test_every_pool_record_type_has_a_row(self):
-        self.assertEqual(
-            set(TeamLogic.POOL_ASSESSMENT),
-            set(TeamLogic.POOL_RECORD_TYPES),
+    def test_the_membership_type_is_not_a_governance_record(self):
+        # It is content: named, edited in place and deletable, the way a role
+        # is. Declaring it as a record would mean an append-only chain, and
+        # deleting one is exactly how a team stops supporting a membership.
+        self.assertNotIn(
+            TeamLogic.MEMBERSHIP_TYPE_TYPE, TeamLogic.GOVERNANCE_RECORD_TYPES,
         )
-        for node_type, (author, assessor) in sorted(
-            TeamLogic.POOL_ASSESSMENT.items(),
-        ):
-            with self.subTest(node_type=node_type):
-                required, _ = TeamLogic.POOL_FIELDS[node_type]
-                self.assertIn(author, required)
-                self.assertTrue(
-                    callable(getattr(TeamLogic, assessor, None)), assessor,
-                )
+        self.assertNotIn(
+            TeamLogic.MEMBERSHIP_TYPE_TYPE, TeamLogic.GOVERNANCE_FIELDS,
+        )
 
     def test_retired_names_appear_in_no_source_file(self):
         for path in sorted((ROOT / "src").rglob("*.py")):
