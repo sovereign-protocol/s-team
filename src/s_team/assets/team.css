@@ -99,7 +99,7 @@ button, select { padding: 8px 11px; border-radius: 6px; border: 1px solid var(--
 .organization-branch { display: grid; gap: 3px; }
 .organization-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 2px 8px;
   align-items: center;
   margin-left: calc(var(--depth) * 14px);
@@ -132,6 +132,23 @@ button, select { padding: 8px 11px; border-radius: 6px; border: 1px solid var(--
   font-size: 11px;
   white-space: nowrap;
 }
+/* Everything you do to a team as a whole hangs off one mark on its row.
+   Quiet until the row is under the pointer: the tree is for reading where
+   the teams are, not for acting on them. */
+.organization-gear {
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1;
+  opacity: 0.35;
+  cursor: pointer;
+}
+.organization-row:hover .organization-gear,
+.organization-gear:focus-visible { opacity: 1; color: var(--text); }
+#teamActionsForm { min-width: min(420px, 80vw); }
+.modal-note { color: var(--text-muted); font-size: 13px; line-height: 1.5; }
 .relationship-pending {
   grid-column: 1 / -1;
   color: #f59e0b;
@@ -162,7 +179,6 @@ button, select { padding: 8px 11px; border-radius: 6px; border: 1px solid var(--
   white-space: nowrap;
 }
 .archive-row button { padding: 2px 8px; font-size: 11px; }
-.archive-team { margin: 0 0 10px; padding: 4px 10px; font-size: 12px; }
 
 /* One row shape at every level: status on the left with the name, actions on
    the right. Same grid for the team, its sections, and its clauses, so
@@ -190,6 +206,11 @@ h2.element-label { margin: 0 0 4px; }
   border-bottom: 1px solid var(--line);
 }
 #document > .element-row h2.element-label { font-size: 22px; }
+/* One rule, not two. Shared disclosures carry a border-top to separate each
+   from the one above, and drop it only when they are the first child of
+   anything - which the first section here is not: the team's name is. Its
+   own rule already does the separating. */
+#document > .element-row + .ui-disclosure { border-top: 0; }
 
 /* The lamp carries the explanation, so hovering the status tells you what is
    unsettled without opening anything. These four are the reserved status
@@ -327,7 +348,7 @@ h2.element-label { margin: 0 0 4px; }
    is shown, and shown to be outside. */
 .participant {
   display: grid;
-  grid-template-columns: 26px minmax(0, 1fr);
+  grid-template-columns: 26px minmax(0, 1fr) auto;
   align-items: center;
   gap: 9px;
   padding: 7px 8px;
@@ -335,6 +356,20 @@ h2.element-label { margin: 0 0 4px; }
   border-radius: 8px;
   background: var(--hover);
 }
+/* The right end of an actor's line: their membership badge, and - on
+   somebody else's line, for Identity only - the one act anybody takes about
+   another person. Small and quiet; the line is about the person. */
+.participant-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.participant-actions button {
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.participant-actions button:hover { color: var(--text); }
 .participant-roles {
   display: flex;
   flex-wrap: wrap;
@@ -367,46 +402,16 @@ h2.element-label { margin: 0 0 4px; }
 .role-chip:hover .chip-action { opacity: 0.75; }
 .chip-action:hover { opacity: 1; }
 .role-chip[data-status="refused"] { text-decoration: line-through; }
-.role-chip[data-status="unobserved"] { font-style: italic; opacity: 0.6; }
+/* A role a sub-team could take, drawn as an outline of one it holds. */
+.role-chip[data-status="unheld"] { border-style: dashed; opacity: 0.6; }
 .participant-observer { font-size: 12px; color: var(--text-muted); }
 
-/* Identity is a line, not a panel: who speaks for this team, stated
-   once and then out of the way. It only raises its voice when contested. */
-.identity-line {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin: 10px 4px 4px 22px;
-  padding: 5px 8px;
-  border-radius: 6px;
-  font-size: 13px;
-  color: var(--text-muted);
-}
-.identity-line[data-state="contested"],
-.identity-line[data-state="ambiguous"] {
-  background: rgba(220, 38, 38, 0.15);
+/* A sub-team is an actor here, so it gets an actor's line - roles and
+   nothing else, because being on a team is not something a team does. */
+.participant.is-subteam .role-chip:not(:disabled) { cursor: pointer; }
+.participant.is-subteam .role-chip:not(:disabled):hover {
+  border-color: var(--proposal);
   color: var(--text);
-}
-.identity-line[data-state="vacant"] { font-style: italic; }
-.identity-mark { font-size: 12px; }
-.identity-text { flex: 1; min-width: 0; }
-.identity-actions { display: inline-flex; align-items: center; gap: 6px; }
-.identity-actions button { font-size: 12px; padding: 4px 8px; }
-/* Taking Identity from somebody is real but rare, so it is never a primary
-   button - it waits behind the overflow until it is asked for. */
-.identity-menu { position: relative; display: inline-flex; }
-.identity-toggle { border: none; padding: 2px 6px; opacity: 0.7; }
-.identity-toggle:hover { opacity: 1; }
-.identity-take { display: none; }
-.identity-menu.is-open .identity-take {
-  display: inline-block;
-  position: absolute;
-  right: 0;
-  top: calc(100% + 4px);
-  white-space: nowrap;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  z-index: 2;
 }
 
 /* Roles live in the document below the prose. Cards rather than paragraphs,
@@ -441,10 +446,6 @@ h2.element-label { margin: 0 0 4px; }
 .role-card.is-identity .element-label::before {
   content: '\1F511';
   margin-right: 6px;
-}
-.identity-claim {
-  font-size: 12px;
-  padding: 3px 8px;
 }
 .role-card .element-label { margin: 2px 0; font-size: 14px; }
 .role-purpose {
@@ -491,7 +492,18 @@ h2.element-label { margin: 0 0 4px; }
   color: var(--text-muted);
 }
 .role-unheld { margin: 2px 0; font-size: 13px; color: var(--text-muted); }
-.role-apply { margin-top: 8px; padding: 4px 8px; font-size: 12px; }
+/* Taking work on is one control at the end of your own badge line, not a
+   chip per role spread across it. Sized to sit among the badges rather than
+   beside them, because it is the last item in the same row. */
+.role-add {
+  padding: 2px 6px;
+  border: 1px dashed var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.role-add:hover { color: var(--text); border-style: solid; }
 
 /* Who holds a role is a line of faces and names. Everything else about the
    holding - when it was answered, against which version, who offered it - is
@@ -508,13 +520,9 @@ h2.element-label { margin: 0 0 4px; }
    does not. */
 .holder-badge[data-outside-parent="true"] { opacity: 0.55; }
 .holder-badge[data-status="refused"] .holder-name { text-decoration: line-through; }
-/* Not styled like "pending": this is "I cannot see", not "they have not
-   answered", and the two must not read as the same thing. */
-.holder-badge[data-status="unobserved"] { font-style: italic; opacity: 0.65; }
-.holder-badge[data-status="uninvited"] { border-style: dotted; }
 .holder-badge.team-link { cursor: pointer; }
 .holder-badge.team-link:hover { border-color: var(--proposal); }
-/* Withdrawing is destructive and rare, so it waits for a hover the way
+/* Stepping out is destructive and rare, so it waits for a hover the way
    Delete does - and stays reachable by keyboard, which is why focus-within
    shows it too. */
 .holder-action {
@@ -530,127 +538,191 @@ h2.element-label { margin: 0 0 4px; }
 .holder-badge:hover .holder-action,
 .holder-badge:focus-within .holder-action { opacity: 0.75; }
 .holder-action:hover { opacity: 1; }
-.role-offer-picker {
+.role-answer-prompt { flex: 1; min-width: 0; }
+
+/* What the team runs. A row is something you hold and can open; an offer is
+   a name in a pulldown until you take it up, because that is all anybody
+   has of somebody else's copy. */
+.items-panel { margin: 0 4px 6px 22px; }
+.items-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.items-controls button { padding: 4px 8px; font-size: 12px; }
+.items-picker {
   box-sizing: border-box;
   min-height: 28px;
   max-width: min(260px, 100%);
-  padding: 3px 28px 3px 8px;
+  padding: 3px 8px;
   border: 1px solid var(--line);
   background-color: var(--panel);
   color: var(--text);
   color-scheme: inherit;
   font-size: 12px;
 }
-.role-offer-picker option,
-.role-offer-picker optgroup {
-  background: var(--panel);
-  color: var(--text);
-}
-
-.role-answer-prompt { flex: 1; min-width: 0; }
-
-.membership-panel {
-  margin: 14px 4px 6px 22px;
-  padding-top: 10px;
-  border-top: 1px solid var(--line);
-}
-.membership-heading,
-.membership-opening-head {
+.items-picker option { background: var(--panel); color: var(--text); }
+.item-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
-}
-.membership-heading h4 { margin: 0; font-size: 14px; }
-.membership-heading button,
-.membership-opening-head button,
-.membership-actions button,
-.membership-apply { padding: 4px 8px; font-size: 12px; }
-.membership-empty {
-  margin: 8px 0;
-  color: var(--text-muted);
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  border-radius: 8px;
+  background: var(--hover);
   font-size: 13px;
 }
-.membership-opening {
+.item-open {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-weight: 600;
+}
+.item-label {
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+.item-remove {
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.item-remove:hover { color: var(--text); }
+.items-empty { margin: 4px 0; color: var(--text-muted); font-size: 13px; }
+#newItemForm { min-width: min(420px, 80vw); }
+#newItemForm label { display: grid; gap: 4px; margin: 10px 0; }
+#newItemForm input,
+#newItemForm select { box-sizing: border-box; width: 100%; }
+
+/* What the team supports, directly above the actors who are on it - no rule
+   between them, because it is the same subject stated twice over: first what
+   the memberships are, then who is on one. */
+.membership-panel { margin: 2px 4px 10px 22px; }
+.membership-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.membership-heading button { padding: 4px 8px; font-size: 12px; }
+.membership-pool-count { color: var(--text-muted); font-size: 12px; }
+.membership-empty { color: var(--text-muted); font-size: 12px; }
+
+/* One row per membership, and it stays there for as long as the team
+   supports it - open or closed, held by somebody or nobody. */
+.membership-row {
   margin-top: 8px;
   padding: 8px 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--hover);
 }
-.membership-opening-head { font-size: 13px; }
-.membership-application {
-  display: grid;
-  grid-template-columns: auto minmax(100px, 1fr) auto auto;
-  align-items: center;
-  gap: 8px;
-  margin-top: 8px;
+/* The one you are on. Marked on its edge rather than by a badge in the row:
+   the badge for that is at the end of your own line among the actors. */
+.membership-row.is-mine { border-left: 3px solid var(--accent, var(--text)); }
+.membership-row-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px;
   font-size: 13px;
 }
+.membership-name { font-size: 14px; }
 .membership-state {
   color: var(--text-muted);
-  text-transform: capitalize;
+  font-size: 12px;
 }
-.membership-actions { display: inline-flex; gap: 5px; }
-.membership-roster { margin: 8px 0; }
-.membership-member {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 0;
+.membership-state.is-open { color: var(--text); }
+.membership-holders {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+/* Membership Info and Identity's Acceptance Requirement. The second is set
+   apart because it is quoted back when the Actor writes their answer. */
+.membership-requirements,
+.membership-acceptance {
+  margin: 6px 0 0;
+  color: var(--text-muted);
   font-size: 13px;
 }
-.membership-member strong { flex: 1; min-width: 0; font-weight: 500; }
-.membership-member button { padding: 3px 8px; font-size: 12px; }
-.membership-apply { margin-top: 8px; }
-
-.elections-panel {
-  margin: 14px 4px 6px 22px;
-  padding-top: 10px;
-  border-top: 1px solid var(--line);
+.membership-acceptance {
+  padding-left: 8px;
+  border-left: 2px solid var(--line);
 }
-.elections-heading,
-.election-card-head {
+.membership-requirements.is-empty,
+.membership-acceptance.is-empty { font-style: italic; opacity: 0.7; }
+.membership-application {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 6px 8px;
+  border-left: 2px solid var(--line);
+  font-size: 12px;
 }
-.elections-heading h4 { margin: 0; font-size: 14px; }
-.election-start-actions { display: inline-flex; flex-wrap: wrap; gap: 5px; }
+.membership-application span {
+  flex: 1 1 220px;
+  color: var(--text-muted);
+}
+.membership-application button { padding: 4px 8px; font-size: 12px; }
+.membership-alignment-required {
+  margin: 8px 0 0;
+  color: var(--danger, #a33);
+  font-size: 12px;
+}
+.membership-row-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.membership-row-actions button { padding: 4px 8px; font-size: 12px; }
+.membership-expiry { padding: 3px 6px; font-size: 12px; }
+.membership-delete { margin-left: auto; }
+.membership-history { margin-top: 8px; color: var(--text-muted); }
+.membership-history summary { font-size: 12px; cursor: pointer; }
+.membership-history p { margin: 4px 0 0 14px; font-size: 12px; }
+
+/* The badge at the right end of an actor's row: what they said about the
+   Agreement, and which membership they said it on. */
+.membership-badge { margin-left: 4px; }
+
 .election-start-group { display: inline-flex; gap: 4px; }
 .election-start-group select { max-width: 150px; font-size: 12px; }
-.election-start-actions button,
-.election-implement { padding: 4px 8px; font-size: 12px; }
-.elections-empty,
-.election-detail {
-  margin: 8px 0;
-  color: var(--text-muted);
-  font-size: 13px;
+/* Everything done to a trusteeship, on the trusteeship's own card: stand
+   for it, elect somebody, settle it, act in it. The election itself is a
+   flow, read where the flows are. */
+.role-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 12px 0 0 22px;
 }
-.election-card {
-  margin-top: 8px;
-  padding: 8px 10px;
+.role-card-actions button { padding: 4px 8px; font-size: 12px; }
+.trustee-settle {
+  box-sizing: border-box;
+  min-height: 28px;
+  max-width: min(220px, 100%);
+  padding: 3px 8px;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--hover);
-}
-.election-card-head { font-size: 13px; }
-.election-state { color: var(--text-muted); text-transform: capitalize; }
-.election-electorate {
-  margin: 6px 0;
-  color: var(--text-muted);
+  background-color: var(--panel);
+  color: var(--text);
+  color-scheme: inherit;
   font-size: 12px;
 }
-.election-process {
-  display: block;
-  overflow: hidden;
-  color: var(--text-muted);
-  font-size: 12px;
-  text-overflow: ellipsis;
-}
-a.election-process { color: var(--proposal); }
-.election-implement { margin-top: 8px; }
+.trustee-settle option { background: var(--panel); color: var(--text); }
 
 .trustee-candidacies {
   margin-top: 10px;
@@ -674,25 +746,22 @@ a.election-process { color: var(--proposal); }
   border-top: 1px solid var(--line);
 }
 .trustee-actions-panel > h4 { margin: 0 0 8px; font-size: 14px; }
-.trustee-action-form {
-  display: grid;
-  grid-template-columns: minmax(120px, 0.8fr) minmax(180px, 1.4fr);
-  gap: 6px;
-  margin: 8px 0;
-  padding: 9px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-}
-.trustee-action-form strong { grid-column: 1 / -1; font-size: 13px; }
-.trustee-action-form textarea,
-.trustee-action-form input { box-sizing: border-box; width: 100%; }
-.trustee-action-form button { justify-self: start; padding: 4px 8px; font-size: 12px; }
 .trustee-actions-empty { color: var(--text-muted); font-size: 13px; }
 
 /* One row per record: when, who, what they were doing, how it came out.
    Four columns rather than a card each, because a trail is read down the
    date column and only ever opened at the one row you came for. */
-.decision-trail { margin: 8px 0 0; padding: 0; list-style: none; }
+/* History is consulted, not worked in, so it is given a fixed share of the
+   page and scrolls inside it. A trail that grows without limit otherwise
+   pushes everything below it - and everything below it is the page. */
+.decision-trail {
+  margin: 8px 0 0;
+  padding: 0 4px 0 0;
+  list-style: none;
+  max-height: 46vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
 .decision-record {
   display: grid;
   grid-template-columns: max-content max-content minmax(0, 1fr) minmax(0, 1fr);
@@ -730,72 +799,27 @@ a.election-process { color: var(--proposal); }
 .trustee-reality-form input { flex: 1; min-width: 0; }
 .trustee-reality-form button { padding: 4px 8px; font-size: 12px; }
 
-#decisionContextForm { min-width: min(440px, 80vw); }
-#decisionContextForm label { display: grid; gap: 4px; margin: 10px 0; }
-#decisionContextForm textarea { box-sizing: border-box; width: 100%; }
+#decisionContextForm,
+#trusteeActionForm,
+#membershipAcceptanceForm { min-width: min(440px, 80vw); }
+#decisionContextForm label,
+#trusteeActionForm label,
+#membershipAcceptanceForm label { display: grid; gap: 4px; margin: 10px 0; }
+#decisionContextForm textarea,
+#trusteeActionForm textarea,
+#trusteeActionForm input,
+#membershipAcceptanceForm textarea { box-sizing: border-box; width: 100%; }
+.membership-acceptance-context { margin: 10px 0; }
+.membership-acceptance-context h3 { margin: 0 0 4px; font-size: 13px; }
+.membership-acceptance-context p { margin: 0; white-space: pre-wrap; }
+.agreement-consent { grid-template-columns: auto 1fr !important; align-items: start; }
+.agreement-consent input { margin-top: 3px; }
+.agreement-consent.is-disabled { color: var(--text-muted); opacity: .65; }
 .decision-context-note { color: var(--text-muted); font-size: 12px; }
-
-.pool-navigation-item {
-  box-sizing: border-box;
-  width: 100%;
-  margin-bottom: 6px;
-  padding: 8px;
-  text-align: left;
-}
-.pool-heading,
-.pool-card-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.pool-heading h2 { margin: 0; }
-.pool-intro,
-.pool-empty { color: var(--text-muted); }
-.pool-publish-form {
-  display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(170px, 0.8fr) auto;
-  gap: 8px;
-  align-items: end;
-  margin: 18px 0;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-}
-.pool-publish-form strong,
-.pool-publish-form small { grid-column: 1 / -1; }
-.pool-invitation-card {
-  margin: 10px 0;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--hover);
-}
-.pool-card-heading span { color: var(--text-muted); font-size: 12px; }
-.pool-invitation-card > button { margin-top: 10px; }
-.pool-application {
-  display: grid;
-  grid-template-columns: auto minmax(120px, 1fr) auto auto;
-  align-items: center;
-  gap: 8px;
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--line);
-  font-size: 13px;
-}
-.pool-application-state { color: var(--text-muted); text-transform: capitalize; }
-.pool-application-actions { display: inline-flex; flex-wrap: wrap; gap: 5px; }
-.pool-application-actions button { padding: 4px 8px; font-size: 12px; }
-.pool-history { margin-top: 18px; color: var(--text-muted); }
-.pool-history p { margin: 6px 0 0 14px; font-size: 12px; }
 
 @media (max-width: 780px) {
   .acceptance-body { grid-template-columns: 120px minmax(0, 1fr); }
   .role-columns { grid-template-columns: 1fr; }
-  .trustee-action-form { grid-template-columns: 1fr; }
-  .pool-publish-form { grid-template-columns: 1fr; }
-  .pool-application { grid-template-columns: auto 1fr; }
-  .pool-application-actions { grid-column: 1 / -1; }
   main { grid-template-columns: 1fr; padding: 12px; }
   #organization { position: static; }
   article { padding: 24px 20px; }
@@ -856,6 +880,25 @@ a.election-process { color: var(--proposal); }
   color: var(--text-muted);
   opacity: 0.7;
 }
+.agreement-version {
+  min-width: 44px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.agreement-version:empty::before {
+  content: 'Version';
+  opacity: 0.7;
+}
+.agreement-state {
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.agreement-state.is-disputed,
+.agreement-state.is-invalid,
+.agreement-state.is-unavailable { color: var(--danger, #a33); }
 .agreement-head .ui-add-control { margin: 0; }
 .agreement-head .ui-add-trigger {
   background: none;

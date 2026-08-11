@@ -66,7 +66,8 @@ resignation, then election.
 
 Who holds a trusteeship, as a link in a chain. Standing, not the decision that
 produced it — the same split as `team_trustee_election` (the decision) and
-this (the seat), and as `team_member_resolution` and `team_membership`.
+this (the seat), and as `team_membership_invitation` (the door being opened)
+and `team_membership` (somebody standing inside it).
 
 | Field                   | Requirement                                                                 |
 | ----------------------- | --------------------------------------------------------------------------- |
@@ -80,16 +81,13 @@ this (the seat), and as `team_member_resolution` and `team_membership`.
 | `signals`               | required — what was observed. May be empty                                   |
 | `consideration`         | required — what was weighed. May be empty                                    |
 | `expectation`           | required — what is expected to follow. May be empty                          |
-| `process_uuid`          | optional — the S-Flow process, when `cause` is `election`                    |
-| `process_result_hash`   | optional — what that process resolved to                                     |
+| `process_uuid`          | optional — the S-Flow process that informed it, when `cause` is `election`   |
 
 **Vocabulary — `TRUSTEE_CAUSES`:** `genesis`, `election`, `resignation`, `resolution`
 
-**Only an Individual may hold a trusteeship.** A Team in a role brings
-everybody on it into the team below, which is why seating one is an admission;
-a Team *holding* a trusteeship would go further, leaving admissions,
-resignations and elections resting on an authority with no person answerable
-for it. The check is at the authority layer rather than the schema, because
+**Only an Individual may hold a trusteeship.** A Team *holding* one would leave
+invitations, removals, resignations and elections resting on an authority with
+no person answerable for it. The check is at the authority layer rather than the schema, because
 the answer is not in the record — it is whether the uuid names a Team — and a
 check that reads the tree does not belong in a pure function of the record's
 data. An actor the replica cannot place defers and retries, the same as an
@@ -104,20 +102,32 @@ mean:
 | ------------- | ------------------------ | -------------------------------------------------------------------------------------------------- |
 | `genesis`     | the holder, for themself | Nothing precedes it, so `previous_state_uuid` and `authority_basis_uuid` are both empty, and no other state for this trusteeship may exist |
 | `resignation` | the incumbent only       | Their own current state as the basis — the authority to give a seat up is the authority of holding it. Must leave the seat vacant |
-| `election`    | the facilitating trustee | A `team_trustee_election` naming the same `process_uuid`, a target predecessor that is still current, and a terminal S-Flow result electing exactly the named holder |
-| `resolution`  | the facilitating trustee | Process evidence (`process_uuid`, `process_result_hash`) and facilitating authority — but **no election record**. A seat settled by a decision that was not a formal election |
+| `election`    | the facilitating trustee | A `team_trustee_election` naming the same `process_uuid`. **The result is not checked against the holder** — see below |
+| `resolution`  | the facilitating trustee | Facilitating authority, and a **vacant** seat. No process, no election record: a seat filled where nobody ran one |
 
 There is no direct handover. Giving a seat to somebody else is resignation
 followed by an election or a settlement, because a handover would be a rewrite
 and authority here is append-only.
 
-`resolution` is reached through `settle_trusteeship`, which requires the seat
-to be **vacant**.
+Both are reached through `settle_trusteeship`. Naming an election lets it
+replace a sitting holder, because replacing one is what an election is for;
+without an election it may only fill a **vacant** seat, since the way out of an
+occupied one is the holder's own resignation.
 
-The authority model is wider than that on purpose: it also accepts a
-`resolution` written over a *sitting* holder, because it asks only that the
-predecessor be the current head. One trustee can therefore replace the other.
-That is deliberate and is not narrowed. Cryptography here is for attribution,
+**Nothing checks the holder against the result.** It could — the result is
+verifiable, and this application used to do it, implementing the outcome
+automatically once the hash matched. It does not any more. A decision nobody
+takes is a decision nobody can be answerable for, so a person reads the
+process and puts somebody in the seat, and the record says who did that, on
+what authority, and which process they were reading. A facilitator can seat
+somebody the election did not choose; the trail will say so, and that is the
+remedy — the same one every other act here has.
+
+The authority model is wider still on purpose: it also accepts a `resolution`
+written over a *sitting* holder, because it asks only that the predecessor be
+the current head. `settle_trusteeship` will not write one, but the model does
+not forbid the record. That is deliberate and is not narrowed. Cryptography
+here is for attribution,
 not control — the act is signed, attributable and visible in the trail, and the
 remedy for it is the team's, not a validation rule's. What the application
 offers and what the model accepts are two different questions, and only the
@@ -142,30 +152,34 @@ Withdrawal appends a second record naming the first in
 
 ## `team_trustee_election`
 
-The decision process that fills a vacancy. It does not fill it — implementing
-it writes a `team_trustee_state` with `cause: election`.
+Which flow is an election, and for which seat. That is all it is: an election
+is **a flow the team runs**, differing from any other only in that every
+member is a required participant, and this record is what says so.
 
-| Field                                | Requirement                                          |
-| ------------------------------------ | ---------------------------------------------------- |
-| `trust`                              | required                                             |
-| `process_uuid`                       | required — the S-Flow process carrying the decision   |
-| `process_definition_id`              | required                                             |
-| `process_definition_version`         | required                                             |
-| `electorate_actor_uuids`             | required                                             |
-| `triggered_by`                       | required                                             |
-| `triggered_at`                       | required                                             |
-| `target_state_uuid`                  | required — the vacancy this election is aimed at      |
-| `facilitator_trust`                  | required                                             |
-| `facilitator_actor_uuid`             | required                                             |
-| `facilitator_authority_basis_uuid`   | required                                             |
+| Field            | Requirement                                          |
+| ---------------- | ---------------------------------------------------- |
+| `trust`          | required — the seat it is about                       |
+| `process_uuid`   | required — the S-Flow process carrying the decision   |
+| `triggered_by`   | required                                             |
+| `triggered_at`   | required                                             |
 
-An election counts as under way only while **all** of these hold: no state
-record already implements its `process_uuid`; its `target_state_uuid` is still
-the current head; and its Flow result is visible to this session and not void.
+It used to carry the electorate, the target seat, the facilitator and their
+authority, because implementing it was automatic and all of that had to be
+checked first. Nothing is implemented automatically now, so none of it is
+evidence for anything: who takes part is the flow's own business, and who
+settles the seat is judged when they settle it.
 
-The last condition is a liveness guard, not a detail. A client that cannot see
-the Flow process cannot tell whether it is running, so an election it can never
-resolve is ignored rather than allowed to freeze the seat indefinitely.
+**Under way means unsettled.** An election counts until some
+`team_trustee_state` names its `process_uuid` — read from this team's own
+records, with no question put to S-Flow. The old rule asked whether the
+process had ended, which a client that could not see the process could not
+answer, and a record it could never resolve froze the seat for good.
+
+**Members take one up without being asked.** Every other item the team runs
+waits to be connected to, because nobody has to care about it; taking part in
+an election is what being a member means here, so a member's client asks for
+the process itself. It is asked once — a client that has held the process and
+put it down again has said what it wanted.
 
 ## `team_trustee_action`
 
@@ -184,7 +198,7 @@ What a trustee did, with the reasoning that stands behind it.
 | `expectation`           | required — what is expected to follow. May be empty |
 | `payload`               | required — an object; kind-specific detail         |
 
-**Vocabulary — `ACTION_KINDS`:** `member_opening`, `member_resolution`, `trustee_resignation`, `election_implementation`, `domain_action`
+**Vocabulary — `ACTION_KINDS`:** `membership_invitation`, `membership_removal`, `trustee_resignation`, `election_implementation`, `domain_action`
 
 ## `team_trustee_reality`
 
@@ -211,11 +225,10 @@ the one being acted on. The invariant is that **no trusteeship supervises
 itself**; "the counterpart" is only what that means when there happen to be
 two.
 
-The validator says exactly that — `facilitator_trust` must name a trusteeship
-and must not be the subject. The three places that *derive* a facilitator ask
-for the single eligible one and refuse when there is more than one, so adding a
-third trusteeship fails loudly at the point of use instead of quietly resolving
-to Identity, which is what an `else` branch would have done.
+The places that *derive* a facilitator ask for the single eligible one and
+refuse when there is more than one, so adding a third trusteeship fails loudly
+at the point of use instead of quietly resolving to Identity, which is what an
+`else` branch would have done.
 
 ## The projection, and divergence
 
@@ -242,7 +255,7 @@ contest, so the contest is the answer.
 
 That is the blueprint's **Agile State / Divergence Warning** already built, and
 it is worth naming precisely, because the mechanism generalises: the same
-walk backs membership, candidacies and member openings via
+walk backs membership, candidacies and membership invitations via
 `_record_chain_projection`. Divergence detection in this codebase is
 *fork-in-an-append-only-chain*, not a separate conflict subsystem.
 
@@ -282,6 +295,14 @@ record — the same split as `settle_trusteeship` and a sitting holder.
 
 # Membership
 
+The Agreement has ordinary `agreement_title` and `agreement_version` fields on
+the Team beside its sections. There is no publication record. Its consolidated
+truth is derived from perspectives: every current Identity holder must expose
+the same name, version, sections and clauses. If they differ, no consolidated
+Agreement exists and Identity cannot open a membership. A badge stores the
+human-readable version and exact content hash; matching a version label alone
+is never proof of matching text.
+
 **To be on a team, an Actor is a member of it.** Membership is its own
 relationship, not a role and not a side effect of holding one. A member who has
 taken nothing on is still on the team.
@@ -290,116 +311,222 @@ taken nothing on is still on the team.
 type in it; there is a chain of `team_membership` records per Actor, and
 "member" is the current state of that chain. The name comes from the identity,
 the kind comes from the actor, and neither is copied into the membership — a
-name copied at admission would be the name somebody had that day.
+name copied when they joined would be the name somebody had that day.
 
-Identity decides membership, and that is the whole of what Identity decides
-about a person. A member then takes any role by their own record.
+**Identity declares the class and issues the badge.** Identity declares which
+memberships this team supports and when each accepts applications. The Actor
+writes the application and its answers; Identity accepts it by issuing the
+membership badge. The Actor may invalidate their own badge, and Identity may
+invalidate it through `removal`.
 
 **Vocabulary — `MEMBERSHIP_TRUST`:** `identity`
 
+## The Onboarding Pool
+
+**Derived, not recorded.** The pool is every Actor publishing on the team's
+channel who is not a current member. There is no pool record, no pool topic and
+no way to join one: being on the channel *is* being in the pool, and it is
+reached the way every other topic is, by being given it.
+
+That is the whole definition, and it replaces a waiting room built from five
+node types and a second shared topic. What the waiting room existed for was
+asking to join a team you could not see — and that requirement is gone, because
+membership now requires answering the visible membership requirement and, when
+one exists, explicitly accepting the Agreement. The pool has to read the team.
+Onboarding is therefore bounded by topic access: whoever hands out the topic
+decides who may ever ask, and everyone who has it reads everything on it.
+
+## Membership types
+
+A `team_membership_type` is a membership this team supports — a **name**, a
+description of its **requirements**, the **acceptance requirement** Identity
+asks the Actor to answer, and an **order** among its siblings.
+
+**Two supplied texts, followed by one answer.** `requirements` is Membership
+Info read while deciding. `acceptance` is Identity's requirement shown at the
+moment of accepting. The Actor's answer is not written back into the type; it
+is stored as `acceptance_text` on their membership record.
+Content rather than a record, exactly like `team_role`: edited in place, part
+of what people read before accepting, and no append-only chain, because
+deleting one is how a team stops supporting a membership. Identity creates and
+deletes it; that is the one way it differs from a role, which anybody on the
+team may define.
+
+It carries no enforced field table for the same reason `team_role` carries
+none — the enforcement dicts cover records with authority contracts, and this
+is document content.
+
+**Deleting one needs no cascade.** A membership names its type by uuid. Delete
+the type and every membership on it stops resolving, so those Actors read as
+non-members and are back in the pool — without a single record being rewritten.
+The append-only trail survives intact and still says what everybody was.
+
+**And their roles go with it.** A role is work a *member* holds, so an answer
+given by somebody who is no longer on the team holds nothing: `role_holders`
+reads standing beside the answer and leaves them off. Nothing is written into
+the role — their `team_role_decision` stands exactly as they left it — which
+is what lets the holding come back when they take a membership up again,
+without anybody re-answering. The same applies to leaving and to `removal`.
+
+**Individuals only.** A seated Team has no membership of its own to read: its
+standing is containment, checked when it took the seat (§A Team in a seat), so
+asking this question of one would unseat every subteam.
+
+Every team is created with one, so the founder's `genesis` membership has a
+type to name.
+
+## `team_membership_invitation`
+
+Identity opening one membership type to the pool, for a window. One chain per
+type, and **only one invitation per type at a time** — reopening continues the
+chain rather than starting a second, so the history is one line.
+
+| Field                      | Requirement                                     |
+| -------------------------- | ----------------------------------------------- |
+| `membership_type_uuid`     | required — which membership this opens           |
+| `previous_invitation_uuid` | required — empty for the first record            |
+| `state`                    | required — `open` or `closed`                    |
+| `opened_by`                | required                                        |
+| `opened_at`                | required                                        |
+| `expires_at`               | required — must be after `opened_at`             |
+| `authority_basis_uuid`     | required — Identity's                            |
+| `closed_at`                | optional — required when `closed`                |
+
+**The window is checked against the application, not the clock.** Whether an
+invitation was live is decided by comparing the application's own `applied_at`
+with the invitation's `opened_at` and `expires_at` — all recorded values — so
+two replicas reading the same records always agree, and an acceptance that was
+valid when made stays valid however long it takes to arrive. The open/closed
+toggle is a control over the record; it is not what anybody reads to decide
+whether somebody is a member.
+
+The cost is the same one the model already accepts elsewhere: `applied_at` is the
+applicant's own claim and backdating into a closed window cannot be detected. It
+is signed and attributable, and the remedy is `removal`.
+
+## `team_membership_application`
+
+The Actor's signed application for one open membership. It snapshots both the
+request and response so the later badge states exactly what was asked and
+answered.
+
+| Field                        | Requirement |
+| ---------------------------- | ----------- |
+| `actor_uuid`                 | required |
+| `membership_type_uuid`       | required |
+| `invitation_uuid`            | required |
+| `previous_membership_uuid`   | required — empty when first joining |
+| `applied_at`                 | required — inside the invitation window |
+| `membership_info`            | required — may be empty |
+| `acceptance_requirement`     | required |
+| `acceptance_text`            | required |
+| `agreement_accepted`         | required boolean |
+| `agreement_version`          | required — empty when no Agreement exists |
+| `reference_hash`             | required — exact consolidated Agreement hash |
+
 ## `team_membership`
 
-One chain per Actor, and only one. Somebody admitted, gone and admitted again
-continues the chain rather than starting a second.
+One chain per Actor, and only one. Somebody who took a membership, left and
+took one again continues the chain rather than starting a second — and so does
+somebody moving between types, because **an Actor is on one membership type at
+a time**. Which one is whatever the head of their chain names.
 
 | Field                        | Requirement                                                              |
 | ---------------------------- | -------------------------------------------------------------------------- |
 | `actor_uuid`                 | required — whose standing this is                                           |
 | `state`                      | required — `member` or `former`                                             |
+| `membership_type_uuid`       | required — which membership this places them on, or the one they left       |
 | `previous_membership_uuid`   | required — empty only for an Actor who has never been on this team          |
 | `cause`                      | required — from `MEMBERSHIP_CAUSES`                                         |
+| `reference_hash`             | required — the Team text version present when this answer was made           |
 | `acted_by`                   | required                                                                    |
 | `acted_at`                   | required                                                                    |
-| `authority_basis_uuid`       | required — empty for `genesis` and `departure`, which rest on no authority   |
+| `authority_basis_uuid`       | required — Identity's for badge issuance/removal; empty for `genesis` and `departure` |
+| `acceptance_text`            | required — the Actor's non-empty answer for `acceptance`; empty for other causes |
+| `agreement_accepted`         | required boolean — true when this act explicitly accepts an existing Agreement; false when none exists or the cause is not an acceptance |
+| `agreement_version`          | required — human-readable version accepted; may be empty |
+| `membership_info`            | required — Membership Info copied from the application; may be empty |
+| `acceptance_requirement`     | required — Identity's requirement copied from the application; may be empty outside acceptance |
 | `signals`                    | required — may be empty                                                     |
 | `consideration`              | required — may be empty                                                     |
 | `expectation`                | required — may be empty                                                     |
-| `resolution_uuid`            | optional — required in practice for `admission`, which must name what it implements |
+| `invitation_uuid`            | optional — required for `acceptance`, which must name the window it answers  |
+| `application_uuid`           | optional — required for `acceptance`, which must name the Actor's application |
 
-**Vocabulary — `MEMBERSHIP_CAUSES`:** `genesis`, `admission`, `departure`, `removal`
+**Vocabulary — `MEMBERSHIP_CAUSES`:** `genesis`, `acceptance`, `departure`, `removal`
 
 ### How standing changes
 
-| Cause       | Who                       | What it needs                                                                                 |
-| ----------- | ------------------------- | ----------------------------------------------------------------------------------------------- |
-| `genesis`   | the founder, for themself | No predecessor and no authority basis, and no other membership may exist on the team              |
-| `admission` | Identity                  | A resolution naming the same actor with outcome `accepted`. A return also names the membership it resumes |
-| `departure` | the member, for themself  | Names the current membership. Rests on **no** authority basis — naming one would claim it did      |
-| `removal`   | Identity                  | Names the current membership, plus Identity's authority                                            |
+| Cause        | Who                        | What it needs                                                                                     |
+| ------------ | -------------------------- | ------------------------------------------------------------------------------------------------- |
+| `genesis`    | the founder, for themself  | No predecessor and no authority basis, and no other membership may exist on the team                |
+| `acceptance` | Identity                   | The Actor's application copied exactly into a badge, plus Identity's authority basis |
+| `departure`  | the member, for themself   | Names the current membership. Rests on **no** authority basis — naming one would claim it did        |
+| `removal`    | Identity                   | Names the current membership, plus Identity's authority                                             |
 
-Leaving is nobody's decision but the member's own, and it is the counterpart of
-Identity's power to remove. That is why a departure may not name an authority
-basis at all: it would be claiming the act rested on one.
+The application and departure are the Actor's own signed acts. Badge issuance
+and removal are Identity's signed acts and carry Identity's authority basis.
 
-## `team_member_opening`
+**An acceptance records distinct answers.** `acceptance_text` answers
+Identity's membership requirement. When an Agreement exists,
+`agreement_accepted` records the separate explicit consent and
+`reference_hash` identifies the version read. With no Agreement, the boolean
+is false and its absence does not close the membership invitation.
 
-Identity says the team is open to applications. One opening admits any number
-of people; closing it is a second record naming the first.
+The command is refused unless the membership type has a non-empty Acceptance
+Requirement and the Actor supplies non-empty Acceptance Text. If the team has
+an Agreement (a title or section), explicit Agreement consent is also required;
+without one, consent is false and membership may still be accepted. Both the
+answer and the consent boolean are stored on the record.
 
-| Field                     | Requirement                          |
-| ------------------------- | ------------------------------------- |
-| `previous_opening_uuid`   | required — empty for the initial record |
-| `state`                   | required — `open` or `closed`          |
-| `opened_by`               | required                              |
-| `opened_at`               | required                              |
-| `authority_basis_uuid`    | required                              |
-| `closed_at`               | optional — required when `closed`      |
+### The membership badge, and what makes it stale
 
-## `team_member_application`
+`reference_hash` here is `team_reference_hash` — the whole document body plus
+both names — which is the same hash a role acceptance is scoped against, minus
+the one role. So the badge has two states and no more:
 
-The applicant's own record, and theirs alone to withdraw.
+| Status     | When                                                        |
+| ---------- | ----------------------------------------------------------- |
+| `accepted` | the hash on the head of the chain is the document's now      |
+| `outdated` | it is not — they accepted an earlier version of the Agreement |
 
-| Field                         | Requirement                          |
-| ----------------------------- | ------------------------------------- |
-| `opening_uuid`                | required                              |
-| `previous_application_uuid`   | required — empty for the initial record |
-| `actor_uuid`                  | required                              |
-| `submitted_at`                | required                              |
-| `state`                       | required — `submitted` or `withdrawn`  |
-| `withdrawn_at`                | optional — required when `withdrawn`   |
+**Editing the Agreement body outdates every membership on the team at once.**
+That is the honest consequence and it is not worked around: if the document
+people are on this team by accepting has changed, their acceptance of it is
+genuinely stale. A member re-answers through a new application and Identity
+issues a new badge. A grace period
+was rejected here for the same reason it was rejected for roles — it would make
+standing depend on the clock and on local settings, and two replicas would
+disagree.
 
-## `team_member_resolution`
+There is no `expired` and no `refused`. An invitation expires; a membership does
+not, and refusing one is simply not taking it.
 
-Identity's answer to one application. The decision, not the standing — it stays
-true whatever happens later, which is what lets a membership be ended without
-rewriting the decision that began it. The same split as an election and the
-trusteeship it fills.
-
-| Field                    | Requirement                        |
-| ------------------------ | ----------------------------------- |
-| `opening_uuid`           | required                            |
-| `application_uuid`       | required                            |
-| `actor_uuid`             | required                            |
-| `outcome`                | required — `accepted` or `rejected`  |
-| `resolved_by`            | required                            |
-| `resolved_at`            | required                            |
-| `authority_basis_uuid`   | required                            |
-| `signals`                | required — may be empty              |
-| `consideration`          | required — may be empty              |
-| `expectation`            | required — may be empty              |
-
-An accepted resolution is followed by a `team_membership` admission naming it.
-Pool onboarding reaches the same place by a different resolution.
+**An acceptance is public and adoptable like any other record.** It is written
+on the team's topic and reaches the others through the ordinary peer-adoption
+path, `auto_adopt_mode` included. Nothing new carries it.
 
 ## Standing, and where it comes from
 
-Membership records are the **only** source. Both admission paths end in one, so
-there is nowhere else standing can come from, and an Actor with no record is an
-observer.
+Membership records are the **only** source. There is one way in and it ends in
+one, so there is nowhere else standing can come from, and an Actor with no
+record is in the pool.
 
-There was a second source: teams made before membership was a record said
-"member" three other ways — an accepted application, a Pool resolution, or a
-genesis offer on a role marked `system_key: member` — and standing fell through
-to those. It is gone. Teams that relied on it read as observers, visibly,
-rather than being answered from a shape the model no longer produces.
+One more thing can end it without any record being written: **the membership
+type going away.** Standing is read as the pair (chain head says `member`, the
+type it names still exists), so deleting a type returns everybody on it to the
+pool. That is the only place standing depends on something outside the chain,
+and it is deliberate — the alternative is a cascade that rewrites other people's
+records.
 
-`membership_projection` walks the chain and returns `observer`, `member`,
-`former`, or `contested`.
+`membership_projection` walks the chain and returns `pool`, `member`, `former`,
+or `contested`.
 
-**More than one root is a contest.** A return continues the chain it left, so a
-second root can only mean two replicas admitting the same person at once, and
-that is shown rather than settled by taking whichever sorts last — the same
-answer as a contested trusteeship, for the same reason.
+**More than one root is a contest.** A return continues the chain it left, and
+so does a move between types, so a second root can only mean two replicas
+writing a first membership for the same person at once — shown rather than
+settled by taking whichever sorts last, the same answer as a contested
+trusteeship, for the same reason.
 
 ## A team may have no members at all
 
@@ -409,12 +536,12 @@ founder leaving is enough.
 Nothing bars the last person from going, and that is the point — the
 alternative is refusing the final departure, which keeps a team alive by
 trapping somebody in it. The Identity holder need not be a member to exercise
-Identity, so a team at zero members can still be opened to applications and
+Identity, so a team at zero members can still be opened to the pool and
 recovered.
 
 **Beyond recovery.** Leave, resign Identity, resign Trust — three ordinary acts,
 each legitimate on its own — and nothing can happen on that team again: no
-opening without Identity's authority, no candidacy without membership, no
+invitation without Identity's authority, no candidacy without membership, no
 settlement without Trust. This is a real end state, not an oversight. The record
 survives, and a fork carries the work on.
 
@@ -422,8 +549,9 @@ survives, and a fork carries the work on.
 
 | Blueprint (`Domain-Driven-Design.md`) | Here                                                             |
 | ------------------------------------- | ---------------------------------------------------------------- |
-| `Member: 1 Name, 1 Type, 1 Actor`     | Not an entity. The current state of an Actor's `team_membership` chain; name and kind are read from the actor, never copied |
+| `Member: 1 Name, 1 Type, 1 Actor`     | Not an entity. The current state of an Actor's `team_membership` chain. The *Type* is `team_membership_type`, named by uuid; the name and kind are read from the actor, never copied |
 | `Team: 1-n Members`                   | `0-n`. Zero is reachable and accepted                             |
+| The Pull Principle                    | Now membership too, not only roles. Identity opens a type; the Actor takes it |
 
 ---
 
@@ -516,47 +644,37 @@ not this repository's to make.
 
 A **role** is defined work. It has 0..n holders, and a vacant role is not a
 problem — it is work nobody has taken. A member takes one by their own record
-and nobody else's; an invitation exists and any member may extend one, but it
-is a suggestion, and withdrawing it withdraws the suggestion and nothing else.
+and nobody else's. **Nobody is invited to a role.** There was once a third
+record, an invitation written by somebody else and revocable by them; it made
+taking on work an act with two authors and gave every holding a half its holder
+did not control. What replaced it for a Team actor is containment — a team
+holding nobody who is not already a member here is entitled to a seat without
+being asked — and for a person, nothing at all: membership is the entitlement,
+and a role is taken.
 
-The six types divide on a line that matters:
+A `team_membership_invitation` is not a counter-example. It names a **type**
+and is addressed to the pool at large, never to a person; nobody's name appears
+on one, and it grants nothing until somebody answers it for themself.
+
+The five types divide on a line that matters:
 
 - **Content** — `team_role`, `team_accountability`, `team_domain`. Part of what
   people agree to, edited like any other text, and reactable per node so that
   two people editing different accountabilities diverge separately.
-- **Records about it** — `team_role_offer`, `team_role_decision`,
-  `team_role_holding`. Facts about who is doing what, and therefore
-  **append-only**, with a declared contract, like every other record that
-  carries authority.
+- **Records about it** — `team_role_decision`, `team_role_holding`. Facts
+  about who is doing what, and therefore **append-only**, with a declared
+  contract, like every other record that carries authority.
 
-That line was not held before. An offer was revived by rewriting the revoked
-one, an answer was rewritten in place, and giving up a seat deleted the holding
-outright — so who held a role, and when, was not recorded anywhere. A decision
-alone is what holds a role, which makes it authority-bearing; it was stored
-like content, and it had no contract at all, so a peer's answer was whatever
-they sent and a person was asked to accept it sight unseen.
+That line was not held before. An answer was rewritten in place, and giving up
+a seat deleted the holding outright — so who held a role, and when, was not
+recorded anywhere. A decision alone is what holds a role, which makes it
+authority-bearing; it was stored like content, and it had no contract at all,
+so a peer's answer was whatever they sent and a person was asked to accept it
+sight unseen.
 
 Each is one chain per actor per role, read by taking the end of it. **More than
 one root, or more than one successor, holds nothing** — two answers about one
 seat are two people to talk to, not a race to settle by sort order.
-
-## `team_role_offer`
-
-An invitation. Withdrawing one appends a `revoked` link rather than deleting
-it, so the fact that there was an invitation survives.
-
-| Field                  | Requirement                                     |
-| ---------------------- | ------------------------------------------------ |
-| `actor_uuid`           | required                                        |
-| `actor_kind`           | required — `individual` or `team`                |
-| `state`                | required — from `OFFER_STATES`                   |
-| `previous_offer_uuid`  | required — empty for the first offer to an actor |
-| `offered_by`           | required                                        |
-| `offered_at`           | required                                        |
-| `revoked_at`           | optional — required when `revoked`               |
-| `revoked_by`           | optional                                        |
-
-**Vocabulary — `OFFER_STATES`:** `offered`, `revoked`
 
 ## `team_role_decision`
 
@@ -617,6 +735,19 @@ tell whether its own role was held — and would let the subteam's Identity
 revoke the seat by admitting one person. Later drift is a divergence to be
 seen, not a silent revocation.
 
+**The child takes the seat, from its own page.** Whoever holds the seated
+team's Identity answers for it, so the act happens where that team is — the
+same rule as every other actor, whose own line is the only one that acts. The
+parent's page draws no line for a team that might qualify: a seat nobody has
+taken is not a fact about anybody, and a row for one invited a click from the
+one person who could not make it.
+
+What that costs is reach. Both sides of a seat have to be written, and the
+containment check reads the parent's memberships, so a team can only take a
+seat in a team **this client already has**. A topic nobody has given you is
+unreachable, not merely unread — the same property that makes `team_item_list`
+necessary.
+
 Seats form a DAG, and it is *drawn* as a tree by projecting through home, the
 first holding in order that reaches a root.
 
@@ -637,133 +768,54 @@ two replicas would disagree.
 
 | Blueprint (`Domain-Driven-Design.md`) | Here                                                             |
 | ------------------------------------- | ---------------------------------------------------------------- |
-| `Role: 1 Team, 1 Name, 0-1 Purpose, 0-n Domains, 0-n Accountabilities, 0-n Actors` | Right, except that "Actors" is two different facts — who was invited (`team_role_offer`) and who holds it (`team_role_decision`) — and only the second is holding |
+| `Role: 1 Team, 1 Name, 0-1 Purpose, 0-n Domains, 0-n Accountabilities, 0-n Actors` | Right, and "Actors" is one fact: who holds it (`team_role_decision`). Nobody is invited to a role |
 | The Pull Principle                    | Built. A member takes a role by their own answer; nobody countersigns |
 | *(nothing)*                           | `team_role_holding` — the blueprint has no way to express a subteam as built |
 
 ---
 
-# The Pool
+# What a team runs
 
-A **Pool** is a separate shared topic that holds no Team document — a waiting
-room. It exists so somebody can ask to join a team they cannot yet see:
-accepting a Team's invitation is how you get the Team, and there has to be a
-way to ask for one without already having it.
+An **initiative** or a **flow** a team runs is another application's topic,
+published on the team's channel. The team owns no copy of it and stores
+nothing about its contents — only who says they have it.
 
-The way in:
+## `team_item_list`
 
-1. Identity opens a Member opening on the Team.
-2. Identity publishes a **Pool invitation** naming that opening, with an expiry.
-3. An outsider, invited into the Pool topic, submits an **application**.
-4. Identity **resolves** it. On acceptance, a `team_external_member_resolution`
-   is written on the *Team* and a membership admission follows it, and the Pool
-   resolution carries the Team's connection coordinates so the applicant can
-   reach it.
+One member's answer to "what of this team's work do I hold here". The whole
+list, not a record per item: what an item costs somebody is not a decision
+anybody takes, it is a topic a client either has or does not, and only that
+client can say which. Appended rather than rewritten, so it reaches the
+others the way every other record here does — adopted on its own, without
+each of them being asked to accept a stranger's list.
 
-Both sides are append-only, and both are validated. A rejected resolution is
-**forbidden** from carrying coordinates; an accepted one is required to.
+| Field                | Requirement                                              |
+| -------------------- | --------------------------------------------------------- |
+| `actor_uuid`         | required — whose list it is, and its only author           |
+| `items`              | required — each with a `topic_uuid`, an `application_id` and a `title` |
+| `previous_list_uuid` | required — empty for an actor's first list                 |
+| `recorded_at`        | required                                                  |
 
-## `team_pool`
+**An item is the team's while at least one member's current list names it.**
+When the last of them drops it, it is gone from the team — there is no
+tombstone and no collection, because there is nothing left to collect.
 
-The waiting room itself. A topic, and so the one thing here with children.
+**Why this cannot be read off the channel instead.** An explicit relay target
+polls only the topics this client has assigned to it and the ones it has
+already consented to receive. A topic nobody has told you about is not
+unread, it is unreachable — so the list is what carries the uuid, and
+publishing an item beside the team tells nobody anything.
 
-| Field         | Requirement                     |
-| ------------- | -------------------------------- |
-| `team_uuid`   | required — the Team it is for     |
-| `team_title`  | required                        |
-| `title`       | required                        |
-| `created_by`  | required                        |
-| `created_at`  | required                        |
+**Nothing keeps an item alive but the people who want it.** A member who
+takes their copy away is not deleting the team's work, and a member who keeps
+theirs is the whole of why it still exists. That is the sovereign shape of
+it: you can hold what you care about, and you cannot oblige anybody to hold
+what you care about for you.
 
-## `team_pool_invitation`
-
-| Field                  | Requirement                          |
-| ---------------------- | ------------------------------------- |
-| `team_uuid`            | required                             |
-| `team_title`           | required — must match the Pool's       |
-| `opening_uuid`         | required — the Member opening it is for |
-| `published_by`         | required                             |
-| `published_at`         | required                             |
-| `expires_at`           | required — must be after `published_at` |
-| `authority_basis_uuid` | required — Identity's                  |
-
-## `team_pool_application`
-
-| Field                         | Requirement                          |
-| ----------------------------- | ------------------------------------- |
-| `invitation_uuid`             | required                             |
-| `team_uuid`                   | required — must match the invitation's |
-| `opening_uuid`                | required — must match the invitation's |
-| `actor_uuid`                  | required                             |
-| `submitted_at`                | required                             |
-| `state`                       | required — `submitted` or `withdrawn`  |
-| `previous_application_uuid`   | required — empty for the initial record |
-| `withdrawn_at`                | optional — required when `withdrawn`   |
-
-## `team_pool_resolution`
-
-| Field                    | Requirement                                     |
-| ------------------------ | ------------------------------------------------ |
-| `invitation_uuid`        | required                                        |
-| `application_uuid`       | required                                        |
-| `team_uuid`              | required                                        |
-| `opening_uuid`           | required                                        |
-| `actor_uuid`             | required                                        |
-| `outcome`                | required — `accepted` or `rejected`              |
-| `resolved_by`            | required                                        |
-| `resolved_at`            | required                                        |
-| `authority_basis_uuid`   | required — Identity's                            |
-| `signals`                | required — may be empty                          |
-| `consideration`          | required — may be empty                          |
-| `expectation`            | required — may be empty                          |
-| `team_invitation_token`  | optional — an object. **Required** when accepted, and **forbidden** when rejected |
-
-## `team_external_member_resolution`
-
-The Team's own record of an acceptance that happened in a Pool. A governance
-record, so it lives on the Team beside memberships rather than in the Pool, and
-it is what the admission names as the resolution it implements.
-
-| Field                        | Requirement                              |
-| ---------------------------- | ----------------------------------------- |
-| `pool_uuid`                  | required                                 |
-| `pool_invitation_uuid`       | required                                 |
-| `pool_application_uuid`      | required                                 |
-| `opening_uuid`               | required                                 |
-| `actor_uuid`                 | required                                 |
-| `outcome`                    | required — **`accepted` only**            |
-| `resolved_by`                | required                                 |
-| `resolved_at`                | required                                 |
-| `authority_basis_uuid`       | required                                 |
-| `application_evidence_hash`  | required — the state hash of the application it answers |
-| `signals`                    | required — may be empty                   |
-| `consideration`              | required — may be empty                   |
-| `expectation`                | required — may be empty                   |
-
-Only accepted, because a rejection changes nothing about the Team and there is
-nothing for the Team to record. The refusal lives in the Pool, where it
-happened.
-
-## Two properties that are chosen, not overlooked
-
-**Expiry is checked against the application, not the clock.** Whether an
-invitation was live is decided by comparing the applicant's `submitted_at` with
-the invitation's own `published_at` and `expires_at` — all recorded values — so
-an application that was valid when made stays valid however long it takes to
-reach anybody. The consequence is that `submitted_at` is the applicant's own
-claim and backdating into a closed window cannot be detected. Accepted: the
-claim is signed and attributable, Identity still has to resolve the application
-before anything happens, and an expiry is a signal to whoever resolves rather
-than a gate the applicant is held behind by force.
-
-**The coordinates in an accepted resolution are readable by the whole Pool.**
-The token is a general Team invitation, and it sits in a topic every Pool
-participant syncs — so anybody Identity has admitted to the waiting room can
-read somebody else's acceptance and reach the Team with it. What they get is
-*topic access, not membership*: only the named applicant is admitted, so an
-interloper reads the Team and remains an observer. Recorded here as a known
-property. Scoping the token to the applicant would need Core to compose a
-per-actor invitation, which is not this repository's to add.
+Taking up an offered item is bidirectional. Core records both `desired` and
+the item's home-channel assignment even when its first local replica has not
+arrived yet. Once mounted, that assignment publishes the taker's replica, so
+every existing holder sees the taker as a peer on the item.
 
 ---
 
@@ -773,7 +825,7 @@ per-actor invitation, which is not this repository's to add.
 | ------------------------------------- | ---------------------------------------------------------------- |
 | Trustee                               | `team_trustee_state`. **Not** a specialized Role — no role node is involved |
 | Bet — Signals / Decision / Expected Impact / Assessed Impact | `team_trustee_action` (`signals`, `consideration`, `expectation`) plus 0-n `team_trustee_reality` (`reality`) — **already built under another name** |
-| Decision Point — "access to a python function" | `team_trustee_election` delegating to an S-Flow process by `process_definition_id` and version. A named, versioned, replicated definition rather than a function reference |
+| Decision Point — "access to a python function" | `team_trustee_election` naming an S-Flow process. A replicated decision anybody can read, rather than a function reference |
 | Agile State / Divergence Warning      | `contested` in the projection above                              |
 | Mandate [C-Text]                      | not built                                                        |
 

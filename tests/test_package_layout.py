@@ -191,6 +191,11 @@ class AssetTests(unittest.TestCase):
         # team never merges a peer's node first, so it must not appear.
         self.assertNotIn("Keep mine", self.team)
 
+    def test_collaboration_pane_can_describe_displayed_nodes(self):
+        helper = self.team.index("const findDisplayedNode =")
+        use = self.team.index("const node = findDisplayedNode(uuid)")
+        self.assertLess(helper, use)
+
     def test_a_proposal_is_answerable_by_the_side_it_is_made_to(self):
         # Editing a proposed element and answering it are different rights:
         # it is not ours to edit until we accept it, and accepting it is the
@@ -231,7 +236,8 @@ class AssetTests(unittest.TestCase):
             "acceptance-avatar",
             "SovereignUI.avatar(person",
             "role-chip",
-            "holds no role here",
+            "on this team, holding no role yet",
+            "in the onboarding pool",
             "holds no role elsewhere",
             # Identity reads as a role like any other, told apart by a key.
             "role.trustee ?",
@@ -240,14 +246,17 @@ class AssetTests(unittest.TestCase):
         ):
             self.assertIn(marker, self.team)
 
-    def test_actor_rows_start_with_the_team_then_you_then_others(self):
+    def test_actor_rows_start_with_you_and_end_with_the_team(self):
+        # The team's own line used to lead, which read as though the body
+        # were one of its own members. It is an actor elsewhere, so it comes
+        # after the actors who are here.
         ordering = self.team.split("const people = participants || [];", 1)[1]
         ordering = ordering.split("return section;", 1)[0]
-        own = ordering.index("section.append(own)")
         me = ordering.index("section.append(rowFor(me, interactive))")
         others = ordering.index("section.append(rowFor(person, false))")
-        self.assertLess(own, me)
+        own = ordering.index("section.append(ownRow())")
         self.assertLess(me, others)
+        self.assertLess(others, own)
         self.assertNotIn(
             "if (!seats.length && !offers.length) return null",
             self.team,
@@ -259,29 +268,52 @@ class AssetTests(unittest.TestCase):
         self.assertIn("rowFor(me, interactive)", self.team)
         self.assertIn("rowFor(person, false)", self.team)
         self.assertIn("Click to step out", self.team)
-        self.assertIn("Click to take it", self.team)
+        # Taking a role is one control on your own line rather than a chip
+        # per role, so there is no "click to take it" on anybody's badge.
+        self.assertNotIn("Click to take it", self.team)
+        self.assertIn("+ Add role", self.team)
 
-    def test_an_unreachable_answer_is_not_worded_as_an_unanswered_one(self):
-        # "They have not answered" and "this session cannot see whether they
-        # have" are different facts, and the interface has to say which.
-        self.assertIn("invited, not yet taken up", self.team)
-        self.assertIn("answer not visible from here", self.team)
-        self.assertIn(
-            "you cannot see their answer", self.team,
-        )
+    def test_every_holder_status_is_something_the_holder_said(self):
+        # Nobody is invited to a role, so there is no state between being
+        # asked and answering. "Invited, not yet taken up", "not on this
+        # team" and "answer not visible from here" all described somebody
+        # who had not answered, and there is no such person to draw.
+        for status in ("holds this", "turned it down", "lapsed"):
+            self.assertIn(status, self.team)
+        for gone in (
+            "invited, not yet taken up",
+            "answer not visible from here",
+            "you cannot see their answer",
+        ):
+            self.assertNotIn(gone, self.team)
 
     def test_destructive_role_actions_state_their_consequence(self):
         for marker in (
-            # Withdrawing an invitation says what it does not do.
-            "This takes back the suggestion",
-            "stepping out of it is theirs",
+            # Leaving says what it costs and what getting back on takes.
+            "You go back to the onboarding pool",
+            "answering an invitation, which is Identity",
             # Trustee resignation says what happens next.
             "trusteeship stays vacant until a valid decision is implemented",
             "confirmModalConfirmBtn",
         ):
             self.assertIn(marker, self.team)
 
-    def test_archiving_and_joining_an_election_are_reachable(self):
+    def test_archiving_starts_from_the_gear_on_the_team_row(self):
+        # Archiving is something you do to a team as a whole, so it hangs off
+        # that team's row in Organizations rather than sitting as a button
+        # over the agreement, which is the one thing it is not about.
+        for marker in (
+            'id="teamActionsModal"',
+            "organization-gear",
+            "openTeamActions(item.uuid, item.title)",
+        ):
+            self.assertIn(marker, self.team)
+        self.assertNotIn("archive-team", self.team)
+        # The pane lists organizations, plural, and says so.
+        self.assertIn("<h2>Organizations</h2>", self.team)
+        self.assertIn("textContent = 'Organizations'", self.team)
+
+    def test_archiving_is_reachable_and_says_what_it_does_not_do(self):
         for marker in (
             "/api/team/teams/archive",
             "/api/team/teams/restore",
@@ -290,24 +322,60 @@ class AssetTests(unittest.TestCase):
             # does not: nothing is sent, and nobody else loses anything.
             "everybody else keeps their copy",
             "the file carries",
-            # An elector can bring an unavailable election here.
-            "/api/team/elections/join",
-            "Bring it here",
-            "can_join",
         ):
             self.assertIn(marker, self.team)
+        # An election is a flow the team runs, taken up without being asked
+        # - so there is nothing to bring here, and no lifecycle to read.
+        for gone in ("/api/team/elections/join", "Bring it here", "can_join"):
+            self.assertNotIn(gone, self.team)
 
     def test_membership_is_operable_and_separate_from_roles(self):
-        # Identity decides membership; a member takes any role. Both acts
+        # Identity issues membership; a member takes any role. Both acts
         # have to be reachable, and neither may be dressed as the other.
         for marker in (
             "/api/team/membership/end",
             "/api/team/membership/leave",
-            "membership-roster",
-            "Take this role",
+            "/api/team/membership/apply",
+            "/api/team/membership/issue",
             "on this team, holding no role yet",
         ):
             self.assertIn(marker, self.team)
+        # Taking a role is not on the role card. The card is the definition;
+        # what you are doing about it is on your own line.
+        self.assertNotIn("Take this role", self.team)
+
+    def test_membership_acceptance_is_an_explicit_gated_form(self):
+        for marker in (
+            'id="membershipAcceptanceModal"',
+            'id="membershipAcceptanceInfo"',
+            'id="membershipAcceptanceRequirement"',
+            'id="membershipAcceptanceText"',
+            "acceptanceField.oninput = update",
+            'id="membershipAgreementAccepted"',
+            "agreement.disabled = !agreementExists",
+            "agreement.required = agreementExists",
+            "membership.agreement",
+            "acceptance_text: acceptance.acceptance_text",
+            "agreement_accepted: acceptance.agreement_accepted",
+        ):
+            self.assertIn(marker, self.team)
+        self.assertLess(
+            self.team.index('id="membershipAcceptanceInfo"'),
+            self.team.index('id="membershipAcceptanceRequirement"'),
+        )
+        self.assertLess(
+            self.team.index('id="membershipAcceptanceRequirement"'),
+            self.team.index('id="membershipAcceptanceText"'),
+        )
+        self.assertIn("This team has no Agreement yet.", self.team)
+        self.assertNotIn("Membership cannot be accepted.", self.team)
+        # Every member is an actor and is already on the actor list, so the
+        # two acts that change membership live on the actor's own line. A
+        # roster beside it named the same people a second time.
+        self.assertIn("participant-actions", self.team)
+        self.assertIn("row.append(body, rowActions(person))", self.team)
+        for gone in ("membership-roster", "membership-member", "Nobody is on this team."):
+            self.assertNotIn(gone, self.team)
         # Nothing left that treats a role as the carrier of membership, or
         # an answer as a request awaiting Identity's confirmation.
         for gone in (
@@ -339,9 +407,95 @@ class AssetTests(unittest.TestCase):
         ):
             self.assertIn(marker, self.team)
 
-    def test_pool_onboarding_has_a_separate_topic_view(self):
+    def test_trustee_acts_start_from_the_trusteeship_they_belong_to(self):
+        # Recording an action and filling the seat are both acts on one
+        # trusteeship, so both start from its card. The five fields of a
+        # record are a dialog, not a form parked under the trail, and none
+        # of them is enforced - a partial record is still a record.
         for marker in (
-            "Onboarding Pool",
+            'id="trusteeActionModal"',
+            "requestTrusteeAction(`Record ${label} action`)",
+            "electionStartControl(trust, label)",
+            "role-card-actions",
+            # Standing for the seat, and the elections that fill it, are on
+            # the same card - and instantiating a template is Identity's.
+            "`Act for ${label}`",
+            "/api/team/identity/take",
+            # Who sits in the seat is a person's decision, and this is
+            # where that person makes it.
+            "/api/team/trusteeships/settle",
+            "trustee-settle",
+        ):
+            self.assertIn(marker, self.team)
+        # Nothing states any of this a second time in Actors: a warning line
+        # about a vacancy, and a panel that said no election had been started
+        # about seats it never named.
+        for gone in (
+            "trustee-action-form",
+            "subject.required = true",
+            "decision.required = true",
+            "election-start-actions",
+            "renderIdentity",
+            "identity-line",
+            "Trustee decisions",
+            "No trustee election has been started.",
+            # The election itself is read in S-Flow, from Initiatives and
+            # Flows, so the card carries no state about it.
+            "renderElection",
+            "election-card",
+            "Implement decision",
+            "trustee_elections",
+        ):
+            self.assertNotIn(gone, self.team)
+
+    def test_the_history_of_the_team_scrolls_inside_its_own_section(self):
+        # A trail that grows without limit otherwise pushes the page it
+        # belongs to out of reach.
+        css = files("s_team.assets").joinpath(
+            "team.css",
+        ).read_text(encoding="utf-8")
+        trail = css.split(".decision-trail {", 1)[1].split("}", 1)[0]
+        self.assertIn("max-height", trail)
+        self.assertIn("overflow-y: auto", trail)
+
+    def test_the_work_a_team_runs_is_listed_and_taken_up(self):
+        # An item is the team's because it is on the team's channel and
+        # yours because you hold it. Nothing about it is recorded on the
+        # team, so the page reads both facts from the payload and nothing
+        # in it names a stored record.
+        for marker in (
+            "/api/team/items/create",
+            "/api/team/items/connect",
+            "/api/team/items/offer",
+            "/api/team/items/remove",
+            "Connect to…",
+            "Offer one of mine…",
+            'id="newItemModal"',
+            # Only what you hold is a row: an offer is a name until you
+            # take it up.
+            "items.filter(item => item.active)",
+            "items.filter(item => !item.active)",
+        ):
+            self.assertIn(marker, self.team)
+        # Removing says what it does not do, because the word is the same
+        # one the Cockpit uses for deleting.
+        self.assertIn("Everybody else keeps ", self.team)
+
+    def test_the_onboarding_pool_is_derived_rather_than_a_second_topic(self):
+        # The pool is whoever publishes on the channel without being on the
+        # team. There is no waiting room to be let into, so the page has no
+        # second view, no application to submit and nothing to resolve.
+        for marker in (
+            "onboarding pool",
+            "renderMemberships",
+            "/api/team/memberships/create",
+            "/api/team/memberships/delete",
+            "/api/team/membership/open",
+            "/api/team/membership/close",
+            "membership.pool",
+        ):
+            self.assertIn(marker, self.team)
+        for gone in (
             "separate onboarding channel",
             "/api/team/pool/invitations/publish",
             "/api/team/pool/applications/submit",
@@ -350,16 +504,46 @@ class AssetTests(unittest.TestCase):
             "Join Team channel",
             "active_invitations",
             "pool_uuid=",
+            "renderPool",
+            "openPool",
+        ):
+            self.assertNotIn(gone, self.team)
+
+    def test_a_role_is_taken_rather_than_handed_out(self):
+        # Nobody offers a role here any more. A member takes one, and a
+        # sub-team takes one from its own line in Actors - so the picker that
+        # made an invitation is gone, and with it the list that fed it.
+        for gone in (
+            "role-offer-picker",
+            "/api/team/roles/offer",
+            "/api/team/roles/revoke",
+            "offerable_actors",
+            "Offer to\\u2026",
+            "offered_by",
+            "offered_at",
+            "offered_elsewhere",
+        ):
+            self.assertNotIn(gone, self.team)
+        # A holding is its holder's own record, so nothing on somebody
+        # else's badge takes it back. Stepping out is theirs, and the one
+        # mark left of that shape is the trustee's own.
+        self.assertIn("Step out of ${label}", self.team)
+
+    def test_a_team_takes_a_seat_from_its_own_page(self):
+        # A team that could take a seat gets no row on the parent's page: a
+        # seat nobody has taken is not a fact about anybody, and the only
+        # person who could act on it holds that team's Identity and is
+        # looking elsewhere. It acts from its own "This team" line.
+        for marker in (
+            "const addSeatControl = (seats)",
+            "payloadState.seatable_roles",
+            "payloadState.holds_identity",
+            "/api/team/roles/seat",
+            "/api/team/roles/unseat",
         ):
             self.assertIn(marker, self.team)
-
-    def test_inviting_and_withdrawing_belong_to_identity_alone(self):
-        # Both live on the holder's badge, revealed on hover the way Delete
-        # is, so a role reads as a line of people rather than of controls.
-        self.assertIn("payloadState.holds_identity", self.team)
-        self.assertIn("holder-action", self.team)
-        self.assertIn("/api/team/roles/revoke", self.team)
-        self.assertIn("/api/team/roles/offer", self.team)
+        for gone in ("const subteamRow = (person)", "const subteamChip = ("):
+            self.assertNotIn(gone, self.team)
 
     def test_who_holds_a_role_is_a_badge_and_the_rest_is_a_tooltip(self):
         # The line shows a face and a name; when they answered, against which
@@ -375,13 +559,17 @@ class AssetTests(unittest.TestCase):
         # badges on its own line in Actors - taken and left by clicking, as
         # yours are. There is no separate idea of a seat with a section of
         # its own.
-        self.assertIn("payloadState.seat_offers", self.team)
-        self.assertIn("/api/team/roles/decline_seat", self.team)
+        self.assertIn("payloadState.parents", self.team)
         self.assertIn("is-team", self.team)
-        for gone in ("renderSeats", "renderSeatOffers", "seat-offer", "Seats held"):
+        for gone in (
+            "renderSeats", "renderSeatOffers", "seat-offer", "Seats held",
+            # A seat is taken and given up. There is nothing to decline,
+            # because nothing was offered.
+            "seat_offers", "/api/team/roles/decline_seat",
+        ):
             self.assertNotIn(gone, self.team)
 
-    def test_the_three_team_parts_use_shared_disclosures(self):
+    def test_the_team_parts_use_shared_disclosures(self):
         for title, key in (
             # "Agreement" and not "Team document": this section *is* the
             # agreement - the text the members consent to - and it is the
@@ -389,13 +577,22 @@ class AssetTests(unittest.TestCase):
             ("Agreement", "document"),
             ("Actors", "actors"),
             ("Roles", "roles"),
+            # What the team is doing, which is what somebody opening it
+            # came for.
+            ("Initiatives and Flows", "work"),
+            # What has already happened, named for the general case rather
+            # than for the decision trail that is currently all of it.
+            ("History", "history"),
         ):
             self.assertIn(f"disclosure('{title}', '{key}')", self.team)
-        # Who is here, open. The agreement is the longest section and the
-        # least often changed, so it no longer greets whoever opens the team.
-        self.assertIn("actors: true", self.team)
+        # The work is open and everything else arrives closed. The agreement
+        # is the longest section and the least often changed, and who is on
+        # the team changes rarely enough not to greet you.
+        self.assertIn("work: true", self.team)
+        self.assertIn("actors: false", self.team)
         self.assertIn("roles: false", self.team)
         self.assertIn("document: false", self.team)
+        self.assertIn("history: false", self.team)
 
     def test_copying_is_only_offered_while_making_a_new_team(self):
         # Starting a new team from this one is a choice made where a new
@@ -454,19 +651,22 @@ class AssetTests(unittest.TestCase):
         # sections follow in the order the page now reads.
         self.assertIn("#document > .element-row", css)
         self.assertIn(
-            "article.append(actorsPart.section, rolesPart.section,"
-            " documentPart.section)",
+            "        workPart.section, actorsPart.section, rolesPart.section,\n"
+            "        documentPart.section, membershipPart.section,"
+            " historyPart.section,",
             self.team,
         )
 
-    def test_role_offer_picker_shares_the_held_by_heading_and_theme(self):
+    def test_one_rule_separates_the_name_from_the_sections(self):
+        # Shared disclosures carry their own border-top and drop it only as a
+        # first child, which the first section here is not - the team's name
+        # is. Two rules ran directly under the title.
         css = files("s_team.assets").joinpath(
             "team.css",
         ).read_text(encoding="utf-8")
-        self.assertIn("heldHeading.append(picker)", self.team)
-        self.assertIn(".role-holders-heading", css)
-        self.assertIn("background-color: var(--panel)", css)
-        self.assertIn(".role-offer-picker option", css)
+        self.assertIn(
+            "#document > .element-row + .ui-disclosure { border-top: 0; }", css,
+        )
 
     def test_assets_never_navigate_to_the_bare_root_with_a_query(self):
         # "/" serves whichever application is primary, so a root-relative link

@@ -11,7 +11,7 @@ from sovereign import ProtocolNode
 from .logic import TeamLogic
 
 
-TEAM_FACADE_API_VERSION = 1
+TEAM_FACADE_API_VERSION = 2
 
 
 class TeamFacade:
@@ -84,20 +84,6 @@ class TeamFacade:
     def leave_team(self, team_uuid: str):
         return self._logic.leave_team(team_uuid)
 
-    def verify_flow_decision_result(
-        self,
-        process_uuid: str,
-        expected_result_hash: str | None = None,
-        expected_definition_id: str = "integrative-election",
-        expected_definition_version: str | None = None,
-    ) -> dict:
-        return self._logic.verify_flow_decision_result(
-            process_uuid,
-            expected_result_hash,
-            expected_definition_id,
-            expected_definition_version,
-        )
-
     def start_trustee_election(
         self, team_uuid: str, trust: str, facilitator_actor_uuid: str = "",
     ):
@@ -105,16 +91,15 @@ class TeamFacade:
             team_uuid, trust, facilitator_actor_uuid,
         )
 
-    def implement_trustee_election(
-        self, team_uuid: str, election_uuid: str,
+    def settle_trusteeship(
+        self, team_uuid: str, trust: str, holder_actor_uuid: str,
+        process_uuid: str = "",
         signals: str = "", consideration: str = "", expectation: str = "",
     ):
-        return self._logic.implement_trustee_election(
-            team_uuid, election_uuid, signals, consideration, expectation,
+        return self._logic.settle_trusteeship(
+            team_uuid, trust, holder_actor_uuid, process_uuid,
+            signals, consideration, expectation,
         )
-
-    def trustee_elections(self, team: ProtocolNode) -> list[dict]:
-        return self._logic.trustee_elections_payload(team)
 
     def enter_trustee_candidacy(self, team_uuid: str, trust: str):
         return self._logic.enter_trustee_candidacy(team_uuid, trust)
@@ -147,72 +132,69 @@ class TeamFacade:
     def trustee_actions(self, team: ProtocolNode) -> list[dict]:
         return self._logic.trustee_actions_payload(team)
 
-    def pools(self) -> list[ProtocolNode]:
-        return self._logic.pools()
+    def onboarding_pool(self, team: ProtocolNode) -> list[str]:
+        """Who is publishing on this team's channel without being on it."""
+        return self._logic.onboarding_pool_uuids(team)
 
-    def pool(self, pool: ProtocolNode) -> dict:
-        return self._logic.pool_payload(pool)
+    def membership_types(self, team: ProtocolNode) -> list[ProtocolNode]:
+        return self._logic.membership_types(team)
 
-    def publish_pool_invitation(
-        self, team_uuid: str, opening_uuid: str, expires_at: str = "",
+    def create_membership_type(
+        self, team_uuid: str, name: str, requirements: str = "",
+        acceptance: str = "",
     ):
-        return self._logic.publish_pool_invitation(
-            team_uuid, opening_uuid, expires_at,
+        return self._logic.create_membership_type(
+            team_uuid, name, requirements, acceptance,
         )
 
-    def submit_pool_application(
-        self, pool_uuid: str, invitation_uuid: str,
+    def rename_membership_type(self, membership_type_uuid: str, name: str):
+        return self._logic.rename_membership_type(membership_type_uuid, name)
+
+    def set_membership_requirements(
+        self, membership_type_uuid: str, requirements: str,
     ):
-        return self._logic.submit_pool_application(
-            pool_uuid, invitation_uuid,
+        return self._logic.set_membership_requirements(
+            membership_type_uuid, requirements,
         )
 
-    def withdraw_pool_application(
-        self, pool_uuid: str, application_uuid: str,
+    def set_membership_acceptance(
+        self, membership_type_uuid: str, acceptance: str,
     ):
-        return self._logic.withdraw_pool_application(
-            pool_uuid, application_uuid,
+        return self._logic.set_membership_acceptance(
+            membership_type_uuid, acceptance,
         )
 
-    def resolve_pool_application(
-        self, pool_uuid: str, application_uuid: str, outcome: str,
-        signals: str = "", consideration: str = "", expectation: str = "",
+    def delete_membership_type(self, membership_type_uuid: str):
+        return self._logic.delete_membership_type(membership_type_uuid)
+
+    def open_membership_invitation(
+        self, team_uuid: str, membership_type_uuid: str, expires_at: str,
     ):
-        return self._logic.resolve_pool_application(
-            pool_uuid, application_uuid, outcome,
-            signals, consideration, expectation,
+        return self._logic.open_membership_invitation(
+            team_uuid, membership_type_uuid, expires_at,
         )
 
-    def mount_accepted_team(
-        self, pool_uuid: str, application_uuid: str,
+    def close_membership_invitation(
+        self, team_uuid: str, membership_type_uuid: str,
     ):
-        return self._logic.mount_accepted_team(
-            pool_uuid, application_uuid,
+        return self._logic.close_membership_invitation(
+            team_uuid, membership_type_uuid,
         )
 
-    def open_member_opening(self, team_uuid: str):
-        return self._logic.open_member_opening(team_uuid)
+    def apply_for_membership(
+        self, team_uuid: str, invitation_uuid: str,
+        agreement_accepted: bool = False,
+        acceptance_text: str = "",
+    ):
+        return self._logic.apply_for_membership(
+            team_uuid, invitation_uuid, agreement_accepted, acceptance_text,
+        )
 
-    def close_member_opening(self, team_uuid: str, opening_uuid: str):
-        return self._logic.close_member_opening(team_uuid, opening_uuid)
-
-    def submit_member_application(self, team_uuid: str, opening_uuid: str):
-        return self._logic.submit_member_application(team_uuid, opening_uuid)
-
-    def withdraw_member_application(
+    def issue_membership_badge(
         self, team_uuid: str, application_uuid: str,
     ):
-        return self._logic.withdraw_member_application(
+        return self._logic.issue_membership_badge(
             team_uuid, application_uuid,
-        )
-
-    def resolve_member_application(
-        self, team_uuid: str, application_uuid: str, outcome: str,
-        signals: str = "", consideration: str = "", expectation: str = "",
-    ):
-        return self._logic.resolve_member_application(
-            team_uuid, application_uuid, outcome,
-            signals, consideration, expectation,
         )
 
     def accountabilities(self, role: ProtocolNode) -> list[ProtocolNode]:
@@ -221,19 +203,10 @@ class TeamFacade:
     def domains(self, role: ProtocolNode) -> list[ProtocolNode]:
         return self._logic.domains(role)
 
-    def role_offers(self, role: ProtocolNode) -> list[ProtocolNode]:
-        return self._logic.role_offers(role)
-
     def role_holders(
         self, team: ProtocolNode, role: ProtocolNode,
     ) -> list[dict]:
         return self._logic.role_holders(team, role)
-
-    def offer_role(self, role_uuid: str, actor_uuid: str):
-        return self._logic.offer_role(role_uuid, actor_uuid)
-
-    def revoke_role_offer(self, role_uuid: str, actor_uuid: str):
-        return self._logic.revoke_role_offer(role_uuid, actor_uuid)
 
     def decide_role(
         self, role_uuid: str, decision: str, expires_at: str | None = None,
@@ -246,17 +219,34 @@ class TeamFacade:
     def seat_team(self, role_uuid: str, team_uuid: str):
         return self._logic.seat_team(role_uuid, team_uuid)
 
-    def decline_seat(self, role_uuid: str, team_uuid: str):
-        return self._logic.decline_seat(role_uuid, team_uuid)
-
     def unseat_team(self, role_uuid: str, team_uuid: str):
         return self._logic.unseat_team(role_uuid, team_uuid)
 
-    def seat_offers(self, team: ProtocolNode) -> list[dict]:
-        return self._logic.seat_offers(team)
-
     def create_seated_team(self, role_uuid: str, title: str):
         return self._logic.create_seated_team(role_uuid, title)
+
+    # What the team runs. Another application asking is asking what is on
+    # this team's channel, which is where the answer lives - there is no
+    # list of items to hand over, only the derivation.
+    def items(self, team: ProtocolNode) -> list[dict]:
+        return self._logic.team_items(team)
+
+    def create_item(
+        self, team_uuid: str, application_id: str, title: str,
+        template: str = "",
+    ):
+        return self._logic.create_team_item(
+            team_uuid, application_id, title, template,
+        )
+
+    def offer_item(self, team_uuid: str, topic_uuid: str):
+        return self._logic.offer_team_item(team_uuid, topic_uuid)
+
+    def connect_item(self, team_uuid: str, topic_uuid: str):
+        return self._logic.connect_team_item(team_uuid, topic_uuid)
+
+    def remove_item(self, team_uuid: str, topic_uuid: str):
+        return self._logic.remove_team_item(team_uuid, topic_uuid)
 
     def parents(self, team: ProtocolNode) -> list[dict]:
         return self._logic.parent_payload(team)

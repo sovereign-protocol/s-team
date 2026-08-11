@@ -20,28 +20,41 @@ type is and carries lives in `DESIGN_TYPES.md`; where the boundaries are is in
 - **Actors** — who is on the team and what they have taken on. A governance
   fact.
 
-Neither contains the other: somebody invited who has taken no role is a member
-who is idle, and somebody on the team you no longer sync with is a member you
-cannot see.
+Neither contains the other: a member who has taken no role is a member who is
+idle, and somebody on the team you no longer sync with is a member you cannot
+see.
 
 An answer is credible only when read from the actor's own replica. A peer's
 copy of a third party's answer is hearsay — it is signed, so you can tell who
 wrote it, but a peer holding a copy is not the actor saying it — and it is not
 counted.
 
-That adds a status. Beside `{pending, refused, expired, outdated, accepted}`
-there is **`unobserved`**: you know the offer exists but do not sync with the
-actor, so you cannot know their answer. It is distinguishable from `pending`,
-because you know your own peer set, and collapsing the two would be a lie the
-interface tells. "They have not answered" and "I cannot see whether they have"
-are different facts.
+The statuses are `{refused, expired, outdated, accepted}` and there is no
+fifth. There used to be two more, and both belonged to invitations: `pending`
+said somebody had been asked and had not answered, and `unobserved` said the
+invitation was here but the answer was on a replica you do not sync with.
+Nobody is asked now, so an actor whose answer this session cannot read is not
+a holder in an unknown state — there is no record of them here at all, which
+is the honest reading and the one the page shows.
 
 Consequence worth stating plainly: **a team can only be as large as the group
 that fully syncs on it.** Subteams are not only a governance device, they are
 the replication scaling mechanism — the load-bearing reason the structure is
 recursive rather than one large membership list.
 
-## 3. Templates are a state, not a type
+## 3. Agreement truth comes from Identity perspectives
+
+- Every Actor may edit their local Agreement copy.
+- The consolidated Agreement is the name, version, sections and clauses on
+  which all current or acting Identity holders' perspectives agree.
+- If those perspectives differ or are unavailable, no consolidated Agreement
+  exists and no membership invitation can be opened.
+- `agreement_version` is ordinary human-readable content. Badges store it for
+  reference and also store the exact Agreement hash.
+- Agreement alignment is not Agreement consent. Consent is explicit in an
+  Actor's membership application and preserved on the Identity-issued badge.
+
+## 4. Templates are a state, not a type
 
 | Members | State                 |
 | ------- | --------------------- |
@@ -56,7 +69,7 @@ uuid-keyed and a copy sharing them would let an answer given in the original
 count in the copy.
 
 A team with nobody on it is **inert as an actor**: no members means no
-trusteeships, so it cannot offer, answer, resign or take a seat. Its seats can
+trusteeships, so it cannot answer, resign or take a seat. Its seats can
 only be released from the parent's side. That is a derived property, not a
 rule — and it is the same state a working team reaches if everybody leaves it.
 
@@ -68,7 +81,7 @@ exception to get.
 Taking Identity in an empty template is the same write as anywhere else, with
 nobody to diverge against.
 
-## 4. Cycles are rejected best-effort, per replica
+## 5. Cycles are rejected best-effort, per replica
 
 Cycles among Team actors are refused when a seat is taken, by walking the
 parents already known. Enforcement is **per replica and best-effort**: you can
@@ -78,10 +91,10 @@ no single peer can see.
 This is the same shape as everything else here — a replica answers from what it
 has, and is honest about the difference between "no" and "I cannot tell".
 
-## 5. Names are made distinct, not refused
+## 6. Names are made distinct, not refused
 
-A name is the whole of how a role or a team is referred to — a badge, an offer,
-a seat in a parent, a line in the organization tree. Two of them called the same
+A name is the whole of how a role or a team is referred to — a badge, a seat
+in a parent, a line in the organization tree. Two of them called the same
 thing are two different things that read as one.
 
 Refusing the write would throw away what somebody typed, so the name is kept

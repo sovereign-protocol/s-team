@@ -2,6 +2,83 @@
 
 ## Unreleased
 
+- Membership now uses a signed Actor application followed by an
+  Identity-issued badge. The badge keeps Membership Info, Acceptance
+  Requirement, Acceptance Text, Agreement consent, human-readable Agreement
+  version, and the exact Agreement hash. The modal shows request before
+  response; when no Agreement exists its consent checkbox is greyed without
+  blocking the application. The Team data schema is now version 13.
+- Agreement truth is derived directly from current Identity-holder
+  perspectives. The ordinary `agreement_version` field sits beside the
+  Agreement name; there is no publication record. Identity disagreement blocks
+  membership openings. Membership definitions automatically align only to
+  recognized Identity perspectives; disregarded writes are traced.
+- Fixed taking up a Team initiative being one-way. The taker subscribed to the
+  board but did not publish their replica back, leaving the creator's board
+  labelled private. Connecting now records both receive consent and the future
+  publication binding before the board arrives, and bridge failures are traced.
+
+- **Membership is its own section**, below the Agreement and above History,
+  rather than a region inside Actors: a membership is part of what the team
+  is, and taking one up is accepting the text above it. The per-row list of
+  earlier invitations is gone — it reported a thing nobody acts on, in the
+  place where you decide whether to open the door now, and the chain and the
+  History section already keep them.
+- **A role is only held while its holder is a member.** `role_holders` reads
+  standing beside the answer, so leaving, being removed, or having your
+  membership type deleted takes the holdings with it. Nothing is written into
+  the role: the `team_role_decision` stands as it was, which is what lets the
+  holding come back when a membership is taken up again. Individuals only —
+  a seated Team's standing is containment, so asking it of one would unseat
+  every subteam.
+- Fixed: a removed member could not take the membership up again. `can_accept`
+  compared the *type* alone, and a former member's chain still names the type
+  they were on — so the control was hidden from the one person who needed it.
+- Fixed: a membership type declared by a peer was invisible. The section drew
+  only what this replica had adopted, so a new membership never appeared and
+  the invitation naming it deferred for good with nothing on the page to say
+  why. Types now render from the document, showing a peer's as a proposal the
+  way a new role does.
+- A membership type carries an **Acceptance Requirement** beside its Membership
+  Info. Both are shown in the confirm before the Actor writes their own
+  Acceptance Text.
+
+- Rebuilt onboarding around **membership types**, and deleted the waiting
+  room. The **Onboarding Pool is now derived** — whoever publishes on the
+  team's channel without being on the team — so `team_pool` and its topic,
+  invitation, application and resolution records are gone, along with the
+  Member opening/application/resolution triad and
+  `team_external_member_resolution`: seven node types and a second shared
+  topic, replaced by `team_membership_type` (content, like a role) and
+  `team_membership_invitation` (one chain per type, so a membership never
+  has two live invitations).
+- **Identity declares the class and issues the badge.** The Actor's signed
+  `team_membership_application` records their answer; Identity's signed
+  `team_membership` acceptance records the standing. `MEMBERSHIP_CAUSES` is
+  `genesis`, `acceptance`, `departure`, `removal`.
+- **Deleting a membership type needs no cascade.** Standing is read as the
+  pair "the chain says member" and "the type it names still exists", so
+  everybody on a deleted type is back in the pool with nothing rewritten and
+  the trail still saying what they were. `membership_projection` returns
+  `pool` where it returned `observer`.
+- The invitation window is judged against **recorded values on both sides** —
+  the acceptance's `acted_at` against the invitation's `opened_at` and
+  `expires_at` — never the reader's clock, so two replicas holding the same
+  records always agree about who is a member.
+- Actors: a **membership badge** at the right end of every individual actor's
+  row (never a Team's), carrying `accepted` or `outdated`; on your own row it
+  re-accepts the Agreement, and its `×` leaves the team. Only **held** roles
+  are badges now, and taking one is a single `+ Add role` on your own line
+  rather than a clickable chip per role — so `Take this role` is gone from
+  the role cards, where it had put the same control in as many places as the
+  team had roles.
+- **A team takes a seat from its own page.** Rows for sub-teams that merely
+  *could* qualify are gone: they stated nothing, and only whoever held that
+  team's Identity could act on them. `This team` carries the same `+ Add
+  role`, over roles in teams this client actually has, with ineligible ones
+  listed alongside the reason rather than hidden. This introduced schema
+  version 11; the Acceptance Text record above advances it to version 12.
+
 - Sorted the documents so each answers one question and no two answer the
   same: `ARCHITECTURE.md` for ownership, trust and structure; `DESIGN_TYPES.md`
   for the node types; `DESIGN_RULES.md` for what holds across them;

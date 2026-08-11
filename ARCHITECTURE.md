@@ -6,8 +6,9 @@ Who owns what, and what may depend on what. The node types themselves are in
 ## Ownership
 
 S-Team owns the team node schemas — the document, the roles and their items,
-and the records of who takes part in them: membership, trusteeship, openings
-and Pool onboarding. It imports only the documented `sovereign` package root.
+and the records of who takes part in them: membership types, invitations,
+applications, Identity-issued membership badges, and trusteeship. It imports only the
+documented `sovereign` package root.
 
 Sovereign Core owns protocol, Session, channels, hosting, identity and blob
 mechanics, and contains no team node-type knowledge — a rule Core enforces in
@@ -30,7 +31,7 @@ Two kinds of node, and the difference decides how each behaves.
 **Content** — the document and the role definitions — is what people agree to,
 so it is edited in place and presented for adoption.
 
-**Records** — offers, answers, seats, memberships, trusteeships and their
+**Records** — answers, seats, memberships, trusteeships and their
 decisions — are facts about who is doing what, so they are appended and never
 rewritten. Authority is judged against the record a write *names*, not against
 the state of the world when it is read, so a decision taken in office survives
