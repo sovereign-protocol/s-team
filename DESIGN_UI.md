@@ -6,7 +6,7 @@ was retired: the design review rebuilt the model beneath this and deliberately
 did not touch the interface, so outside §4.5 nothing here has been re-checked
 against what the page now does.
 
-**§4.5 has been.** The Actors area was rebuilt with the onboarding model under
+**§4.5 has been.** The Members area was rebuilt with the onboarding model under
 it — memberships and their invitations in place of a waiting-room topic — and
 that section describes what the page does today.
 
@@ -44,7 +44,7 @@ full re-render per payload.
 
 **[DONE]** The region is the definition rather than the doing.
 
-**[DONE] The page reads: team name, Actors, Roles, Agreement.** An earlier
+**[DONE] The page reads: team name, Members, Roles, Agreement.** An earlier
 version put the agreement first and the roles last, reasoning that what we
 agree comes before who is in it. In use it read the other way round: the
 agreement is the longest section on the page and the least often changed, so
@@ -86,7 +86,7 @@ rather than as a control on the title.
   type read across a row. Status is carried by how the badge looks, in the
   same vocabulary as the participant chips (§4.3).
 - Taking a role or stepping out of one is _not_ here — it is on your own line
-  in Actors (§4.5), so one place answers "what is this role" and another
+  in Members (§4.5), so one place answers "what is this role" and another
   answers "what am I doing about it". **[DONE]** The card carries no button
   at all now: `Take this role` used to sit under every one of them, which put
   the same control in as many places as the team had roles and made the
@@ -158,9 +158,9 @@ not the mechanism:
 > and **nothing you decide for the team will be adopted by others** until it
 > is resolved.
 
-### 4.5 Actors, and Membership
+### 4.5 Members, and Membership
 
-Two sections, not one region inside another. **Actors** is who is here.
+Two sections, not one region inside another. **Members** is who is here.
 **Membership** is what the team supports, and it sits **below the Agreement**,
 because taking one up is accepting that text — the page reads: what the team
 is doing, who is here, what is expected of them, the text they hold to, and
@@ -230,13 +230,14 @@ pool shows no badges at all — not even the ones they answered for before they
 left or were removed. Their answers are untouched and come back with them; the
 line just stops claiming they hold something.
 
-**Two lines act.** _Yours_ comes first: a held badge is a control, click to
+**Two places act.** _Your member line_ comes first: a held badge is a control, click to
 step out. **Refuse is not an action here** — the choice is holding or not
 holding. Identity is one of those badges, and steps out the same way (§2.2).
 
-_This team's_ comes second, because a Team is an Actor and the roles it holds
-in other teams are roles. Same badges, answered by whoever holds this team's
-Identity, and the same `+ Add role` — which is how a team takes a seat now.
+_The team-name heading_ carries the other controls, because a Team is an Actor
+and the roles it holds in other teams are roles. Same badges, answered by
+whoever holds this team's Identity, and the same `+ Add role` — which is how a
+team takes a seat now. The team is not repeated among its own Members.
 One mark appears on hover for the thing that is not simply taking or leaving:
 `↑` says draw the organisation under this one — home is the first holding in
 order that works (§2.5), so badge order _is_ the control and there is no home
@@ -247,7 +248,7 @@ soon as it contained no strangers, drawn with an outline chip per role it
 might take. The row stated nothing — a seat nobody has taken is not a fact
 about anybody — and the only person who could act on it held that team's
 Identity and was looking at a different page. **The act moved to where the
-actor is**: a team takes a seat from its own `This team` line, choosing from
+actor is**: a team takes a seat from its own team-name heading, choosing from
 the roles in teams this client has. A team appears among these actors once it
 _holds_ something, like everybody else.
 
@@ -263,13 +264,12 @@ saying it had accepted the Agreement would be somebody else's answer.
 
 It names the membership and carries two states, because those are the only
 two there are (§Membership in `DESIGN_TYPES.md`): `accepted`, or `outdated`
-when the Agreement has moved since. A membership does not expire — an
+when Identity has declared a new Agreement version. A membership does not expire — an
 invitation does — and refusing one is simply not taking it.
 
-**On my own row it is the control for my own membership.** Clicking it
-re-accepts the Agreement as it stands; the `×` on it leaves the team. Two
-acts opposite enough that one click cannot mean both, so the badge carries
-each separately — the same shape a seat chip already uses for `↑`.
+**On my own row it is the control for leaving.** The `×` leaves the team.
+Renewal appears on the held membership type as **Renew outdated membership**
+and opens **Renew application for [type]**; Identity then issues the new badge.
 
 Everybody else's badges are inert. Where somebody else stands is a
 statement of fact, not a control over them, and drawing it as a button
@@ -312,7 +312,7 @@ result, and the record says you did it.
 ### 4.5a Initiatives and Flows
 
 The first section, and the only one open by default: what the team is doing
-is what somebody opening it came for, so Actors now arrives closed.
+is what somebody opening it came for, so Members now arrives closed.
 
 A **row is something you hold** — click it and it opens in S-Initiative or
 S-Flow — with `Remove`, which is the Cockpit's delete and nothing more: your
@@ -357,7 +357,7 @@ home. Additions:
 A team taking a role is what makes it a subteam, so "New subteam" is not a
 separate button: structure is created the way the model actually works, by
 filling a seat, instead of by a parallel affordance that happens to produce
-the same nodes. An existing team fills one from **its own** `This team` line
+the same nodes. An existing team fills one from **its own team-name heading**
 (§4.5), on its own page; a new one is made from the seat's side, by **"fill
 this role with a new team"**, because there is no team yet to have a line.
 

@@ -299,9 +299,10 @@ The Agreement has ordinary `agreement_title` and `agreement_version` fields on
 the Team beside its sections. There is no publication record. Its consolidated
 truth is derived from perspectives: every current Identity holder must expose
 the same name, version, sections and clauses. If they differ, no consolidated
-Agreement exists and Identity cannot open a membership. A badge stores the
-human-readable version and exact content hash; matching a version label alone
-is never proof of matching text.
+Agreement exists and Identity cannot open a membership. A badge stores both
+the human-readable version and exact content hash. Identity owns badge
+validity: matching the declared version keeps the badge current, while the
+hash preserves exactly what the Actor reviewed for audit and divergence.
 
 **To be on a team, an Actor is a member of it.** Membership is its own
 relationship, not a role and not a side effect of holding one. A member who has
@@ -470,7 +471,7 @@ and removal are Identity's signed acts and carry Identity's authority basis.
 **An acceptance records distinct answers.** `acceptance_text` answers
 Identity's membership requirement. When an Agreement exists,
 `agreement_accepted` records the separate explicit consent and
-`reference_hash` identifies the version read. With no Agreement, the boolean
+`reference_hash` identifies the exact text read. With no Agreement, the boolean
 is false and its absence does not close the membership invitation.
 
 The command is refused unless the membership type has a non-empty Acceptance
@@ -481,23 +482,22 @@ answer and the consent boolean are stored on the record.
 
 ### The membership badge, and what makes it stale
 
-`reference_hash` here is `team_reference_hash` — the whole document body plus
-both names — which is the same hash a role acceptance is scoped against, minus
-the one role. So the badge has two states and no more:
+`reference_hash` is the exact Agreement snapshot the Actor reviewed. It is
+evidence for inspecting content divergence, not the validity clock. Identity's
+human-readable `agreement_version` determines freshness, so the badge has two
+states and no more:
 
 | Status     | When                                                        |
 | ---------- | ----------------------------------------------------------- |
-| `accepted` | the hash on the head of the chain is the document's now      |
-| `outdated` | it is not — they accepted an earlier version of the Agreement |
+| `accepted` | the badge version equals Identity's consolidated Agreement version |
+| `outdated` | it does not — Identity declared a substantial new version       |
 
-**Editing the Agreement body outdates every membership on the team at once.**
-That is the honest consequence and it is not worked around: if the document
-people are on this team by accepting has changed, their acceptance of it is
-genuinely stale. A member re-answers through a new application and Identity
-issues a new badge. A grace period
-was rejected here for the same reason it was rejected for roles — it would make
-standing depend on the clock and on local settings, and two replicas would
-disagree.
+Editing the Agreement without changing its version is Identity's declaration
+that the change is non-substantial. Members retain current badges, see the
+content divergence, and may inspect, adopt, or leave. Changing the Agreement
+version declares a substantial change: existing badges become `outdated`, and
+the member re-answers through a renewal application before Identity issues a
+new badge. Standing never depends on the clock or local grace-period settings.
 
 There is no `expired` and no `refused`. An invitation expires; a membership does
 not, and refusing one is simply not taking it.

@@ -99,7 +99,7 @@ button, select { padding: 8px 11px; border-radius: 6px; border: 1px solid var(--
 .organization-branch { display: grid; gap: 3px; }
 .organization-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 2px 8px;
   align-items: center;
   margin-left: calc(var(--depth) * 14px);
@@ -132,21 +132,6 @@ button, select { padding: 8px 11px; border-radius: 6px; border: 1px solid var(--
   font-size: 11px;
   white-space: nowrap;
 }
-/* Everything you do to a team as a whole hangs off one mark on its row.
-   Quiet until the row is under the pointer: the tree is for reading where
-   the teams are, not for acting on them. */
-.organization-gear {
-  padding: 0 4px;
-  border: 0;
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1;
-  opacity: 0.35;
-  cursor: pointer;
-}
-.organization-row:hover .organization-gear,
-.organization-gear:focus-visible { opacity: 1; color: var(--text); }
 #teamActionsForm { min-width: min(420px, 80vw); }
 .modal-note { color: var(--text-muted); font-size: 13px; line-height: 1.5; }
 .relationship-pending {
@@ -206,6 +191,26 @@ h2.element-label { margin: 0 0 4px; }
   border-bottom: 1px solid var(--line);
 }
 #document > .element-row h2.element-label { font-size: 22px; }
+.team-heading-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+.team-heading-row > .element-actions { flex-wrap: wrap; justify-content: flex-end; }
+.team-heading-controls {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.team-options {
+  padding: 2px 5px !important;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+}
+.team-options:hover,
+.team-options:focus-visible { color: var(--text); }
 /* One rule, not two. Shared disclosures carry a border-top to separate each
    from the one above, and drop it only when they are the first child of
    anything - which the first section here is not: the team's name is. Its
@@ -294,7 +299,19 @@ h2.element-label { margin: 0 0 4px; }
   background: none;
   color: var(--text-muted);
 }
-.element-add-control .ui-inline-composer input { width: 180px; }
+.element-composer-row {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 4px;
+}
+.element-composer-row::before { content: ""; }
+.element-composer-row .ui-inline-composer {
+  grid-column: 2 / -1;
+  width: 100%;
+  max-width: none;
+}
 /* Reacting is the only way out of a divergence, so it is never hidden behind
    hover - it simply does not exist while there is nothing to react to.
    It used to be a dark chip standing out from a light page; on a dark page
@@ -338,10 +355,6 @@ h2.element-label { margin: 0 0 4px; }
 .element-add-control:focus-within,
 .element-delete:focus-visible,
 .element-move:focus-visible { opacity: 1; }
-
-.editable { border-radius: 4px; padding: 2px 4px; margin-left: -4px; cursor: text; }
-.editable:hover { background: var(--hover); }
-.editable:focus { outline: 2px solid var(--proposal); outline-offset: 1px; background: var(--hover); }
 
 /* Participants are listed by the roles they hold, because holding a role is
    what being part of a team means. Somebody present who holds nothing
@@ -455,9 +468,6 @@ h2.element-label { margin: 0 0 4px; }
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-/* The prompt is a pseudo-element, so an unset purpose stays genuinely empty
-   and the prompt can never be committed as the value. */
-.role-purpose:empty::before { content: 'Add a purpose'; opacity: 0.6; }
 .role-columns {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -873,21 +883,10 @@ h2.element-label { margin: 0 0 4px; }
   font-size: 17px;
   overflow-wrap: anywhere;
 }
-/* The prompt is a pseudo-element, so an unnamed agreement stays genuinely
-   empty and the prompt can never be committed as the name. */
-.agreement-title:empty::before {
-  content: 'Name this agreement';
-  color: var(--text-muted);
-  opacity: 0.7;
-}
 .agreement-version {
   min-width: 44px;
   color: var(--text-muted);
   font-size: 13px;
-}
-.agreement-version:empty::before {
-  content: 'Version';
-  opacity: 0.7;
 }
 .agreement-state {
   padding: 1px 7px;
@@ -904,7 +903,6 @@ h2.element-label { margin: 0 0 4px; }
   background: none;
   color: var(--text-muted);
 }
-.agreement-head .ui-inline-composer input { width: 180px; }
 
 /* A team nobody is in is worth marking in the tree, where it sits
    among teams people rely on. Nowhere else: on its own page the
