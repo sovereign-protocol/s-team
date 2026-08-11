@@ -49,8 +49,9 @@ recursive rather than one large membership list.
   which all current or acting Identity holders' perspectives agree.
 - If those perspectives differ or are unavailable, no consolidated Agreement
   exists and no membership invitation can be opened.
-- `agreement_version` is ordinary human-readable content. Badges store it for
-  reference and also store the exact Agreement hash.
+- `agreement_version` is Identity's declaration of substantial change. Badge
+  freshness follows it; the stored exact Agreement hash remains audit and
+  divergence evidence rather than a validity condition.
 - Agreement alignment is not Agreement consent. Consent is explicit in an
   Actor's membership application and preserved on the Identity-issued badge.
 

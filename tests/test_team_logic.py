@@ -1914,6 +1914,21 @@ class TeamLogicTests(unittest.TestCase):
             [second.uuid, first.uuid],
         )
 
+    def test_an_agenda_item_author_can_update_its_text(self):
+        runtime = self.runtime(9417)
+        team_uuid = runtime.logic.create_team("Terms").value
+        item = runtime.logic.create_agenda_item(
+            team_uuid, "First wording",
+        ).value
+
+        result = runtime.logic.update_agenda_item(item.uuid, "Revised wording")
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(
+            runtime.session.protocol.index[item.uuid].data["text"],
+            "Revised wording",
+        )
+
     def test_move_rejects_wrong_node_types(self):
         runtime = self.runtime(9415)
         team_uuid = runtime.logic.create_team("Terms").value
@@ -4428,10 +4443,13 @@ class TeamLogicTests(unittest.TestCase):
             len(identity.logic.membership_records(team, who)), before,
         )
 
-    def test_editing_the_agreement_outdates_every_membership_at_once(self):
-        """Being on a team is accepting the text that holds it, so the
-        membership carries the hash of what was read. Editing the body makes
-        every acceptance genuinely stale, and each member answers again."""
+    def test_only_an_agreement_version_change_outdates_membership(self):
+        """Identity marks substantial change by updating the version.
+
+        The exact hash remains on the application and badge for audit, but
+        same-version text edits neither invalidate an application nor make
+        an issued badge outdated.
+        """
         runtime = self.runtime(9696)
         team_uuid = runtime.logic.create_team("Living document").value
         who = runtime.session.identity.uuid
@@ -4445,8 +4463,7 @@ class TeamLogicTests(unittest.TestCase):
 
         team = runtime.session.protocol.index[team_uuid]
         self.assertEqual(runtime.logic.membership_status(team, who), "outdated")
-        # Still a member: outdated is a statement about the text they
-        # accepted, not about whether they are on the team.
+        # Still a member: outdated asks for renewal; it is not removal.
         self.assertTrue(runtime.logic._is_current_member(team, who))
 
         type_uuid = runtime.logic.membership_types(team)[0].uuid
@@ -4456,12 +4473,26 @@ class TeamLogicTests(unittest.TestCase):
         invitation = runtime.logic.open_membership_invitation(
             team_uuid, type_uuid, self.FAR_FUTURE,
         )
-        self.assertEqual(self.apply_and_issue(
-            runtime, runtime, team_uuid, invitation.value.uuid,
+        application = runtime.logic.apply_for_membership(
+            team_uuid, invitation.value.uuid,
             agreement_accepted=True, acceptance_text="Accepted again.",
-        ).status, "ok")
+        )
+        self.assertEqual(application.status, "ok", application.reason)
+        runtime.logic.create_clause(section.value, "This clarification is minor.")
+        issued = runtime.logic.issue_membership_badge(
+            team_uuid, application.value.uuid,
+        )
+        self.assertEqual(issued.status, "ok", issued.reason)
         team = runtime.session.protocol.index[team_uuid]
         self.assertEqual(runtime.logic.membership_status(team, who), "accepted")
+
+        runtime.logic.create_clause(section.value, "Another minor clarification.")
+        team = runtime.session.protocol.index[team_uuid]
+        self.assertEqual(runtime.logic.membership_status(team, who), "accepted")
+
+        runtime.logic.set_agreement_version(team_uuid, "2")
+        team = runtime.session.protocol.index[team_uuid]
+        self.assertEqual(runtime.logic.membership_status(team, who), "outdated")
 
     def test_a_member_of_one_type_moves_to_another_on_the_same_chain(self):
         """An Actor is on one membership type at a time, so taking a second

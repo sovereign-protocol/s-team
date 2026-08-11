@@ -141,10 +141,10 @@ class TeamLogic:
         # Agreement consent. An accepted badge names the application Identity
         # issued it for; genesis, departure and removal name none.
         #
-        # reference_hash is on it for the same reason it is on a role
-        # decision: being on a team is accepting the text that holds it, so
-        # the record has to say which text. Editing the body outdates every
-        # membership at once, and a new application can answer the new text.
+        # reference_hash preserves the exact text the Actor saw for audit and
+        # divergence review. Badge freshness follows Identity's explicit
+        # Agreement version: edits within that version are non-substantial;
+        # changing the version requires renewal.
         "team_membership": (
             frozenset({
                 "type", "actor_uuid", "state", "membership_type_uuid",
@@ -1384,12 +1384,10 @@ class TeamLogic:
                 "error",
                 reason="Identity has no consolidated Agreement perspective",
             )
-        if (
-            data.get("reference_hash") != agreement.get("reference_hash")
-            or data.get("agreement_version") != agreement.get("version")
-        ):
+        if data.get("agreement_version") != agreement.get("version"):
             return SessionResult(
-                "error", reason="the Agreement changed after this application",
+                "error",
+                reason="the Agreement version changed after this application",
             )
         membership_type = self._node(
             str(data.get("membership_type_uuid") or ""),
@@ -2306,8 +2304,9 @@ class TeamLogic:
         """What the badge on an actor's row says.
 
         Two states and no more. A membership does not expire - an invitation
-        does - and refusing one is simply not taking it, so there is nothing
-        between accepted and outdated to draw.
+        does - and refusing one is simply not taking it. Identity declares
+        whether an Agreement change is substantial by changing its version;
+        the exact content hash remains evidence, not badge validity.
         """
         projection = self.membership_projection(team, actor_uuid)
         if projection["state"] != "member":
@@ -2315,11 +2314,14 @@ class TeamLogic:
         current = self._governance_node(
             team, projection["current_uuid"], "team_membership",
         )
+        agreement = self.agreement_projection(team)
+        if agreement.get("state") not in {"consolidated", "absent"}:
+            return "outdated"
         accepted = str(
-            current.data.get("reference_hash") or "",
+            current.data.get("agreement_version") or "",
         ) if current else ""
         return (
-            "accepted" if accepted == self.team_reference_hash(team)
+            "accepted" if accepted == str(agreement.get("version") or "")
             else "outdated"
         )
 
@@ -7469,6 +7471,14 @@ class TeamLogic:
         if allowed.status != "ok":
             return allowed
         return self.session.delete_agenda_item(item_uuid)
+
+    def update_agenda_item(self, item_uuid: str, text: str) -> SessionResult:
+        if not self.owns_node(item_uuid):
+            return SessionResult("error", reason="agenda item not found")
+        allowed = self._interaction_guard_for_node(item_uuid)
+        if allowed.status != "ok":
+            return allowed
+        return self.session.update_agenda_item_text(item_uuid, text)
 
     def set_agenda_item_priority(
         self, item_uuid: str, priority: str | None,

@@ -196,6 +196,16 @@ class AssetTests(unittest.TestCase):
         use = self.team.index("const node = findDisplayedNode(uuid)")
         self.assertLess(helper, use)
 
+    def test_team_text_uses_the_shared_editor_without_a_local_copy(self):
+        self.assertIn("SovereignUI.editableText", self.team)
+        self.assertNotIn("const editable =", self.team)
+        self.assertIn("multiline: field === 'text'", self.team)
+
+    def test_creation_names_use_hints_instead_of_prefilled_text(self):
+        self.assertIn('placeholder="Untitled organization"', self.team)
+        self.assertNotIn('value="Untitled organization"', self.team)
+        self.assertIn("document.querySelector('#newTeamName').value = '';", self.team)
+
     def test_a_proposal_is_answerable_by_the_side_it_is_made_to(self):
         # Editing a proposed element and answering it are different rights:
         # it is not ours to edit until we accept it, and accepting it is the
@@ -218,8 +228,9 @@ class AssetTests(unittest.TestCase):
             self.team,
         )
 
-    def test_agenda_exposes_the_shared_move_route(self):
+    def test_agenda_exposes_the_shared_move_and_update_routes(self):
         self.assertIn("move: '/api/team/agenda/move'", self.team)
+        self.assertIn("update: '/api/team/agenda/update'", self.team)
         self.assertIn(
             "displayedChildren(current, 'team_section')",
             self.team,
@@ -246,17 +257,16 @@ class AssetTests(unittest.TestCase):
         ):
             self.assertIn(marker, self.team)
 
-    def test_actor_rows_start_with_you_and_end_with_the_team(self):
-        # The team's own line used to lead, which read as though the body
-        # were one of its own members. It is an actor elsewhere, so it comes
-        # after the actors who are here.
+    def test_member_rows_start_with_you_and_do_not_repeat_the_team(self):
+        # The team is the page subject, not one of its own members. Its roles
+        # and options are carried by the team-name row above this section.
         ordering = self.team.split("const people = participants || [];", 1)[1]
         ordering = ordering.split("return section;", 1)[0]
         me = ordering.index("section.append(rowFor(me, interactive))")
         others = ordering.index("section.append(rowFor(person, false))")
-        own = ordering.index("section.append(ownRow())")
         self.assertLess(me, others)
-        self.assertLess(others, own)
+        self.assertNotIn("section.append(ownRow())", self.team)
+        self.assertIn("teamHeadingControls(currentInteractionAllowed)", self.team)
         self.assertNotIn(
             "if (!seats.length && !offers.length) return null",
             self.team,
@@ -298,16 +308,16 @@ class AssetTests(unittest.TestCase):
         ):
             self.assertIn(marker, self.team)
 
-    def test_archiving_starts_from_the_gear_on_the_team_row(self):
-        # Archiving is something you do to a team as a whole, so it hangs off
-        # that team's row in Organizations rather than sitting as a button
-        # over the agreement, which is the one thing it is not about.
+    def test_archiving_starts_from_the_team_heading_options(self):
+        # Team-wide options belong beside the current team's name, while the
+        # Organizations tree remains navigation.
         for marker in (
             'id="teamActionsModal"',
-            "organization-gear",
-            "openTeamActions(item.uuid, item.title)",
+            "team-options",
+            "openTeamActions(current.uuid, current.data.title)",
         ):
             self.assertIn(marker, self.team)
+        self.assertNotIn("organization-gear", self.team)
         self.assertNotIn("archive-team", self.team)
         # The pane lists organizations, plural, and says so.
         self.assertIn("<h2>Organizations</h2>", self.team)
@@ -369,6 +379,9 @@ class AssetTests(unittest.TestCase):
         )
         self.assertIn("This team has no Agreement yet.", self.team)
         self.assertNotIn("Membership cannot be accepted.", self.team)
+        self.assertIn("Renew outdated membership", self.team)
+        self.assertIn("Renew application for ${name}?", self.team)
+        self.assertIn("state.is_mine && membership.status === 'outdated'", self.team)
         # Every member is an actor and is already on the actor list, so the
         # two acts that change membership live on the actor's own line. A
         # roster beside it named the same people a second time.
@@ -511,7 +524,7 @@ class AssetTests(unittest.TestCase):
 
     def test_a_role_is_taken_rather_than_handed_out(self):
         # Nobody offers a role here any more. A member takes one, and a
-        # sub-team takes one from its own line in Actors - so the picker that
+        # sub-team takes one from its own heading - so the picker that
         # made an invitation is gone, and with it the list that fed it.
         for gone in (
             "role-offer-picker",
@@ -533,9 +546,9 @@ class AssetTests(unittest.TestCase):
         # A team that could take a seat gets no row on the parent's page: a
         # seat nobody has taken is not a fact about anybody, and the only
         # person who could act on it holds that team's Identity and is
-        # looking elsewhere. It acts from its own "This team" line.
+        # looking elsewhere. It acts from its own team-name row.
         for marker in (
-            "const addSeatControl = (seats)",
+            "const addTeamRoleControl = (seats)",
             "payloadState.seatable_roles",
             "payloadState.holds_identity",
             "/api/team/roles/seat",
@@ -554,13 +567,11 @@ class AssetTests(unittest.TestCase):
         self.assertIn("className: 'holder-badge'", self.team)
         self.assertIn("badge.title", self.team)
 
-    def test_an_team_holds_roles_the_way_a_person_does(self):
-        # A Team is a normal actor, so the roles it holds elsewhere are
-        # badges on its own line in Actors - taken and left by clicking, as
-        # yours are. There is no separate idea of a seat with a section of
-        # its own.
+    def test_a_team_holds_roles_beside_its_name(self):
+        # A Team is an actor elsewhere, so its held-role badges sit beside
+        # its own heading, not among its members.
         self.assertIn("payloadState.parents", self.team)
-        self.assertIn("is-team", self.team)
+        self.assertIn("team-heading-controls", self.team)
         for gone in (
             "renderSeats", "renderSeatOffers", "seat-offer", "Seats held",
             # A seat is taken and given up. There is nothing to decline,
@@ -575,7 +586,7 @@ class AssetTests(unittest.TestCase):
             # agreement - the text the members consent to - and it is the
             # one place the word survives the move to Team.
             ("Agreement", "document"),
-            ("Actors", "actors"),
+            ("Members", "actors"),
             ("Roles", "roles"),
             # What the team is doing, which is what somebody opening it
             # came for.
@@ -628,13 +639,16 @@ class AssetTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         # A clause is added from its section's heading row, hover-revealed
         # like the other row controls.
-        self.assertIn("addControl: !proposed && currentInteractionAllowed", self.team)
+        self.assertIn("addControl: clauseComposer", self.team)
         self.assertIn("className: 'element-add-control'", self.team)
+        self.assertIn("formHost: clauseComposerHost", self.team)
         self.assertIn(".element-row:hover .element-add-control", css)
         # A section is added from the agreement's heading, which is not a row:
         # the agreement's title is a field on the team node, and giving it a
         # row would put a second lamp on the same node's divergence.
         self.assertIn("agreementHead.append(SovereignUI.addComposer", self.team)
+        self.assertIn("formHost: sectionComposerHost", self.team)
+        self.assertIn(".element-composer-row", css)
         self.assertIn(".agreement-head .ui-add-trigger", css)
         self.assertNotIn("block.append(SovereignUI.addComposer", self.team)
 
@@ -646,12 +660,13 @@ class AssetTests(unittest.TestCase):
         # retitled the document its members had accepted.
         self.assertIn("/api/team/agreement/rename", self.team)
         self.assertIn("current.data.agreement_title", self.team)
-        self.assertIn(".agreement-title:empty::before", css)
+        self.assertIn("placeholder: 'Name this agreement'", self.team)
+        self.assertNotIn(".agreement-title:empty::before", css)
         # The team's name heads the page, outside every disclosure, and the
         # sections follow in the order the page now reads.
         self.assertIn("#document > .element-row", css)
         self.assertIn(
-            "        workPart.section, actorsPart.section, rolesPart.section,\n"
+            "        workPart.section, membersPart.section, rolesPart.section,\n"
             "        documentPart.section, membershipPart.section,"
             " historyPart.section,",
             self.team,
