@@ -306,6 +306,17 @@ h2.element-label { margin: 0 0 4px; }
   gap: 8px;
   padding: 2px 4px;
 }
+.element-row.has-reorder {
+  grid-template-columns: auto 14px minmax(0, 1fr) auto;
+}
+/* Keep each part in its semantic column. A reorder handle is hidden while a
+   list has only one item; relying on grid auto-placement then shifted the
+   lamp and title left, squeezing the title into the 14px lamp column. */
+.element-row.has-reorder > .ui-reorder-handle { grid-column: 1; }
+.element-row.has-reorder > .status-lamp { grid-column: 2; }
+.element-row.has-reorder > .element-label,
+.element-row.has-reorder > .element-heading { grid-column: 3; }
+.element-row.has-reorder > .element-actions { grid-column: 4; }
 .element-composer-row::before { content: ""; }
 .element-composer-row .ui-inline-composer {
   grid-column: 2 / -1;
@@ -339,22 +350,10 @@ h2.element-label { margin: 0 0 4px; }
   color: var(--delete);
   opacity: 0;
 }
-.element-move {
-  background: none;
-  border: 1px solid var(--line);
-  color: var(--text-muted);
-  font-weight: 700;
-  line-height: 1;
-  padding: 2px 6px;
-  opacity: 0;
-}
-.element-move:disabled { opacity: 0; cursor: default; }
 .element-row:hover .element-add-control,
 .element-row:hover .element-delete,
-.element-row:hover .element-move:not(:disabled),
 .element-add-control:focus-within,
-.element-delete:focus-visible,
-.element-move:focus-visible { opacity: 1; }
+.element-delete:focus-visible { opacity: 1; }
 
 /* Participants are listed by the roles they hold, because holding a role is
    what being part of a team means. Somebody present who holds nothing

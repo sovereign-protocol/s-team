@@ -360,6 +360,24 @@ class TeamLogicTests(unittest.TestCase):
             "ok",
         )
 
+    def test_document_refresh_succeeds_after_starting_an_election(self):
+        runtime = self.runtime(9648)
+        team_uuid = runtime.logic.create_team("Visible election").value
+        _flow, facades = self.election_facades()
+        runtime.logic.facades = facades
+
+        started = runtime.logic.start_trustee_election(team_uuid, "identity")
+        snapshot = runtime.logic.document_snapshot(team_uuid)
+
+        self.assertEqual(started.status, "ok")
+        process_uuid = started.value.data["process_uuid"]
+        election = next(
+            item for item in snapshot["payload"]["decision_trail"]
+            if item["process_uuid"] == process_uuid
+            and item["intent"] == "Identity election"
+        )
+        self.assertEqual(election["result"], "Under way")
+
     def test_the_decision_trail_carries_every_record_with_its_date(self):
         # The trail used to show only the trustee actions somebody typed in
         # by hand, so stepping out of a trusteeship asked for its signals

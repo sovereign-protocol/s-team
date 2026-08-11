@@ -201,6 +201,16 @@ class AssetTests(unittest.TestCase):
         self.assertNotIn("const editable =", self.team)
         self.assertIn("multiline: field === 'text'", self.team)
 
+    def test_ordered_team_content_uses_the_shared_reorder_control(self):
+        self.assertIn("SovereignUI.reorderHandle", self.team)
+        self.assertGreaterEqual(self.team.count("SovereignUI.reorderableList"), 4)
+        for route in (
+            "/api/team/sections/move", "/api/team/clauses/move",
+            "/api/team/roles/move", "/api/team/roles/items/move",
+        ):
+            self.assertIn(route, self.team)
+        self.assertNotIn("className = 'element-move'", self.team)
+
     def test_creation_names_use_hints_instead_of_prefilled_text(self):
         self.assertIn('placeholder="Untitled organization"', self.team)
         self.assertNotIn('value="Untitled organization"', self.team)
@@ -651,6 +661,22 @@ class AssetTests(unittest.TestCase):
         self.assertIn(".element-composer-row", css)
         self.assertIn(".agreement-head .ui-add-trigger", css)
         self.assertNotIn("block.append(SovereignUI.addComposer", self.team)
+
+    def test_a_lone_reorderable_section_keeps_its_title_column(self):
+        css = files("s_team.assets").joinpath(
+            "team.css",
+        ).read_text(encoding="utf-8")
+        # Core hides the reorder handle until a sibling exists. Explicit grid
+        # placement keeps the remaining cells from sliding into its column.
+        self.assertIn(
+            ".element-row.has-reorder > .element-label,\n"
+            ".element-row.has-reorder > .element-heading { grid-column: 3; }",
+            css,
+        )
+        self.assertIn(
+            ".element-row.has-reorder > .element-actions { grid-column: 4; }",
+            css,
+        )
 
     def test_the_team_is_named_apart_from_its_agreement(self):
         css = files("s_team.assets").joinpath(

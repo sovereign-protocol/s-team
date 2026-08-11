@@ -4674,34 +4674,25 @@ class TeamLogic:
                 process_uuid=str(state.data.get("process_uuid") or ""),
             ))
 
+        settled_elections = {
+            str(state.data.get("process_uuid") or "")
+            for state in self.governance_records(team, "team_trustee_state")
+            if state.data.get("cause") == "election"
+        }
         for election in self.trustee_election_records(team):
             label = trust_label(election)
-            result = self._validated_election_result(
-                team, election,
-            ).get("result") or {}
-            outcome = result.get("terminal_outcome")
-            if outcome == "elected":
-                chosen, chosen_is_self = named(
-                    result.get("selected_candidate_uuid"),
-                )
-                standing = (
-                    f"{chosen} {'were' if chosen_is_self else 'was'} selected"
-                )
-            elif outcome == "void":
-                standing = "Ended without a selection"
-            elif result:
-                standing = str(
-                    result.get("current_stage")
-                    or result.get("lifecycle")
-                    or "Under way",
-                )
-            else:
-                standing = "Not visible from here"
+            process_uuid = str(election.data.get("process_uuid") or "")
+            # Starting the Flow decides nothing in Team. The election remains
+            # under way until a trustee settles the seat in a Team record;
+            # S-Flow owns every intermediate and terminal process result.
+            standing = (
+                "Settled" if process_uuid in settled_elections else "Under way"
+            )
             trail.append(entry(
                 election, election.data.get("triggered_at"),
                 election.data.get("triggered_by"),
                 f"{label} election", standing,
-                process_uuid=str(election.data.get("process_uuid") or ""),
+                process_uuid=process_uuid,
             ))
 
         for candidacy in self.governance_records(
