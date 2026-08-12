@@ -67,6 +67,34 @@ def sync(*runtimes) -> None:
 
 
 class TeamLogicTests(unittest.TestCase):
+    def test_saved_snapshot_restores_agreement_without_people_or_history(self):
+        session = Session("local")
+        logic = TeamLogic(session)
+        team_uuid = logic.create_team("Cooperative").value
+        section_uuid = logic.create_section(team_uuid, "Purpose").value
+        logic.create_clause(section_uuid, "Serve members")
+        logic.create_role(team_uuid, "Coordinator")
+
+        saved = logic.save_snapshot(
+            team_uuid, "Cooperative baseline", "Reusable agreement",
+        )
+        logic.delete_team(team_uuid)
+        restored = logic.create_from_snapshot(saved.value, "New cooperative")
+
+        self.assertEqual(saved.status, "ok", saved.reason)
+        self.assertEqual(logic.snapshots()[0]["description"], "Reusable agreement")
+        copy = session.protocol.index[restored.value]
+        sections = logic.sections(copy)
+        self.assertEqual([item.data["title"] for item in sections], ["Purpose"])
+        self.assertEqual(
+            [item.data["text"] for item in logic.clauses(sections[0])],
+            ["Serve members"],
+        )
+        self.assertEqual([item.data["name"] for item in logic.roles(copy)], ["Coordinator"])
+        self.assertEqual(logic.actor_uuids(copy), set())
+        self.assertEqual(logic.delete_snapshot(saved.value).status, "ok")
+        self.assertEqual(logic.snapshots(), [])
+
     @staticmethod
     def flow_result(process_uuid="flow-1", **overrides):
         result = {
@@ -1071,14 +1099,11 @@ class TeamLogicTests(unittest.TestCase):
         team_uuid = left.logic.create_team("Bridged election").value
         connect(left, right, team_uuid)
         self.admit(left, right, team_uuid)
-        processes: list[str] = []
-        for runtime in (left, right):
-            runtime.session.shared_topics.register(
-                "test-flow", {"flow_process"}, lambda: list(processes),
-                runtime.session.accept_topic_invitation,
-            )
-        flow_logic = FlowLogic(left.session)
-        flow_facade = FlowFacade(flow_logic)
+        left_flow = FlowLogic(left.session)
+        right_flow = FlowLogic(right.session)
+        left.session.register_application(left_flow.application_registration())
+        right.session.register_application(right_flow.application_registration())
+        flow_facade = FlowFacade(left_flow)
 
         class Facades:
             def find(self, application_id, facade_api_version):
@@ -1092,7 +1117,6 @@ class TeamLogicTests(unittest.TestCase):
 
         self.assertEqual(started.status, "ok")
         process_uuid = started.value.data["process_uuid"]
-        processes.append(process_uuid)
         self.assertEqual(
             left.relay_manager.target_for_topic(process_uuid),
             left.relay_manager.target_for_topic(team_uuid),
@@ -1112,6 +1136,51 @@ class TeamLogicTests(unittest.TestCase):
 
         self.assertEqual(joined.status, "ok")
         self.assertIn(process_uuid, right.session.protocol.index)
+        self.assertEqual(
+            right.relay_manager.target_for_topic(process_uuid),
+            right.relay_manager.target_for_topic(team_uuid),
+        )
+
+        left_workflow = left_flow.process_payload(process_uuid)["workflow"]
+        right_workflow = right_flow.process_payload(process_uuid)["workflow"]
+        left_task = left_workflow["personal"]["tasks"][0]
+        right_task = right_workflow["personal"]["tasks"][0]
+        self.assertEqual(
+            left_flow.submit_task(
+                process_uuid,
+                left_task["id"],
+                {"candidateId": left.session.identity.uuid, "reason": "Available"},
+                left_workflow["runtime_content_hash"],
+            ).status,
+            "ok",
+        )
+        self.assertEqual(
+            right_flow.submit_task(
+                process_uuid,
+                right_task["id"],
+                {"candidateId": right.session.identity.uuid, "reason": "Available"},
+                right_workflow["runtime_content_hash"],
+            ).status,
+            "ok",
+        )
+
+        sync(left, right)
+        applied = left_flow.on_peer_update()
+        self.assertEqual(applied.status, "ok", applied.reason)
+        self.assertTrue(applied.value)
+        sync(left, right)
+        right_flow.on_peer_update()
+
+        left_final = left_flow.process_payload(process_uuid)["workflow"]
+        right_final = right_flow.process_payload(process_uuid)["workflow"]
+        self.assertNotEqual(
+            left_final["position"]["current_stages"][0]["name"],
+            "Nominate candidate",
+        )
+        self.assertNotEqual(
+            right_final["personal"]["waiting_reason"],
+            {"type": "responsePending", "dependencies": []},
+        )
 
     @unittest.skipIf(FlowLogic is None, "S-Flow is not installed")
     def test_archiving_puts_a_team_away_here_and_nowhere_else(self):

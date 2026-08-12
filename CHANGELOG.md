@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Agenda items and counts now derive from verified perspectives without
+  adopting peer records or listing those records again as Team proposals.
+
 - Membership now uses a signed Actor application followed by an
   Identity-issued badge. The badge keeps Membership Info, Acceptance
   Requirement, Acceptance Text, Agreement consent, human-readable Agreement

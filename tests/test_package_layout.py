@@ -179,6 +179,11 @@ class AssetTests(unittest.TestCase):
             "team.html",
         ).read_text(encoding="utf-8")
 
+    def assertCodeContains(self, snippet: str):
+        """Compare embedded JavaScript without coupling to formatter style."""
+        normalize = lambda source: " ".join(source.replace("'", '"').split())
+        self.assertIn(normalize(snippet), normalize(self.team))
+
     def test_peer_only_nodes_are_presented_as_proposals(self):
         self.assertIn("payloadState.proposed_nodes", self.team)
         # The reaction control and its wording are Core's, so a proposal here
@@ -199,7 +204,7 @@ class AssetTests(unittest.TestCase):
     def test_team_text_uses_the_shared_editor_without_a_local_copy(self):
         self.assertIn("SovereignUI.editableText", self.team)
         self.assertNotIn("const editable =", self.team)
-        self.assertIn("multiline: field === 'text'", self.team)
+        self.assertCodeContains("multiline: field === 'text'")
 
     def test_ordered_team_content_uses_the_shared_reorder_control(self):
         self.assertIn("SovereignUI.reorderHandle", self.team)
@@ -214,7 +219,7 @@ class AssetTests(unittest.TestCase):
     def test_creation_names_use_hints_instead_of_prefilled_text(self):
         self.assertIn('placeholder="Untitled organization"', self.team)
         self.assertNotIn('value="Untitled organization"', self.team)
-        self.assertIn("document.querySelector('#newTeamName').value = '';", self.team)
+        self.assertCodeContains("document.querySelector('#newTeamName').value = '';")
 
     def test_a_proposal_is_answerable_by_the_side_it_is_made_to(self):
         # Editing a proposed element and answering it are different rights:
@@ -233,23 +238,18 @@ class AssetTests(unittest.TestCase):
         self.assertIn("<h2>New Organization</h2>", self.team)
         self.assertIn("+ Add organization", self.team)
         self.assertIn("No organizations yet", self.team)
-        self.assertIn(
+        self.assertCodeContains(
             "label: payload.is_organization ? 'Organization' : 'Team'",
-            self.team,
         )
 
     def test_agenda_exposes_the_shared_move_and_update_routes(self):
-        self.assertIn("move: '/api/team/agenda/move'", self.team)
-        self.assertIn("update: '/api/team/agenda/update'", self.team)
-        self.assertIn(
-            "displayedChildren(current, 'team_section')",
-            self.team,
-        )
+        self.assertIn("/api/team/agenda/move", self.team)
+        self.assertIn("/api/team/agenda/update", self.team)
+        self.assertCodeContains("displayedChildren(current, 'team_section')")
 
     def test_polling_preserves_focused_form_fields(self):
-        self.assertIn(
+        self.assertCodeContains(
             "document.activeElement.matches('input, textarea, select')",
-            self.team,
         )
 
     def test_participants_are_listed_by_the_roles_they_hold(self):
@@ -331,7 +331,7 @@ class AssetTests(unittest.TestCase):
         self.assertNotIn("archive-team", self.team)
         # The pane lists organizations, plural, and says so.
         self.assertIn("<h2>Organizations</h2>", self.team)
-        self.assertIn("textContent = 'Organizations'", self.team)
+        self.assertCodeContains("textContent = 'Organizations'")
 
     def test_archiving_is_reachable_and_says_what_it_does_not_do(self):
         for marker in (
@@ -391,7 +391,7 @@ class AssetTests(unittest.TestCase):
         self.assertNotIn("Membership cannot be accepted.", self.team)
         self.assertIn("Renew outdated membership", self.team)
         self.assertIn("Renew application for ${name}?", self.team)
-        self.assertIn("state.is_mine && membership.status === 'outdated'", self.team)
+        self.assertCodeContains("state.is_mine && membership.status === 'outdated'")
         # Every member is an actor and is already on the actor list, so the
         # two acts that change membership live on the actor's own line. A
         # roster beside it named the same people a second time.
@@ -494,12 +494,19 @@ class AssetTests(unittest.TestCase):
             "Connect to…",
             "Offer one of mine…",
             'id="newItemModal"',
-            # Only what you hold is a row: an offer is a name until you
-            # take it up.
-            "items.filter(item => item.active)",
-            "items.filter(item => !item.active)",
         ):
             self.assertIn(marker, self.team)
+        # Only what you hold is a row: an offer is a name until you take it
+        # up. Parentheses around a single arrow-function argument are a
+        # formatter choice, not part of this contract.
+        self.assertRegex(
+            self.team,
+            r"items\.filter\(\(?item\)?\s*=>\s*item\.active\)",
+        )
+        self.assertRegex(
+            self.team,
+            r"items\.filter\(\(?item\)?\s*=>\s*!item\.active\)",
+        )
         # Removing says what it does not do, because the word is the same
         # one the Cockpit uses for deleting.
         self.assertIn("Everybody else keeps ", self.team)
@@ -574,7 +581,7 @@ class AssetTests(unittest.TestCase):
         # in the tooltip rather than in columns nobody reads across.
         self.assertIn("holder-badges", self.team)
         self.assertIn("const badge = SovereignUI.entityBadge({", self.team)
-        self.assertIn("className: 'holder-badge'", self.team)
+        self.assertCodeContains("className: 'holder-badge'")
         self.assertIn("badge.title", self.team)
 
     def test_a_team_holds_roles_beside_its_name(self):
@@ -605,7 +612,7 @@ class AssetTests(unittest.TestCase):
             # than for the decision trail that is currently all of it.
             ("History", "history"),
         ):
-            self.assertIn(f"disclosure('{title}', '{key}')", self.team)
+            self.assertCodeContains(f"disclosure('{title}', '{key}')")
         # The work is open and everything else arrives closed. The agreement
         # is the longest section and the least often changed, and who is on
         # the team changes rarely enough not to greet you.
@@ -634,10 +641,10 @@ class AssetTests(unittest.TestCase):
         self.assertIn("#document > .ui-disclosure", css)
         self.assertIn("SovereignUI.addComposer", self.team)
         for noun in ("section", "clause", "role"):
-            self.assertIn(f"noun: '{noun}'", self.team)
-        self.assertIn("noun: kind", self.team)
-        self.assertIn("kind: 'accountability'", self.team)
-        self.assertIn("kind: 'domain'", self.team)
+            self.assertCodeContains(f"noun: '{noun}'")
+        self.assertCodeContains("noun: kind")
+        self.assertCodeContains("kind: 'accountability'")
+        self.assertCodeContains("kind: 'domain'")
         # How many actors are in it is not worth a line of its own: the
         # Identity line and every role already say it.
         self.assertNotIn("team-state", self.team)
@@ -649,15 +656,18 @@ class AssetTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         # A clause is added from its section's heading row, hover-revealed
         # like the other row controls.
-        self.assertIn("addControl: clauseComposer", self.team)
-        self.assertIn("className: 'element-add-control'", self.team)
-        self.assertIn("formHost: clauseComposerHost", self.team)
+        self.assertCodeContains("addControl: clauseComposer")
+        self.assertCodeContains("className: 'element-add-control'")
+        self.assertCodeContains("formHost: clauseComposerHost")
         self.assertIn(".element-row:hover .element-add-control", css)
         # A section is added from the agreement's heading, which is not a row:
         # the agreement's title is a field on the team node, and giving it a
         # row would put a second lamp on the same node's divergence.
-        self.assertIn("agreementHead.append(SovereignUI.addComposer", self.team)
-        self.assertIn("formHost: sectionComposerHost", self.team)
+        self.assertRegex(
+            self.team,
+            r"agreementHead\.append\(\s*SovereignUI\.addComposer",
+        )
+        self.assertCodeContains("formHost: sectionComposerHost")
         self.assertIn(".element-composer-row", css)
         self.assertIn(".agreement-head .ui-add-trigger", css)
         self.assertNotIn("block.append(SovereignUI.addComposer", self.team)
@@ -686,17 +696,21 @@ class AssetTests(unittest.TestCase):
         # retitled the document its members had accepted.
         self.assertIn("/api/team/agreement/rename", self.team)
         self.assertIn("current.data.agreement_title", self.team)
-        self.assertIn("placeholder: 'Name this agreement'", self.team)
+        self.assertCodeContains("placeholder: 'Name this agreement'")
         self.assertNotIn(".agreement-title:empty::before", css)
         # The team's name heads the page, outside every disclosure, and the
         # sections follow in the order the page now reads.
         self.assertIn("#document > .element-row", css)
-        self.assertIn(
-            "        workPart.section, membersPart.section, rolesPart.section,\n"
-            "        documentPart.section, membershipPart.section,"
-            " historyPart.section,",
-            self.team,
-        )
+        start = self.team.index("article.append(", self.team.index("const historyPart"))
+        appended = self.team[start:self.team.index(");", start)]
+        positions = [
+            appended.index(part)
+            for part in (
+                "workPart.section", "membersPart.section", "rolesPart.section",
+                "documentPart.section", "membershipPart.section", "historyPart.section",
+            )
+        ]
+        self.assertEqual(positions, sorted(positions))
 
     def test_one_rule_separates_the_name_from_the_sections(self):
         # Shared disclosures carry their own border-top and drop it only as a
