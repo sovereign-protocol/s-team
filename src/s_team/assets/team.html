@@ -86,7 +86,7 @@
         <label
           >Name<input id="newTeamName" class="ui-text-field" placeholder="Untitled organization"
         /></label>
-        <label>Copy from (optional)<select id="newTeamTemplate"></select></label>
+        <label>Copy from (optional)<select id="newTeamTemplate" class="ui-select"></select></label>
         <menu>
           <button type="button" id="cancelNewTeamBtn">Cancel</button>
           <button type="submit" class="primary">Create</button>
@@ -121,7 +121,7 @@
         <label>Name<input id="newItemName" class="ui-text-field" /></label>
         <label id="newItemTemplateLabel"
           >Start from
-          <select id="newItemTemplate"></select>
+          <select id="newItemTemplate" class="ui-select"></select>
         </label>
         <menu>
           <button type="button" id="cancelNewItemBtn">Cancel</button>
@@ -635,17 +635,13 @@
       const openNewTeamModal = () => {
         document.querySelector("#newTeamName").value = "";
         const template = document.querySelector("#newTeamTemplate");
-        template.replaceChildren();
-        const blank = document.createElement("option");
-        blank.value = "";
-        blank.textContent = "Start empty";
-        template.append(blank);
-        for (const item of payloadState.teams || []) {
-          const option = document.createElement("option");
-          option.value = item.uuid;
-          option.textContent = item.data.title || "Untitled team";
-          template.append(option);
-        }
+        SovereignUI.selectOptions(
+          template,
+          (payloadState.teams || []).map((item) => [
+            item.uuid, item.data.title || "Untitled team",
+          ]),
+          {emptyLabel: "Start empty", value: ""},
+        );
         document.querySelector("#newTeamModal").showModal();
       };
 
@@ -681,21 +677,15 @@
         document.querySelector("#newItemName").value = "";
         document.querySelector("#newItemName").placeholder = `Untitled ${kind.label.toLowerCase()}`;
         const template = document.querySelector("#newItemTemplate");
-        template.replaceChildren();
         // An initiative may start from nothing, which is what "start empty"
         // is; a flow may not - a process with no workflow is not a process.
-        if (!kind.template_required) {
-          const blank = document.createElement("option");
-          blank.value = "";
-          blank.textContent = "Start empty";
-          template.append(blank);
-        }
-        for (const option of kind.templates || []) {
-          const choice = document.createElement("option");
-          choice.value = option.value;
-          choice.textContent = option.name;
-          template.append(choice);
-        }
+        SovereignUI.selectOptions(
+          template,
+          (kind.templates || []).map((option) => [option.value, option.name]),
+          kind.template_required
+            ? {value: kind.templates?.[0]?.value || ""}
+            : {emptyLabel: "Start empty", value: ""},
+        );
         document.querySelector("#newItemTemplateLabel").hidden = !template.childElementCount;
         document.querySelector("#newItemForm").onsubmit = async (event) => {
           event.preventDefault();
@@ -878,37 +868,37 @@
           (entry) => !taken.has(entry.role_uuid),
         );
         if (!available.length) return null;
-        const picker = document.createElement("select");
-        picker.className = "role-add";
-        const blank = document.createElement("option");
-        blank.value = "";
-        blank.textContent = "+ Add role";
-        picker.append(blank);
-        for (const entry of available) {
-          const option = document.createElement("option");
-          option.value = entry.role_uuid;
-          option.textContent = `${entry.role_name} in ${entry.team_title}`;
-          option.disabled = !entry.eligible;
-          if (!entry.eligible) option.textContent += ` — ${entry.reason}`;
-          picker.append(option);
-        }
-        picker.onchange = async () => {
-          if (!picker.value) return;
-          const chosen = picker.value;
-          picker.value = "";
-          picker.blur();
-          try {
-            await api("/api/team/roles/seat", {
-              role_uuid: chosen,
-              team_uuid: current.uuid,
-            });
-            await load();
-            showToast("This team now holds that role");
-          } catch (error) {
-            showToast(error.message, true);
-          }
-        };
-        return picker;
+        const {control} = SovereignUI.selectionControl({
+          items: available.map((entry) => ({
+            value: entry.role_uuid,
+            label: (
+              `${entry.role_name} in ${entry.team_title}`
+              + (!entry.eligible ? ` — ${entry.reason}` : "")
+            ),
+            disabled: !entry.eligible,
+          })),
+          emptyLabel: "+ Add role",
+          value: "",
+          variant: "compact",
+          controlClass: "role-add-control",
+          onChange: async ({currentTarget: picker}) => {
+            if (!picker.value) return;
+            const chosen = picker.value;
+            picker.value = "";
+            picker.blur();
+            try {
+              await api("/api/team/roles/seat", {
+                role_uuid: chosen,
+                team_uuid: current.uuid,
+              });
+              await load();
+              showToast("This team now holds that role");
+            } catch (error) {
+              showToast(error.message, true);
+            }
+          },
+        });
+        return control;
       };
 
       const teamRoleChip = (seat, index, total, mine) => {
@@ -1100,31 +1090,28 @@
             (entry) => !entry.proposed && !taken.has(entry.node.uuid),
           );
           if (!available.length) return null;
-          const picker = document.createElement("select");
-          picker.className = "role-add";
-          const blank = document.createElement("option");
-          blank.value = "";
-          blank.textContent = "+ Add role";
-          picker.append(blank);
-          for (const { node: role } of available) {
-            const option = document.createElement("option");
-            option.value = role.uuid;
-            option.textContent = role.data.name || "Untitled role";
-            picker.append(option);
-          }
-          picker.onchange = async () => {
-            if (!picker.value) return;
-            const chosen = picker.value;
-            picker.value = "";
-            picker.blur();
-            try {
-              await api("/api/team/roles/decide", { role_uuid: chosen, decision: "accepted" });
-              await load();
-            } catch (error) {
-              showToast(error.message, true);
-            }
-          };
-          return picker;
+          const {control} = SovereignUI.selectionControl({
+            items: available.map(({node: role}) => [
+              role.uuid, role.data.name || "Untitled role",
+            ]),
+            emptyLabel: "+ Add role",
+            value: "",
+            variant: "compact",
+            controlClass: "role-add-control",
+            onChange: async ({currentTarget: picker}) => {
+              if (!picker.value) return;
+              const chosen = picker.value;
+              picker.value = "";
+              picker.blur();
+              try {
+                await api("/api/team/roles/decide", { role_uuid: chosen, decision: "accepted" });
+                await load();
+              } catch (error) {
+                showToast(error.message, true);
+              }
+            },
+          });
+          return control;
         };
 
         // The Identity-issued membership badge. Its tooltip shows the exact
@@ -1662,66 +1649,63 @@
           // somebody else's copy, and all you have is its name.
           const offered = items.filter((item) => !item.active);
           if (offered.length) {
-            const picker = document.createElement("select");
-            picker.className = "items-picker";
-            const blank = document.createElement("option");
-            blank.value = "";
-            blank.textContent = "Connect to…";
-            picker.append(blank);
-            for (const item of offered) {
-              const option = document.createElement("option");
-              option.value = item.topic_uuid;
-              option.textContent = `${item.title} · ${item.label}`;
-              picker.append(option);
-            }
-            picker.onchange = async () => {
-              if (!picker.value) return;
-              const chosen = picker.value;
-              picker.value = "";
-              picker.blur();
-              try {
-                await api("/api/team/items/connect", {
-                  team_uuid: current.uuid,
-                  topic_uuid: chosen,
-                });
-                await load();
-                showToast("It will arrive on the next sync");
-              } catch (error) {
-                showToast(error.message, true);
-              }
-            };
-            controls.append(picker);
+            const {control} = SovereignUI.selectionControl({
+              items: offered.map((item) => [
+                item.topic_uuid, `${item.title} · ${item.label}`,
+              ]),
+              emptyLabel: "Connect to…",
+              value: "",
+              variant: "compact",
+              controlClass: "items-picker",
+              onChange: async ({currentTarget: picker}) => {
+                if (!picker.value) return;
+                const chosen = picker.value;
+                picker.value = "";
+                picker.blur();
+                try {
+                  await api("/api/team/items/connect", {
+                    team_uuid: current.uuid,
+                    topic_uuid: chosen,
+                  });
+                  await load();
+                  showToast("It will arrive on the next sync");
+                } catch (error) {
+                  showToast(error.message, true);
+                }
+              },
+            });
+            controls.append(control);
           }
           // Your own, not on this team's channel. This is how a team that was
           // private when the work started gets it: the item was yours until
           // there was somewhere to publish it.
           if (offerable.length) {
-            const picker = document.createElement("select");
-            picker.className = "items-picker";
-            const blank = document.createElement("option");
-            blank.value = "";
-            blank.textContent = "Offer one of mine…";
-            picker.append(blank);
-            for (const item of offerable) {
-              const option = document.createElement("option");
-              option.value = item.topic_uuid;
-              option.textContent = `${item.title} · ${item.label}`;
-              picker.append(option);
-            }
-            picker.onchange = async () => {
-              if (!picker.value) return;
-              const chosen = picker.value;
-              picker.value = "";
-              picker.blur();
-              try {
-                await api("/api/team/items/offer", { team_uuid: current.uuid, topic_uuid: chosen });
-                await load();
-                showToast("The team can see it now");
-              } catch (error) {
-                showToast(error.message, true);
-              }
-            };
-            controls.append(picker);
+            const {control} = SovereignUI.selectionControl({
+              items: offerable.map((item) => [
+                item.topic_uuid, `${item.title} · ${item.label}`,
+              ]),
+              emptyLabel: "Offer one of mine…",
+              value: "",
+              variant: "compact",
+              controlClass: "items-picker",
+              onChange: async ({currentTarget: picker}) => {
+                if (!picker.value) return;
+                const chosen = picker.value;
+                picker.value = "";
+                picker.blur();
+                try {
+                  await api("/api/team/items/offer", {
+                    team_uuid: current.uuid,
+                    topic_uuid: chosen,
+                  });
+                  await load();
+                  showToast("The team can see it now");
+                } catch (error) {
+                  showToast(error.message, true);
+                }
+              },
+            });
+            controls.append(control);
           }
         }
         if (controls.childElementCount) section.append(controls);
@@ -1919,17 +1903,17 @@
         // nothing and did nothing.
         let facilitatorPicker = null;
         if (acting.length) {
-          facilitatorPicker = document.createElement("select");
-          facilitatorPicker.title = `Acting ${facilitatorLabel} facilitator`;
-          for (const candidate of acting) {
-            const option = document.createElement("option");
-            option.value = candidate.actor_uuid;
-            option.textContent = candidate.is_self
-              ? "You facilitate"
-              : `${candidate.name} facilitates`;
-            facilitatorPicker.append(option);
-          }
-          group.append(facilitatorPicker);
+          const selection = SovereignUI.selectionControl({
+            items: acting.map((candidate) => [
+              candidate.actor_uuid,
+              candidate.is_self ? "You facilitate" : `${candidate.name} facilitates`,
+            ]),
+            title: `Acting ${facilitatorLabel} facilitator`,
+            variant: "compact",
+            controlClass: "facilitator-control",
+          });
+          facilitatorPicker = selection.select;
+          group.append(selection.control);
         }
         const running = Boolean((payloadState[trust] || {}).election_under_way);
         const blocked = running || (facilitator.state === "vacant" && !acting.length);
@@ -2440,55 +2424,57 @@
         // in S-Flow - and nothing here checks the name against it. What the
         // record keeps is who settled it and which process they were reading.
         if (interactive && trusteeship.can_settle) {
-          const settle = document.createElement("select");
-          settle.className = "trustee-settle";
-          const blank = document.createElement("option");
-          blank.value = "";
-          blank.textContent =
-            trusteeship.state === "held" ? `Replace ${label}\u2026` : `Settle ${label}\u2026`;
-          settle.append(blank);
-          for (const person of payloadState.participants || []) {
-            if (!person.is_member || person.actor_kind === "team") continue;
-            const option = document.createElement("option");
-            option.value = person.uuid;
-            option.textContent = person.is_self ? "You" : person.name;
-            settle.append(option);
-          }
+          const settlementCandidates = (payloadState.participants || []).filter(
+            (person) => person.is_member && person.actor_kind !== "team",
+          );
           const running = (payloadState[trust] || {}).election_under_way;
-          settle.onchange = async () => {
-            if (!settle.value) return;
-            const chosen = settle.value;
-            const name = settle.options[settle.selectedIndex].textContent;
-            settle.value = "";
-            settle.blur();
-            document.querySelector("#confirmModalConfirmBtn").textContent = "Settle";
-            confirmAction(
-              `Put ${name} in ${label}?`,
-              running
-                ? "You are answering for this, not the election: nothing " +
-                    "checks the name against the result, and the record says " +
-                    "you settled it."
-                : "No election is running, so this fills a vacant seat on " +
-                    "your own authority. The record says you settled it.",
-              async () => {
-                try {
-                  const context = await requestDecisionContext(`Settle ${label}`);
-                  if (!context) return;
-                  await api("/api/team/trusteeships/settle", {
-                    team_uuid: current.uuid,
-                    trust,
-                    holder_actor_uuid: chosen,
-                    ...context,
-                  });
-                  await load();
-                  showToast(`${name} holds ${label}`);
-                } catch (error) {
-                  showToast(error.message, true);
-                }
-              },
-            );
-          };
-          if (settle.childElementCount > 1) actions.append(settle);
+          const {control} = SovereignUI.selectionControl({
+            items: settlementCandidates.map((person) => [
+              person.uuid, person.is_self ? "You" : person.name,
+            ]),
+            emptyLabel: (
+              trusteeship.state === "held" ? `Replace ${label}\u2026` : `Settle ${label}\u2026`
+            ),
+            value: "",
+            variant: "compact",
+            controlClass: "trustee-settle",
+            onChange: async ({currentTarget: settle}) => {
+              if (!settle.value) return;
+              const chosen = settle.value;
+              const name = settle.options[settle.selectedIndex].textContent;
+              settle.value = "";
+              settle.blur();
+              document.querySelector("#confirmModalConfirmBtn").textContent = "Settle";
+              confirmAction(
+                `Put ${name} in ${label}?`,
+                running
+                  ? "You are answering for this, not the election: nothing " +
+                      "checks the name against the result, and the record says " +
+                      "you settled it."
+                  : "No election is running, so this fills a vacant seat on " +
+                      "your own authority. The record says you settled it.",
+                async () => {
+                  try {
+                    const context = await requestDecisionContext(`Settle ${label}`);
+                    if (!context) return;
+                    await api("/api/team/trusteeships/settle", {
+                      team_uuid: current.uuid,
+                      trust,
+                      holder_actor_uuid: chosen,
+                      ...context,
+                    });
+                    await load();
+                    showToast(`${name} holds ${label}`);
+                  } catch (error) {
+                    showToast(error.message, true);
+                  }
+                },
+              );
+            },
+          });
+          if (settlementCandidates.length) {
+            actions.append(control);
+          }
         }
         if (actions.childElementCount) card.append(actions);
         return card;

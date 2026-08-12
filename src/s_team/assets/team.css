@@ -501,18 +501,9 @@ h2.element-label { margin: 0 0 4px; }
   color: var(--text-muted);
 }
 .role-unheld { margin: 2px 0; font-size: 13px; color: var(--text-muted); }
-/* Taking work on is one control at the end of your own badge line, not a
-   chip per role spread across it. Sized to sit among the badges rather than
-   beside them, because it is the last item in the same row. */
-.role-add {
-  padding: 2px 6px;
-  border: 1px dashed var(--line);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 12px;
-}
-.role-add:hover { color: var(--text); border-style: solid; }
+/* Taking work on is one compact shared selection control at the end of the
+   badge line. Only its available width is specific to this layout. */
+.role-add-control { max-width: min(260px, 100%); }
 
 /* Who holds a role is a line of faces and names. Everything else about the
    holding - when it was answered, against which version, who offered it - is
@@ -562,17 +553,8 @@ h2.element-label { margin: 0 0 4px; }
 }
 .items-controls button { padding: 4px 8px; font-size: 12px; }
 .items-picker {
-  box-sizing: border-box;
-  min-height: 28px;
   max-width: min(260px, 100%);
-  padding: 3px 8px;
-  border: 1px solid var(--line);
-  background-color: var(--panel);
-  color: var(--text);
-  color-scheme: inherit;
-  font-size: 12px;
 }
-.items-picker option { background: var(--panel); color: var(--text); }
 .item-row {
   display: flex;
   align-items: center;
@@ -708,7 +690,7 @@ h2.element-label { margin: 0 0 4px; }
 .membership-badge { margin-left: 4px; }
 
 .election-start-group { display: inline-flex; gap: 4px; }
-.election-start-group select { max-width: 150px; font-size: 12px; }
+.facilitator-control { max-width: 150px; }
 /* Everything done to a trusteeship, on the trusteeship's own card: stand
    for it, elect somebody, settle it, act in it. The election itself is a
    flow, read where the flows are. */
@@ -721,17 +703,8 @@ h2.element-label { margin: 0 0 4px; }
 }
 .role-card-actions button { padding: 4px 8px; font-size: 12px; }
 .trustee-settle {
-  box-sizing: border-box;
-  min-height: 28px;
   max-width: min(220px, 100%);
-  padding: 3px 8px;
-  border: 1px solid var(--line);
-  background-color: var(--panel);
-  color: var(--text);
-  color-scheme: inherit;
-  font-size: 12px;
 }
-.trustee-settle option { background: var(--panel); color: var(--text); }
 
 .trustee-candidacies {
   margin-top: 10px;
