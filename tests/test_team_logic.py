@@ -75,14 +75,16 @@ class TeamLogicTests(unittest.TestCase):
         logic.create_clause(section_uuid, "Serve members")
         logic.create_role(team_uuid, "Coordinator")
 
-        saved = logic.save_snapshot(
+        saved = logic.export_snapshot(
             team_uuid, "Cooperative baseline", "Reusable agreement",
         )
         logic.delete_team(team_uuid)
-        restored = logic.create_from_snapshot(saved.value, "New cooperative")
+        snapshot_file = json.loads(json.dumps(saved.value))
+        restored = logic.create_from_snapshot(snapshot_file, "New cooperative")
 
         self.assertEqual(saved.status, "ok", saved.reason)
-        self.assertEqual(logic.snapshots()[0]["description"], "Reusable agreement")
+        self.assertEqual(saved.value["format"], "s-protocol.item-snapshot")
+        self.assertEqual(saved.value["description"], "Reusable agreement")
         copy = session.protocol.index[restored.value]
         sections = logic.sections(copy)
         self.assertEqual([item.data["title"] for item in sections], ["Purpose"])
@@ -92,8 +94,10 @@ class TeamLogicTests(unittest.TestCase):
         )
         self.assertEqual([item.data["name"] for item in logic.roles(copy)], ["Coordinator"])
         self.assertEqual(logic.actor_uuids(copy), set())
-        self.assertEqual(logic.delete_snapshot(saved.value).status, "ok")
-        self.assertEqual(logic.snapshots(), [])
+        self.assertEqual(
+            [item.data["type"] for item in logic._team_container().live_children()],
+            ["team"],
+        )
 
     @staticmethod
     def flow_result(process_uuid="flow-1", **overrides):

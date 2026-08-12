@@ -4,6 +4,8 @@
 
 - Agenda items and counts now derive from verified perspectives without
   adopting peer records or listing those records again as Team proposals.
+  The staleness window is Core's default rather than a Team declaration; the
+  unused `agenda_perspective_*` configuration keys are gone.
 
 - Membership now uses a signed Actor application followed by an
   Identity-issued badge. The badge keeps Membership Info, Acceptance
