@@ -22,9 +22,9 @@ from sovereign import ApplicationRegistration, ProtocolNode, Session, SessionRes
 
 
 TEAM_APPLICATION_ID = "team"
-DEFAULT_AGENDA_PERSPECTIVE_MAX_AGE_SECONDS = 2 * 60 * 60
 TEAM_APP_NAME = "S-Team"
-TEAM_SNAPSHOT_TYPE = "team_snapshot"
+SNAPSHOT_FORMAT = "s-protocol.item-snapshot"
+SNAPSHOT_FORMAT_VERSION = 1
 FLOW_APPLICATION_ID = "flow"
 FLOW_FACADE_API_VERSION = 1
 INITIATIVE_APPLICATION_ID = "initiative"
@@ -656,73 +656,52 @@ class TeamLogic:
             effects=[*created.effects, *copied.effects],
         )
 
-    def snapshots(self) -> list[dict]:
-        container = self._find_team_container()
-        if not container:
-            return []
-        return sorted(
-            [
-                self._snapshot_summary(node)
-                for node in container.live_children()
-                if node.data.get("type") == TEAM_SNAPSHOT_TYPE
-            ],
-            key=lambda item: (item["name"].casefold(), item["saved_at"]),
-        )
-
-    def save_snapshot(
+    def export_snapshot(
         self, team_uuid: str, name: str = "", description: str = "",
     ) -> SessionResult:
         source = self._node(team_uuid, "team")
         if not source:
             return SessionResult("error", reason="team not found")
         source_name = str(source.data.get("title") or "Untitled team")
-        snapshot_name = self._distinct_name(
-            str(name or "").strip() or f"{source_name} snapshot",
-            [item["name"] for item in self.snapshots()],
-        )
-        data = {
-            "type": TEAM_SNAPSHOT_TYPE,
-            "name": snapshot_name,
+        content = {
+            "agreement_title": str(source.data.get("agreement_title") or ""),
+            "agreement_version": str(source.data.get("agreement_version") or ""),
+            "children": self._export_snapshot_content(source),
+        }
+        return SessionResult("ok", value={
+            "format": SNAPSHOT_FORMAT,
+            "format_version": SNAPSHOT_FORMAT_VERSION,
+            "item_type": "team",
+            "name": str(name or "").strip() or f"{source_name} snapshot",
             "description": str(description or "").strip(),
             "source_name": source_name,
-            "author_uuid": self.session.identity.uuid,
-            "author_name": str(self.session.identity.data.get("name") or ""),
-        }
-        for field in ("agreement_title", "agreement_version"):
-            if source.data.get(field):
-                data[field] = source.data[field]
-        created = self.session.create_child(self._team_container().uuid, data, {})
-        if created.status != "ok":
-            return created
-        copied = self._copy_content(source, created.value.uuid)
-        if copied.status != "ok":
-            self.session.delete(created.value.uuid)
-            return copied
-        return SessionResult(
-            "ok", value=created.value.uuid,
-            effects=[*created.effects, *copied.effects],
-        )
+            "saved_at": self._now(),
+            "content": content,
+        })
 
     def create_from_snapshot(
-        self, snapshot_uuid: str, title: str = "",
+        self, document: dict, title: str = "",
     ) -> SessionResult:
-        snapshot = self._snapshot_node(snapshot_uuid)
-        if not snapshot:
-            return SessionResult("error", reason="snapshot not found")
+        error = self._snapshot_error(document, "team")
+        if error:
+            return SessionResult("error", reason=error)
+        content = document["content"]
         requested = str(title or "").strip() or str(
-            snapshot.data.get("source_name") or snapshot.data.get("name") or "Untitled team"
+            document.get("source_name") or document.get("name") or "Untitled team"
         )
         data = {
             "type": "team",
             "title": self._distinct_name(requested, self._team_titles()),
         }
         for field in ("agreement_title", "agreement_version"):
-            if snapshot.data.get(field):
-                data[field] = snapshot.data[field]
+            if content.get(field):
+                data[field] = str(content[field])
         created = self.session.create_child(self._team_container().uuid, data, {})
         if created.status != "ok":
             return created
-        copied = self._copy_content(snapshot, created.value.uuid)
+        copied = self._import_snapshot_content(
+            content.get("children"), created.value.uuid,
+        )
         if copied.status != "ok":
             self.session.delete(created.value.uuid)
             return copied
@@ -732,29 +711,56 @@ class TeamLogic:
             effects=[*created.effects, *copied.effects],
         )
 
-    def delete_snapshot(self, snapshot_uuid: str) -> SessionResult:
-        snapshot = self._snapshot_node(snapshot_uuid)
-        if not snapshot:
-            return SessionResult("error", reason="snapshot not found")
-        return self.session.delete(snapshot.uuid)
+    def _export_snapshot_content(self, source: ProtocolNode) -> list[dict]:
+        return [
+            {
+                "data": dict(child.data),
+                "weights": dict(child.weights),
+                "children": self._export_snapshot_content(child),
+            }
+            for child in source.live_children()
+            if child.data.get("type") in self.CLONED_TYPES
+        ]
 
-    def _snapshot_node(self, snapshot_uuid: str) -> ProtocolNode | None:
-        node = self.session.protocol.index.get(snapshot_uuid)
-        return node if (
-            node and not node.deleted and node.data.get("type") == TEAM_SNAPSHOT_TYPE
-        ) else None
+    def _import_snapshot_content(
+        self, children: object, target_uuid: str,
+    ) -> SessionResult:
+        if not isinstance(children, list):
+            return SessionResult("error", reason="snapshot team content is invalid")
+        effects = []
+        for child in children:
+            if not isinstance(child, dict) or not isinstance(child.get("data"), dict):
+                return SessionResult("error", reason="snapshot team item is invalid")
+            data = child["data"]
+            if data.get("type") not in self.CLONED_TYPES:
+                return SessionResult("error", reason="snapshot contains an unsupported team item")
+            weights = child.get("weights", {})
+            if not isinstance(weights, dict):
+                return SessionResult("error", reason="snapshot team item weights are invalid")
+            created = self.session.create_child(target_uuid, dict(data), dict(weights))
+            if created.status != "ok":
+                return created
+            nested = self._import_snapshot_content(
+                child.get("children", []), created.value.uuid,
+            )
+            if nested.status != "ok":
+                return nested
+            effects.extend([*created.effects, *nested.effects])
+        return SessionResult("ok", effects=effects)
 
     @staticmethod
-    def _snapshot_summary(node: ProtocolNode) -> dict:
-        return {
-            "uuid": node.uuid,
-            "name": str(node.data.get("name") or "Saved snapshot"),
-            "description": str(node.data.get("description") or ""),
-            "source_name": str(node.data.get("source_name") or ""),
-            "saved_at": node.created_at,
-            "author_uuid": str(node.data.get("author_uuid") or ""),
-            "author_name": str(node.data.get("author_name") or ""),
-        }
+    def _snapshot_error(document: object, item_type: str) -> str:
+        if not isinstance(document, dict):
+            return "snapshot file is invalid"
+        if document.get("format") != SNAPSHOT_FORMAT:
+            return "not an S-Protocol item snapshot"
+        if document.get("format_version") != SNAPSHOT_FORMAT_VERSION:
+            return "snapshot version is not supported"
+        if document.get("item_type") != item_type:
+            return f"snapshot does not contain a {item_type}"
+        if not isinstance(document.get("content"), dict):
+            return "snapshot content is invalid"
+        return ""
 
     def _copy_content(
         self, source: ProtocolNode, target_uuid: str,
@@ -7558,26 +7564,10 @@ class TeamLogic:
         allowed = self._interaction_guard(team)
         if allowed.status != "ok":
             return allowed
-        return self.session.create_agenda_item(
-            team.uuid, text, priority, **self._agenda_perspective_policy(),
-        )
+        return self.session.create_agenda_item(team.uuid, text, priority)
 
     def _agenda_items(self, topic_uuid: str):
-        return self.session.agenda_projection(
-            topic_uuid, **self._agenda_perspective_policy(),
-        )
-
-    def _agenda_perspective_policy(self) -> dict:
-        configured = self.config.get(
-            "agenda_perspective_max_age_seconds",
-            DEFAULT_AGENDA_PERSPECTIVE_MAX_AGE_SECONDS,
-        )
-        return {
-            "max_age_seconds": (
-                None if configured is None else float(configured)
-            ),
-            "not_before": self.config.get("agenda_perspective_not_before"),
-        }
+        return self.session.agenda_projection(topic_uuid)
 
     def delete_agenda_item(self, item_uuid: str) -> SessionResult:
         if not self.owns_node(item_uuid):
@@ -7611,9 +7601,7 @@ class TeamLogic:
         allowed = self._interaction_guard_for_node(item_uuid)
         if allowed.status != "ok":
             return allowed
-        return self.session.move_agenda_item(
-            item_uuid, index, **self._agenda_perspective_policy(),
-        )
+        return self.session.move_agenda_item(item_uuid, index)
 
     def _metadata(self) -> dict:
         """Return a detached read copy of this application's metadata.
