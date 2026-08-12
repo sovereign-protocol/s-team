@@ -285,6 +285,18 @@ class TeamFacade:
     def clone_team(self, team_uuid: str, title: str | None = None):
         return self._logic.clone_team(team_uuid, title)
 
+    def snapshots(self) -> list[dict]:
+        return self._logic.snapshots()
+
+    def save_snapshot(self, team_uuid: str, name: str = "", description: str = ""):
+        return self._logic.save_snapshot(team_uuid, name, description)
+
+    def create_from_snapshot(self, snapshot_uuid: str, title: str = ""):
+        return self._logic.create_from_snapshot(snapshot_uuid, title)
+
+    def delete_snapshot(self, snapshot_uuid: str):
+        return self._logic.delete_snapshot(snapshot_uuid)
+
     def actor_uuids(self, team: ProtocolNode) -> set[str]:
         return self._logic.actor_uuids(team)
 

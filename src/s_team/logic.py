@@ -22,7 +22,9 @@ from sovereign import ApplicationRegistration, ProtocolNode, Session, SessionRes
 
 
 TEAM_APPLICATION_ID = "team"
+DEFAULT_AGENDA_PERSPECTIVE_MAX_AGE_SECONDS = 2 * 60 * 60
 TEAM_APP_NAME = "S-Team"
+TEAM_SNAPSHOT_TYPE = "team_snapshot"
 FLOW_APPLICATION_ID = "flow"
 FLOW_FACADE_API_VERSION = 1
 INITIATIVE_APPLICATION_ID = "initiative"
@@ -653,6 +655,106 @@ class TeamLogic:
             value=created.value.uuid,
             effects=[*created.effects, *copied.effects],
         )
+
+    def snapshots(self) -> list[dict]:
+        container = self._find_team_container()
+        if not container:
+            return []
+        return sorted(
+            [
+                self._snapshot_summary(node)
+                for node in container.live_children()
+                if node.data.get("type") == TEAM_SNAPSHOT_TYPE
+            ],
+            key=lambda item: (item["name"].casefold(), item["saved_at"]),
+        )
+
+    def save_snapshot(
+        self, team_uuid: str, name: str = "", description: str = "",
+    ) -> SessionResult:
+        source = self._node(team_uuid, "team")
+        if not source:
+            return SessionResult("error", reason="team not found")
+        source_name = str(source.data.get("title") or "Untitled team")
+        snapshot_name = self._distinct_name(
+            str(name or "").strip() or f"{source_name} snapshot",
+            [item["name"] for item in self.snapshots()],
+        )
+        data = {
+            "type": TEAM_SNAPSHOT_TYPE,
+            "name": snapshot_name,
+            "description": str(description or "").strip(),
+            "source_name": source_name,
+            "author_uuid": self.session.identity.uuid,
+            "author_name": str(self.session.identity.data.get("name") or ""),
+        }
+        for field in ("agreement_title", "agreement_version"):
+            if source.data.get(field):
+                data[field] = source.data[field]
+        created = self.session.create_child(self._team_container().uuid, data, {})
+        if created.status != "ok":
+            return created
+        copied = self._copy_content(source, created.value.uuid)
+        if copied.status != "ok":
+            self.session.delete(created.value.uuid)
+            return copied
+        return SessionResult(
+            "ok", value=created.value.uuid,
+            effects=[*created.effects, *copied.effects],
+        )
+
+    def create_from_snapshot(
+        self, snapshot_uuid: str, title: str = "",
+    ) -> SessionResult:
+        snapshot = self._snapshot_node(snapshot_uuid)
+        if not snapshot:
+            return SessionResult("error", reason="snapshot not found")
+        requested = str(title or "").strip() or str(
+            snapshot.data.get("source_name") or snapshot.data.get("name") or "Untitled team"
+        )
+        data = {
+            "type": "team",
+            "title": self._distinct_name(requested, self._team_titles()),
+        }
+        for field in ("agreement_title", "agreement_version"):
+            if snapshot.data.get(field):
+                data[field] = snapshot.data[field]
+        created = self.session.create_child(self._team_container().uuid, data, {})
+        if created.status != "ok":
+            return created
+        copied = self._copy_content(snapshot, created.value.uuid)
+        if copied.status != "ok":
+            self.session.delete(created.value.uuid)
+            return copied
+        self._remember_team(created.value.uuid)
+        return SessionResult(
+            "ok", value=created.value.uuid,
+            effects=[*created.effects, *copied.effects],
+        )
+
+    def delete_snapshot(self, snapshot_uuid: str) -> SessionResult:
+        snapshot = self._snapshot_node(snapshot_uuid)
+        if not snapshot:
+            return SessionResult("error", reason="snapshot not found")
+        return self.session.delete(snapshot.uuid)
+
+    def _snapshot_node(self, snapshot_uuid: str) -> ProtocolNode | None:
+        node = self.session.protocol.index.get(snapshot_uuid)
+        return node if (
+            node and not node.deleted and node.data.get("type") == TEAM_SNAPSHOT_TYPE
+        ) else None
+
+    @staticmethod
+    def _snapshot_summary(node: ProtocolNode) -> dict:
+        return {
+            "uuid": node.uuid,
+            "name": str(node.data.get("name") or "Saved snapshot"),
+            "description": str(node.data.get("description") or ""),
+            "source_name": str(node.data.get("source_name") or ""),
+            "saved_at": node.created_at,
+            "author_uuid": str(node.data.get("author_uuid") or ""),
+            "author_name": str(node.data.get("author_name") or ""),
+        }
 
     def _copy_content(
         self, source: ProtocolNode, target_uuid: str,
@@ -3049,8 +3151,8 @@ class TeamLogic:
         """
         if not self._is_current_member(team, self._identity_uuid):
             return []
-        follow = getattr(self.collaboration, "follow_bridged_topic", None)
-        if not callable(follow):
+        join = getattr(self.collaboration, "join_bridged_topic", None)
+        if not callable(join):
             return []
         ever_mine = {
             str(item.get("topic_uuid") or "")
@@ -3066,7 +3168,7 @@ class TeamLogic:
                     continue
                 if self.session.get_node(process_uuid) is not None:
                     continue
-                if getattr(follow(process_uuid, team.uuid), "ok", False):
+                if getattr(join(process_uuid, team.uuid), "ok", False):
                     adopted.append(process_uuid)
         if adopted:
             self.session.mount_cached_topics(FLOW_APPLICATION_ID)
@@ -6036,6 +6138,11 @@ class TeamLogic:
                     and observed.data.get("type") not in self.OWNED_NODE_TYPES
                 ):
                     continue
+                # Agenda records are already represented by the perspective
+                # projection. They are not proposals merely because this
+                # client has deliberately not adopted a duplicate copy.
+                if observed and observed.data.get("type") == "agenda_item":
+                    continue
                 if (
                     event["stage"] == "in_flight"
                     and liveness.get("state") == "stale"
@@ -6417,7 +6524,7 @@ class TeamLogic:
             # merged list for the topic in view.
             "agenda_items": [
                 node.to_dict() for node in
-                (self.session.agenda_items(selected.uuid) if selected else [])
+                (self._agenda_items(selected.uuid) if selected else [])
             ],
             "identity_uuid": self._identity_uuid,
             "known_identities": self.session.known_identities(),
@@ -6659,7 +6766,7 @@ class TeamLogic:
         events = self.transition_events(topic_uuid, network)
         return {
             "agenda_items": [
-                item.to_dict() for item in self.session.agenda_items(topic_uuid)
+                item.to_dict() for item in self._agenda_items(topic_uuid)
             ],
             "transition_events": events,
             "transition_by_node": self.transition_by_node(events),
@@ -7452,8 +7559,25 @@ class TeamLogic:
         if allowed.status != "ok":
             return allowed
         return self.session.create_agenda_item(
-            team.uuid, text, priority,
+            team.uuid, text, priority, **self._agenda_perspective_policy(),
         )
+
+    def _agenda_items(self, topic_uuid: str):
+        return self.session.agenda_projection(
+            topic_uuid, **self._agenda_perspective_policy(),
+        )
+
+    def _agenda_perspective_policy(self) -> dict:
+        configured = self.config.get(
+            "agenda_perspective_max_age_seconds",
+            DEFAULT_AGENDA_PERSPECTIVE_MAX_AGE_SECONDS,
+        )
+        return {
+            "max_age_seconds": (
+                None if configured is None else float(configured)
+            ),
+            "not_before": self.config.get("agenda_perspective_not_before"),
+        }
 
     def delete_agenda_item(self, item_uuid: str) -> SessionResult:
         if not self.owns_node(item_uuid):
@@ -7487,7 +7611,9 @@ class TeamLogic:
         allowed = self._interaction_guard_for_node(item_uuid)
         if allowed.status != "ok":
             return allowed
-        return self.session.move_agenda_item(item_uuid, index)
+        return self.session.move_agenda_item(
+            item_uuid, index, **self._agenda_perspective_policy(),
+        )
 
     def _metadata(self) -> dict:
         """Return a detached read copy of this application's metadata.
