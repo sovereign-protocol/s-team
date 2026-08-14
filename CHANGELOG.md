@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- Team topics now publish declared adoption handling to Core, and both
+  eligibility callbacks are gone. A team topic holds by default, since
+  agreement content is what members negotiate; the manual adopt button
+  reconciles as a decision, which passes through that hold. Every held
+  governance record names `same-origin`, so no peer rewrites another's record.
+  Authority is assessed at the moment of decision rather than recorded: whether
+  an incoming record was authored by the actor entitled to author it is
+  computed from membership and role state, so a verdict stored when the record
+  arrived would go on being true after it stopped being true. An unauthorized
+  record is refused outright, since no member's decision authorizes it.
+- **Fixed: a role answer was attributed to whoever delivered it.** Authorization
+  matched the sending peer's address against the actor the answer names, so an
+  answer that reached this client through a third party was disowned — a false
+  refusal in any topology where peers forward for one another, and a check that
+  the sender chose rather than proved. It now follows `revision_origin`, the
+  signing key the revision carries, which forwarding preserves unchanged. A
+  spoofed answer naming somebody else is still refused, now because the
+  signature says so.
+
 - Agenda items and counts now derive from verified perspectives without
   adopting peer records or listing those records again as Team proposals.
   The staleness window is Core's default rather than a Team declaration; the

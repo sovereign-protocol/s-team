@@ -644,6 +644,57 @@ class TeamLogicTests(unittest.TestCase):
             left.logic.update_clause(clause_uuid, "Reworded").status, "ok",
         )
 
+    def test_an_answer_is_attributed_to_its_signer_not_its_sender(self):
+        """A relayed answer is still the answer of whoever wrote it.
+
+        Attribution used to follow the delivery address, so an answer that
+        reached this client through a third party was disowned - a false
+        refusal in any topology where peers forward for one another. It
+        follows the signing key now, which forwarding preserves.
+        """
+        left, right = self.runtime(9679), self.runtime(9680)
+        team_uuid = left.logic.create_team("Charter").value
+        role_uuid = left.logic.create_role(team_uuid, "Treasurer").value
+        connect(left, right, team_uuid)
+        right.logic.accept_team_invitation(
+            right.session.protocol.index[team_uuid],
+        )
+        sync(left, right)
+
+        answer = right.session.create_child(
+            role_uuid,
+            {
+                "type": "team_role_decision",
+                "actor_uuid": right.session.identity.uuid,
+                "decision": "accepted",
+                "previous_decision_uuid": "",
+                "decided_at": "2026-01-01T00:00:00Z",
+                "reference_hash": right.logic.role_reference_hash(
+                    right.session.protocol.index[team_uuid],
+                    right.session.protocol.index[role_uuid],
+                ),
+            },
+            {},
+        ).value
+        sync(left, right)
+
+        team = left.session.protocol.index[team_uuid]
+        held = left.session.get_cached_peer_subtree(
+            right.peer_addr, answer.uuid,
+        )
+        self.assertIsNotNone(held)
+        self.assertEqual(
+            left.logic._author_actor_uuid(team, held),
+            right.session.identity.uuid,
+        )
+        # The same verdict whichever address it arrived on.
+        self.assertTrue(
+            left.logic._role_answer_authorized(team, held, right.peer_addr),
+        )
+        self.assertTrue(
+            left.logic._role_answer_authorized(team, held, "relay:forwarder"),
+        )
+
     def test_a_malformed_participation_record_is_refused(self):
         """These had no contract at all: a peer's answer was whatever they
         sent, and a person was asked to accept it sight unseen."""

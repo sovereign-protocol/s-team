@@ -5917,32 +5917,11 @@ class TeamLogic:
         allowed = self._interaction_guard_for_node(team_uuid)
         if allowed.status != "ok":
             return allowed
+        self.publish_adoption_metadata(team)
         changed = self.session.reconcile_peer_changes(
-            source_addr,
-            team_uuid,
-            lambda node, event_type: self._manual_adoption_eligible(
-                source_addr, team, node, event_type,
-            ),
+            source_addr, team_uuid, deciding=True,
         )
         return SessionResult("ok", value=changed)
-
-    def _manual_adoption_eligible(
-        self, source_addr: str, team: ProtocolNode, node: ProtocolNode,
-        event_type: str,
-    ) -> bool:
-        node_type = node.data.get("type")
-        if node_type not in self.GOVERNANCE_RECORD_TYPES:
-            return node_type != "team_role_decision"
-        if event_type != "local_missing_node":
-            return False
-        peer_node = self.session.get_cached_peer_subtree(
-            source_addr, node.uuid,
-        )
-        return bool(
-            peer_node
-            and self.assess_governance_record(team, peer_node)["status"]
-            == "authorized"
-        )
 
     def reconcile_governance_updates(self) -> SessionResult:
         """Auto-adopt verified governance facts and peer-authored role answers."""
@@ -5958,18 +5937,156 @@ class TeamLogic:
                 team,
             ) or changed
         for team in self.teams():
+            self.publish_adoption_metadata(team)
             for address in self.session.peer_addresses(team.uuid):
                 adopted = self.session.reconcile_peer_changes(
-                    address,
-                    team.uuid,
-                    lambda node, event_type, peer=address, body=team: (
-                        self._automatic_record_adoption_eligible(
-                            peer, body, node, event_type,
-                        )
-                    ),
+                    address, team.uuid,
                 )
                 changed = adopted or changed
         return SessionResult("ok", value=changed)
+
+    def publish_adoption_metadata(self, team: ProtocolNode) -> None:
+        """Declare how this team's nodes are handled, for Core to enforce.
+
+        What is declarable today is that a governance record is its author's:
+        it is created by one actor and is never anyone else's to rewrite, so
+        every held record names `same-origin` and Core refuses a revision from
+        any other origin. The agreement content itself - sections, clauses,
+        roles - stays adoptable, because that is what members negotiate.
+
+        What is not declarable is S-Team's authority assessment. Whether an
+        incoming record was authored by the actor entitled to author it is
+        computed from membership and role state, not read from a field, so
+        `assess_governance_record` remains the gate for a record this client
+        does not yet hold. See Core's DESIGN_ADOPTION_METADATA.md.
+        """
+        # Held back by default: agreement content is what members negotiate,
+        # so it waits for a decision rather than arriving on its own. The
+        # manual pass reconciles with `deciding`, which passes through `hold` -
+        # that decision being exactly what `hold` waits for.
+        self.session.set_topic_adoption_default(
+            team.uuid, adopt="hold", additions="hold",
+        )
+        self.session.set_adoption_classifier(
+            team.uuid,
+            lambda node, default, uuid=team.uuid: (
+                self._classify_incoming_node(node)
+            ),
+        )
+        self.session.set_adoption_resolver(
+            team.uuid,
+            lambda peer_node, local_node, peer_addr, uuid=team.uuid: (
+                self._resolve_held_node(uuid, peer_node, peer_addr)
+            ),
+        )
+        # A record already held is nobody's to rewrite, including its author's.
+        for node_type in sorted(self.GOVERNANCE_RECORD_TYPES):
+            self.session.set_adoption_metadata_for_subtree(
+                team.uuid, adopt="never", author="same-origin",
+                node_type=node_type,
+            )
+        # Agendas are Session's, projected rather than adopted.
+        self.session.set_adoption_metadata_for_subtree(
+            team.uuid, adopt="never", additions="never",
+            node_type="agenda_item",
+        )
+
+    @staticmethod
+    def _classify_incoming_node(node: ProtocolNode) -> dict | None:
+        """What a node this team does not yet hold *is*.
+
+        Only facts that do not move belong here, because the answer is stored:
+        an agenda item is Session's, projected from its author's perspective
+        and never adopted. Whether a record is *authorized* is not such a fact
+        - it is computed from membership and role state, both of which change -
+        so it is answered by the resolver at the moment of decision instead.
+        """
+        if node.data.get("type") == "agenda_item":
+            return {"adopt": "never", "additions": "never"}
+        return None
+
+    def _resolve_held_node(
+        self, team_uuid: str, node: ProtocolNode, peer_addr: str,
+    ) -> str:
+        """Whether a held record settles now, is refused, or waits for a member.
+
+        Authority is assessed here rather than stored, because it is derived
+        from membership and role state: a verdict recorded when the record
+        first arrived would go on being true after it stopped being true.
+
+        A record that fails assessment is refused outright - no member's
+        decision makes an unauthorized record authorized. Everything else is
+        deferred: agreement content is what members negotiate, so it waits for
+        somebody to adopt it.
+        """
+        team = self._node(team_uuid, "team")
+        if team is None:
+            return "defer"
+        node_type = node.data.get("type")
+        if node_type == "team_role_decision":
+            authorized = self._role_answer_authorized(team, node, peer_addr)
+        elif node_type in self.GOVERNANCE_RECORD_TYPES:
+            assessment = self.assess_governance_record(team, node)
+            authorized = assessment["status"] == "authorized"
+            self.session.trace_event(
+                "team.governance_assessment",
+                peer_addr=peer_addr,
+                team_uuid=team.uuid,
+                node_uuid=node.uuid,
+                record_type=node_type,
+                status=assessment["status"],
+                reason=assessment["reason"],
+            )
+        else:
+            return "defer"
+        return "adopt" if authorized else "refuse"
+
+    def _author_actor_uuid(self, team: ProtocolNode, node: ProtocolNode) -> str:
+        """The actor whose key signed this revision.
+
+        Attribution follows the signature, not the delivery path. A revision
+        carries the identity key that authored it and forwarding preserves it,
+        so a record relayed through a third party is still attributed to the
+        actor who wrote it - where matching on the sending address would
+        disown it.
+        """
+        origin = str(node.revision_origin or "")
+        if not origin:
+            return ""
+        for person in self._topic_members(team.uuid):
+            if person.get("identity_key") == origin:
+                return str(person.get("uuid") or "")
+        return ""
+
+    def _role_answer_authorized(
+        self, team: ProtocolNode, node: ProtocolNode, peer_addr: str,
+    ) -> bool:
+        schema_error = self.role_record_schema_error(node)
+        author_actor_uuid = self._author_actor_uuid(team, node)
+        answered_by = str(
+            node.data.get("decided_by") or node.data.get("actor_uuid") or ""
+        )
+        authorized = bool(
+            not schema_error and author_actor_uuid
+            and answered_by == author_actor_uuid
+        )
+        self.session.trace_event(
+            "team.role_answer_assessment",
+            peer_addr=peer_addr,
+            team_uuid=team.uuid,
+            node_uuid=node.uuid,
+            revision_origin=str(node.revision_origin or ""),
+            status="authorized" if authorized else "disregarded",
+            reason=(
+                schema_error
+                or (
+                    "the signing key is not a recognized team actor"
+                    if not author_actor_uuid
+                    else "the answer was not authored by the actor it names"
+                )
+            ),
+        )
+        return authorized
 
     def _peer_actor_uuid(
         self, team: ProtocolNode, peer_addr: str,
@@ -6059,58 +6176,6 @@ class TeamLogic:
                 )
                 changed = changed or result.status == "ok"
         return changed
-
-    def _automatic_record_adoption_eligible(
-        self, peer_addr: str, team: ProtocolNode, node: ProtocolNode,
-        event_type: str,
-    ) -> bool:
-        if event_type != "local_missing_node":
-            return False
-        peer_node = self.session.get_cached_peer_subtree(peer_addr, node.uuid)
-        if not peer_node:
-            return False
-        if node.data.get("type") == "team_role_decision":
-            schema_error = self.role_record_schema_error(peer_node)
-            peer_actor_uuid = self._peer_actor_uuid(team, peer_addr)
-            answered_by = str(
-                peer_node.data.get("decided_by")
-                or peer_node.data.get("actor_uuid")
-                or ""
-            )
-            eligible = bool(
-                not schema_error
-                and peer_actor_uuid
-                and answered_by == peer_actor_uuid
-            )
-            self.session.trace_event(
-                "team.role_answer_assessment",
-                peer_addr=peer_addr,
-                team_uuid=team.uuid,
-                node_uuid=node.uuid,
-                status="authorized" if eligible else "disregarded",
-                reason=(
-                    schema_error
-                    or (
-                        "the peer is not a recognized team actor"
-                        if not peer_actor_uuid
-                        else "the answer was not authored by the peer"
-                    )
-                ),
-            )
-            return eligible
-        if node.data.get("type") not in self.GOVERNANCE_RECORD_TYPES:
-            return False
-        assessment = self.assess_governance_record(team, peer_node)
-        self.session.trace_event(
-            "team.governance_assessment",
-            peer_addr=peer_addr,
-            team_uuid=team.uuid,
-            node_uuid=node.uuid,
-            record_type=node.data.get("type"),
-            status=assessment["status"],
-            reason=assessment["reason"],
-        )
-        return assessment["status"] == "authorized"
 
     def transition_events(
         self, team_uuid: str, network: dict | None = None,
@@ -7287,6 +7352,9 @@ class TeamLogic:
             "picture": self_identity.get("picture") or "",
             "address": self.session.address,
             "addresses": [self.session.address],
+            # Carried so a record can be attributed to whoever signed it
+            # rather than to whoever relayed it - see _author_actor_uuid.
+            "identity_key": self_identity.get("identity_key") or "",
             "is_self": True,
         }]
         seen = {self._identity_uuid}
@@ -7302,6 +7370,7 @@ class TeamLogic:
                 "picture": identity.get("picture") or "",
                 "address": address,
                 "addresses": identity.get("addresses") or [address],
+                "identity_key": identity.get("identity_key") or "",
                 "is_self": False,
             })
         return people
