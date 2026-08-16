@@ -595,8 +595,29 @@
       // proposed role brings its accountabilities with it, so answering each of
       // them separately would be four buttons for one decision. A proposal made
       // directly against something we already have is its own decision.
+      // A container is a place, not content: the page reads straight through
+      // it, so a role or a membership renders the same whether it sits under
+      // its parent or in a container of its own kind. Proposals are gathered
+      // from the containers too, since a peer's new node is parented to one.
+      const CONTAINER_TYPE = "team_container";
+
+      const readThrough = (parent) => [
+        parent,
+        ...(parent.children || []).filter(
+          (node) => !node.deleted && node.data.type === CONTAINER_TYPE,
+        ),
+      ];
+
+      // The agreement is a node of its own now, not two fields on the team.
+      const agreementData = (team) => {
+        const entry = team ? displayedChildren(team, "team_agreement")[0] : null;
+        return entry ? entry.node.data : {};
+      };
+
       const displayedChildren = (parent, nodeType, inheritedProposal = false) => {
-        const entries = ordered(parent.children)
+        if (!parent) return [];
+        const places = readThrough(parent);
+        const entries = ordered(places.flatMap((place) => place.children || []))
           .filter((node) => node.data.type === nodeType)
           .map((node) => ({
             node,
@@ -605,9 +626,12 @@
           }));
         if (!inheritedProposal) {
           const present = new Set(entries.map((entry) => entry.node.uuid));
-          for (const node of proposedChildren(parent.uuid)) {
-            if (node.data.type === nodeType && !present.has(node.uuid)) {
-              entries.push({ node, proposed: true, inherited: false });
+          for (const place of places) {
+            for (const node of proposedChildren(place.uuid)) {
+              if (node.data.type === nodeType && !present.has(node.uuid)) {
+                entries.push({ node, proposed: true, inherited: false });
+                present.add(node.uuid);
+              }
             }
           }
         }
@@ -2666,11 +2690,11 @@
         agreementHead.className = "agreement-head";
         const agreementTitle = document.createElement("h2");
         agreementTitle.className = "agreement-title";
-        agreementTitle.textContent = current.data.agreement_title || "";
+        agreementTitle.textContent = agreementData(current).name || "";
         if (currentInteractionAllowed) {
           SovereignUI.editableText({
             element: agreementTitle,
-            value: current.data.agreement_title || "",
+            value: agreementData(current).name || "",
             placeholder: "Name this agreement",
             onCommit: (value) =>
               api("/api/team/agreement/rename", { team_uuid: current.uuid, title: value }),
@@ -2681,12 +2705,12 @@
         agreementHead.append(agreementTitle);
         const agreementVersion = document.createElement("span");
         agreementVersion.className = "agreement-version";
-        agreementVersion.textContent = current.data.agreement_version || "";
+        agreementVersion.textContent = agreementData(current).version || "";
         agreementVersion.dataset.emptyLabel = "Version";
         if (currentInteractionAllowed) {
           SovereignUI.editableText({
             element: agreementVersion,
-            value: current.data.agreement_version || "",
+            value: agreementData(current).version || "",
             placeholder: "Version",
             onCommit: (value) =>
               api("/api/team/agreement/version", {
@@ -2731,7 +2755,12 @@
         }
         documentPart.content.append(agreementHead);
         if (sectionComposerHost) content.append(sectionComposerHost);
-        const sections = displayedChildren(current, "team_section");
+        const agreementEntry = displayedChildren(current, "team_agreement")[0];
+        const sections = agreementEntry
+          ? displayedChildren(
+              agreementEntry.node, "team_section", agreementEntry.proposed,
+            )
+          : [];
         const sectionsHaveProposals = sections.some((entry) => entry.proposed);
         sections.forEach(({ node: section, proposed }) => {
           const block = document.createElement("section");

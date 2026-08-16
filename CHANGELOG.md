@@ -14,7 +14,9 @@
   and a container there could not exist before a peer's section had been
   adopted, which would cost the one-pass adoption of a new subtree.
   Containers are transparent to the content hashes, so adding one never
-  re-opens an acceptance of unchanged text.
+  re-opens an acceptance of unchanged text, and the page reads straight
+  through them, so a role or a membership renders the same whether it sits
+  under its parent or in a container of its own kind.
 - **The agreement is a node.** `agreement_title` and `agreement_version` were
   two fields on the team; a team is a body of people and its agreement is the
   text they hold to, which an acceptance has to be able to name. Its uuid is

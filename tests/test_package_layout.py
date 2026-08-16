@@ -245,7 +245,10 @@ class AssetTests(unittest.TestCase):
     def test_agenda_exposes_the_shared_move_and_update_routes(self):
         self.assertIn("/api/team/agenda/move", self.team)
         self.assertIn("/api/team/agenda/update", self.team)
-        self.assertCodeContains("displayedChildren(current, 'team_section')")
+        # Sections hang off the agreement node, and the page reads through
+        # the container it sits in rather than naming a type twice.
+        self.assertCodeContains("displayedChildren(current, 'team_agreement')")
+        self.assertCodeContains("displayedChildren(")
 
     def test_polling_preserves_focused_form_fields(self):
         self.assertCodeContains(
@@ -695,7 +698,7 @@ class AssetTests(unittest.TestCase):
         # One field used to serve both, so renaming the body silently
         # retitled the document its members had accepted.
         self.assertIn("/api/team/agreement/rename", self.team)
-        self.assertIn("current.data.agreement_title", self.team)
+        self.assertIn("agreementData(current).name", self.team)
         self.assertCodeContains("placeholder: 'Name this agreement'")
         self.assertNotIn(".agreement-title:empty::before", css)
         # The team's name heads the page, outside every disclosure, and the
