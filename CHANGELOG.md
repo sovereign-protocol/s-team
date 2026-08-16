@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+- **A team's nodes now sit in containers, one per kind.** Roles, membership
+  types, members, applications, invitations, trusteeship, elections,
+  candidacies, actions, lists, seats — each has a place of its own, and so do
+  a role's accountabilities, domains, answers and holdings. Core is handed a
+  container's uuid instead of a type name, so nine `node_type` declarations
+  became one statement per container, ordering no longer names a type, and a
+  hash scope is a place. A container sits between a parent and its children
+  only where the parent holds more than one kind: an agreement holds sections
+  and a section holds clauses, so there the parent is already the predicate —
+  and a container there could not exist before a peer's section had been
+  adopted, which would cost the one-pass adoption of a new subtree.
+  Containers are transparent to the content hashes, so adding one never
+  re-opens an acceptance of unchanged text.
+- **The agreement is a node.** `agreement_title` and `agreement_version` were
+  two fields on the team; a team is a body of people and its agreement is the
+  text they hold to, which an acceptance has to be able to name. Its uuid is
+  derived from the team's, so every client reaches the same agreement without
+  adopting a shell, and only what is written in it is negotiated.
+- **Added `team_acceptance`.** An Actor's acceptance of one agreement, at the
+  text it had when they accepted, appended rather than rewritten. Distinct
+  from the acceptance fields on `team_membership`, which snapshot what was
+  asked and answered at *admission* — evidence of an event, which stays with
+  the event. This is the standing fact, renewed when the agreement changes
+  without anybody being admitted again. It names a `reference_hash` rather
+  than a version label, because a label is a sentence somebody typed and the
+  hash is the agreement as it actually read.
+- **Added `actors(team)`**, derived from the membership, application,
+  acceptance and answer chains. A stored Actor list would be a third copy of
+  what those already say, going stale against Core's identities. A seated team
+  appears beside people, its kind read from what its uuid turns out to name.
+- **An observation now sits under the decision it observes.** `team_trustee_
+  reality` lost `action_uuid`: which decision it is about is a fact about
+  where it is, not a uuid it carries and could carry wrongly. `team_trustee_
+  action` gained `value`, the decision in words — `subject_uuid` said what was
+  decided about, and nothing said what was decided.
+- **Fixed: a well-formed record from an unentitled author would have been
+  adopted.** Declaring record containers `additions: auto` took an arriving
+  record on the strength of its position, which skips the resolver and so
+  never runs `assess_governance_record`. Position says where a record belongs;
+  it cannot say whether its author was entitled to write it. They declare
+  `hold`, which sends every arrival to the authority check.
+
 - Team topics now publish declared adoption handling to Core, and both
   eligibility callbacks are gone. A team topic holds by default, since
   agreement content is what members negotiate; the manual adopt button

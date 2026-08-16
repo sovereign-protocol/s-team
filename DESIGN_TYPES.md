@@ -193,6 +193,7 @@ What a trustee did, with the reasoning that stands behind it.
 | `acted_by`              | required                                          |
 | `acted_at`              | required                                          |
 | `authority_basis_uuid`  | required                                          |
+| `value`                 | required — the decision in words. May be empty      |
 | `signals`               | required — what was observed. May be empty         |
 | `consideration`         | required — what was weighed. May be empty          |
 | `expectation`           | required — what is expected to follow. May be empty |
@@ -206,9 +207,14 @@ What actually happened, observed against an action. Zero or more per action —
 one person's observation does not close the question, and divergent
 observations are kept rather than reconciled.
 
+**A child of the action it observes**, and the only record whose place is
+another record rather than a container. Which decision an observation is about
+is a fact about where it sits, not a uuid it carries and could carry wrongly.
+An action holds nothing else, so it needs no container between them — and one
+there could not exist before the action itself had been adopted.
+
 | Field                   | Requirement                        |
 | ----------------------- | ---------------------------------- |
-| `action_uuid`           | required — the action observed      |
 | `observed_by`           | required                           |
 | `observed_at`           | required                           |
 | `reality`               | required — non-empty                |
@@ -567,15 +573,21 @@ same thing again:
 └── children       the same shape
 ```
 
-Four types use it. `team_section` names itself with a `title` and holds
-clauses; `team_clause`, `team_accountability` and `team_domain` carry `text`.
+Five types use it. `team_agreement` names itself with a `name` and holds
+sections; `team_section` names itself with a `title` and holds clauses;
+`team_clause`, `team_accountability` and `team_domain` carry `text`.
 
-| Type                  | Under          | Names itself with |
-| --------------------- | -------------- | ------------------ |
-| `team_section`        | `team`         | `title`            |
-| `team_clause`         | `team_section` | `text`             |
-| `team_accountability` | `team_role`    | `text`             |
-| `team_domain`         | `team_role`    | `text`             |
+A container sits between a parent and its children only where the parent
+holds more than one kind. An agreement holds sections and a section holds
+clauses, so there the parent is already the predicate.
+
+| Type                  | In container      | Under            | Names itself with |
+| --------------------- | ----------------- | ---------------- | ------------------ |
+| `team_agreement`      | `agreements`      | `team`           | `name`             |
+| `team_section`        | —                 | `team_agreement` | `title`            |
+| `team_clause`         | —                 | `team_section`   | `text`             |
+| `team_accountability` | `accountabilities`| `team_role`      | `text`             |
+| `team_domain`         | `domains`         | `team_role`      | `text`             |
 
 **Two levels, not arbitrary depth.** The shape permits nesting and this
 document does not use it: a section holds clauses and a clause holds nothing.
@@ -591,6 +603,45 @@ collapse both edits into one undiffable conflict.
 Editable is not unchecked. Every one is validated against
 `CONTENT_FIELDS` on adoption, and content may only contain content — a clause
 carrying a role would be a document that owned its own participants.
+
+## `team_acceptance`
+
+An Actor's acceptance of one agreement, at the text it had when they accepted.
+Appended, never rewritten: accepting an updated agreement continues the
+Actor's chain, so what somebody accepted and when stays readable.
+
+Distinct from the acceptance fields on `team_membership`, which snapshot what
+was asked and answered at *admission*. That is evidence of an event and stays
+with the event. This is the standing fact, renewed when the agreement changes
+without anybody being admitted again.
+
+`reference_hash` is what makes it mean anything. A version label is a sentence
+somebody typed; the hash is the agreement as it actually read, so "who
+accepted this exact text" is answerable from the tree.
+
+| Field                       | Requirement                                    |
+| --------------------------- | ---------------------------------------------- |
+| `actor_uuid`                | required — who accepted; must be the author     |
+| `agreement_uuid`            | required — must name this Team's agreement      |
+| `reference_hash`            | required — the agreement as it read then        |
+| `text`                      | required — the acceptance sentence, may be empty |
+| `previous_acceptance_uuid`  | required — the acceptance this continues, or empty |
+| `accepted_at`               | required — when                                 |
+
+## `team_agreement`
+
+The text a team holds to, which is not the team itself: a team is a body of
+people. An acceptance names an agreement, which is why it is a node rather
+than a pair of fields on the team.
+
+Its uuid is derived from the team's, so every client reaches the same
+agreement without adopting a shell. Only what is written in it is negotiated.
+
+| Field     | Requirement                                  |
+| --------- | -------------------------------------------- |
+| `name`    | required — what the agreement is called       |
+| `version` | required — its human-readable version label   |
+| `order`   | required — a number, position among siblings  |
 
 ## `team_section`
 
