@@ -860,6 +860,16 @@ h2.element-label { margin: 0 0 4px; }
   color: var(--text-muted);
   font-size: 13px;
 }
+/* A peer's proposed name or version, beside the one this client holds.
+   Marked as a proposal the way a proposed row is, so it reads as somebody
+   else's suggestion rather than as the current value. */
+.agreement-proposed {
+  padding: 1px 7px;
+  border: 1px dashed var(--line);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
 .agreement-state {
   padding: 1px 7px;
   border: 1px solid var(--line);

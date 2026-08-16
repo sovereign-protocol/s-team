@@ -1998,6 +1998,49 @@ class TeamLogicTests(unittest.TestCase):
         self.assertEqual([actor["uuid"] for actor in teams], [child_uuid])
         self.assertEqual(teams[0]["name"], "Finance circle")
 
+    def test_a_peers_rename_is_offered_where_the_name_is_read(self):
+        """A changed node used to show only in the divergence list."""
+        left, right = self.runtime(9442), self.runtime(9443)
+        team_uuid = left.logic.create_team("Cooperative").value
+        left.logic.rename_agreement(team_uuid, "Terms")
+        left.logic.set_agreement_version(team_uuid, "1")
+        self.assertEqual(connect(left, right, team_uuid)["status"], "ok")
+        right.logic.accept_team_invitation(
+            right.session.protocol.index[team_uuid],
+        )
+        sync(left, right)
+        agreement_uuid = left.logic.agreement(
+            left.session.protocol.index[team_uuid], create=False,
+        ).uuid
+        self.adopt(right, left, agreement_uuid)
+
+        left.logic.rename_agreement(team_uuid, "Terms of trade")
+        sync(left, right)
+
+        # Held, not taken: the team defaults to hold, so a rename waits.
+        held = right.logic.agreement(
+            right.session.protocol.index[team_uuid], create=False,
+        )
+        self.assertEqual(held.data["name"], "Terms")
+        # ...but the page is now told what is being proposed, and for which
+        # node, so it can show it beside the name rather than only in the
+        # divergence list.
+        payload = right.logic.document_payload(team_uuid)
+        proposed = payload["proposed_changes"].get(agreement_uuid)
+        self.assertIsNotNone(proposed, payload["proposed_changes"])
+        self.assertEqual(proposed["node"]["data"]["name"], "Terms of trade")
+
+        # Adopting it settles the proposal.
+        self.adopt(right, left, agreement_uuid)
+        payload = right.logic.document_payload(team_uuid)
+        self.assertNotIn(agreement_uuid, payload["proposed_changes"])
+        self.assertEqual(
+            right.logic.agreement(
+                right.session.protocol.index[team_uuid], create=False,
+            ).data["name"],
+            "Terms of trade",
+        )
+
     def test_an_acceptance_names_the_text_it_accepted(self):
         """A badge that named only a version label would not be falsifiable."""
         runtime = self.runtime(9436)
@@ -2129,7 +2172,7 @@ class TeamLogicTests(unittest.TestCase):
         team = runtime.session.protocol.index[team_uuid]
         self.assertEqual(
             runtime.logic.agreement_projection(team)["state"],
-            "consolidated",
+            "agreed",
         )
 
         self.assertEqual(

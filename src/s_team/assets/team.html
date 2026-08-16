@@ -238,7 +238,7 @@
           const agreementLabel = document.querySelector("#membershipAgreementConsent");
           const missing = document.querySelector("#membershipAgreementMissing");
           const confirm = document.querySelector("#membershipAcceptanceConfirm");
-          const agreementExists = agreementState?.state === "consolidated";
+          const agreementExists = agreementState?.state === "agreed";
           form.reset();
           document.querySelector("#membershipAcceptanceTitle").textContent = renewal
             ? `Renew application for ${name}?`
@@ -583,6 +583,31 @@
           if (proposed) return proposed;
         }
         return null;
+      };
+
+      // What a peer says a node we hold should say instead. A new node shows
+      // as a proposal in place; without this a *changed* one showed only in
+      // the divergence list, so a renamed agreement was invisible exactly
+      // where its name is read.
+      const proposedChangeFor = (uuid) =>
+        (payloadState.proposed_changes || {})[uuid]?.node || null;
+
+      const proposedValue = (node, field) => {
+        if (!node) return "";
+        const peer = proposedChangeFor(node.uuid);
+        if (!peer) return "";
+        const value = peer.data?.[field] ?? "";
+        return value === (node.data?.[field] ?? "") ? "" : value;
+      };
+
+      const proposedNote = (node, field, label) => {
+        const value = proposedValue(node, field);
+        if (!value) return null;
+        const note = document.createElement("span");
+        note.className = "agreement-proposed";
+        note.textContent = `${label}: ${value}`;
+        note.title = "Proposed by a peer. Adopt it to take it.";
+        return note;
       };
 
       const proposedChildren = (parentUuid) =>
@@ -1161,7 +1186,7 @@
             badge.agreement_accepted
               ? `Agreement accepted: ${badge.agreement_version || "unnamed version"}`
               : "No Agreement was present",
-            status === "outdated" ? "The consolidated Agreement is now different." : "",
+            status === "outdated" ? "The agreed Agreement is now different." : "",
           ]
             .filter(Boolean)
             .join("\n");
@@ -1494,7 +1519,7 @@
           row.append(applicationRow);
         }
 
-        if (interactive && invitation && !membership.agreement_aligned) {
+        if (interactive && invitation && !membership.my_agreement_current) {
           const alignment = document.createElement("p");
           alignment.className = "membership-alignment-required";
           alignment.textContent = "Align your Agreement copy with Identity before applying.";
@@ -2703,6 +2728,9 @@
           });
         }
         agreementHead.append(agreementTitle);
+        const agreementNode = displayedChildren(current, "team_agreement")[0]?.node;
+        const proposedTitle = proposedNote(agreementNode, "name", "Proposed name");
+        if (proposedTitle) agreementHead.append(proposedTitle);
         const agreementVersion = document.createElement("span");
         agreementVersion.className = "agreement-version";
         agreementVersion.textContent = agreementData(current).version || "";
@@ -2722,14 +2750,18 @@
           });
         }
         agreementHead.append(agreementVersion);
+        const proposedVersion = proposedNote(
+          agreementNode, "version", "Proposed version",
+        );
+        if (proposedVersion) agreementHead.append(proposedVersion);
         const agreementTruth = payload.membership?.agreement || {};
         const agreementState = document.createElement("span");
         agreementState.className = `agreement-state is-${agreementTruth.state || "unknown"}`;
         agreementState.textContent =
           {
-            consolidated: "Consolidated",
+            agreed: "Identity holders agree",
             absent: "No Agreement",
-            disputed: "Identity disagreement",
+            disputed: "Identity holders disagree",
             unavailable: "Identity perspective unavailable",
             invalid: "Agreement incomplete",
             no_identity: "No Identity",

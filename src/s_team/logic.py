@@ -710,12 +710,12 @@ class TeamLogic:
         agreement = self.agreement(team, create=False)
         if agreement is None or not self.agreement_exists(team):
             return SessionResult(
-                "error", reason="there is no consolidated Agreement to accept",
+                "error", reason="there is no agreed Agreement to accept",
             )
         reference_hash = self.team_reference_hash(team)
         if not reference_hash:
             return SessionResult(
-                "error", reason="there is no consolidated Agreement to accept",
+                "error", reason="there is no agreed Agreement to accept",
             )
         current = self._acceptance_head(team, self._identity_uuid)
         return self.append_governance_record(team.uuid, {
@@ -1699,7 +1699,7 @@ class TeamLogic:
                 "error", reason="your Acceptance Text is required",
             )
         agreement = self.agreement_projection(team)
-        if agreement.get("state") not in {"consolidated", "absent"}:
+        if agreement.get("state") not in {"agreed", "absent"}:
             self.session.trace_event(
                 "team.membership_application_blocked",
                 team_uuid=team.uuid,
@@ -1709,9 +1709,9 @@ class TeamLogic:
             )
             return SessionResult(
                 "error",
-                reason="Identity has no consolidated Agreement perspective",
+                reason="the Identity holders do not expose one agreed Agreement",
             )
-        has_agreement = agreement.get("state") == "consolidated"
+        has_agreement = agreement.get("state") == "agreed"
         local_snapshot, local_error = self._agreement_snapshot(team)
         local_hash = (
             self._agreement_snapshot_hash(local_snapshot)
@@ -1821,7 +1821,7 @@ class TeamLogic:
                 "error", reason="the applicant's membership has changed",
             )
         agreement = self.agreement_projection(team)
-        if agreement.get("state") not in {"consolidated", "absent"}:
+        if agreement.get("state") not in {"agreed", "absent"}:
             self.session.trace_event(
                 "team.membership_badge_issue_blocked",
                 team_uuid=team.uuid,
@@ -1831,7 +1831,7 @@ class TeamLogic:
             )
             return SessionResult(
                 "error",
-                reason="Identity has no consolidated Agreement perspective",
+                reason="the Identity holders do not expose one agreed Agreement",
             )
         if data.get("agreement_version") != agreement.get("version"):
             return SessionResult(
@@ -2792,7 +2792,7 @@ class TeamLogic:
             team, projection["current_uuid"], "team_membership",
         )
         agreement = self.agreement_projection(team)
-        if agreement.get("state") not in {"consolidated", "absent"}:
+        if agreement.get("state") not in {"agreed", "absent"}:
             return "outdated"
         accepted = str(
             current.data.get("agreement_version") or "",
@@ -3016,7 +3016,7 @@ class TeamLogic:
             }
         agreed = observations[0]
         snapshot = agreed["snapshot"]
-        state = "consolidated" if (
+        state = "agreed" if (
             snapshot["name"] or snapshot["version"] or snapshot["sections"]
         ) else "absent"
         return {
@@ -3029,7 +3029,7 @@ class TeamLogic:
         }
 
     def agreement_exists(self, team: ProtocolNode) -> bool:
-        return self.agreement_projection(team).get("state") == "consolidated"
+        return self.agreement_projection(team).get("state") == "agreed"
 
     def onboarding_pool_uuids(self, team: ProtocolNode) -> list[str]:
         """Everybody publishing on this team's channel who is not on it.
@@ -3068,11 +3068,16 @@ class TeamLogic:
         held_type_uuid = standing.get("membership_type_uuid") or ""
         is_member = standing["state"] == "member"
         now = self._now()
+        # Two different facts, named for whose state each describes.
+        # `state` says whether the Identity holders agree with each other;
+        # `my_agreement_current` says whether this client's own copy matches
+        # what they publish. You can be current with an absent Agreement, and
+        # out of date against a perfectly agreed one.
         agreement = self.agreement_projection(team)
         local_agreement, local_agreement_error = self._agreement_snapshot(team)
-        agreement_aligned = bool(
+        my_agreement_current = bool(
             not local_agreement_error
-            and agreement.get("state") in {"consolidated", "absent"}
+            and agreement.get("state") in {"agreed", "absent"}
             and self._agreement_snapshot_hash(local_agreement)
             == agreement.get("reference_hash")
         )
@@ -3123,7 +3128,7 @@ class TeamLogic:
                 # former member's chain still named the type they had been
                 # on - so the one person who most needed the control was the
                 # one it was hidden from.
-                "can_apply": bool(live) and agreement_aligned and (
+                "can_apply": bool(live) and my_agreement_current and (
                     not is_mine
                     or self.membership_status(
                         team, self._identity_uuid,
@@ -3145,9 +3150,9 @@ class TeamLogic:
             "is_member": is_member,
             "status": self.membership_status(team, self._identity_uuid),
             "membership_type_uuid": held_type_uuid,
-            "agreement_exists": agreement.get("state") == "consolidated",
+            "agreement_exists": agreement.get("state") == "agreed",
             "agreement": agreement,
-            "agreement_aligned": agreement_aligned,
+            "my_agreement_current": my_agreement_current,
             "applications": [
                 {
                     "uuid": application.uuid,
@@ -4875,7 +4880,7 @@ class TeamLogic:
                 "error", reason="an Acceptance Requirement is required",
             )
         agreement = self.agreement_projection(team)
-        if agreement.get("state") not in {"consolidated", "absent"}:
+        if agreement.get("state") not in {"agreed", "absent"}:
             self.session.trace_event(
                 "team.membership_invitation_blocked",
                 team_uuid=team.uuid,
@@ -7027,6 +7032,11 @@ class TeamLogic:
             # those proposals; the application does not receive or manage
             # channel state, nor does the UI need the complete peer cache.
             "proposed_nodes": self._proposed_nodes(events),
+            # A peer's version of something this client already holds. A new
+            # node shows on the document as a proposal; a *changed* one used
+            # to show only in the divergence list, so a renamed agreement was
+            # invisible at the place its name is read.
+            "proposed_changes": self._proposed_changes(events),
             "network": network,
             # Agendas are Session's, so this application only forwards the
             # merged list for the topic in view.
@@ -7237,6 +7247,35 @@ class TeamLogic:
                 "node": peer_node.to_dict(),
             })
         return proposals
+
+    def _proposed_changes(self, events: list[dict]) -> dict[str, dict]:
+        """What a peer says a node this client holds should say instead.
+
+        Only where the peer has moved and this client has not answered yet -
+        a difference this client authored is its own, not a proposal to it.
+        """
+        proposed: dict[str, dict] = {}
+        for event in events:
+            if event.get("type") not in ("peer_made_changes", "divergence"):
+                continue
+            node_uuid = event.get("node_uuid")
+            source_addr = event.get("peer_addr")
+            if not node_uuid or not source_addr or node_uuid in proposed:
+                continue
+            peer_node = self.session.get_cached_peer_subtree(
+                source_addr, node_uuid,
+            )
+            if (
+                not peer_node
+                or peer_node.deleted
+                or peer_node.data.get("type") not in self.REACTABLE
+            ):
+                continue
+            proposed[node_uuid] = {
+                "source_addr": source_addr,
+                "node": peer_node.to_dict(),
+            }
+        return proposed
 
     def _selected_team(self, requested_uuid: str | None,
                             teams: list[ProtocolNode]) -> ProtocolNode | None:
@@ -7558,7 +7597,7 @@ class TeamLogic:
         return f"sha256:{hashlib.sha256(combined).hexdigest()}"
 
     def team_reference_hash(self, team: ProtocolNode) -> str:
-        """The consolidated Identity Agreement hash.
+        """The hash of the Agreement the Identity holders agree on.
 
         Role nodes are deliberately absent. An acceptance covers the document
         body plus the definition of the role being accepted - see
@@ -7574,7 +7613,7 @@ class TeamLogic:
         replicas would disagree.
         """
         projection = self.agreement_projection(team)
-        if projection.get("state") not in {"consolidated", "absent"}:
+        if projection.get("state") not in {"agreed", "absent"}:
             return ""
         return str(projection.get("reference_hash") or "")
 

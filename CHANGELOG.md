@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **The two Agreement states now say whose state each is.** `consolidated`
+  became `agreed` — the Identity holders publish the same Agreement, which
+  pairs with `disputed` — and `agreement_aligned` became
+  `my_agreement_current`, this client's own copy matching what they publish.
+  One word was doing for both, and they are different questions: you can be
+  current with an absent Agreement, and out of date against a perfectly
+  agreed one.
+- **A peer's change to something you hold is now offered where you read it.**
+  The payload carries `proposed_changes`, the peer's version of a node this
+  client already holds. A *new* node has always shown on the document as a
+  proposal; a *changed* one appeared only in the divergence list, so a
+  renamed Agreement was invisible at the place its name is read. The
+  Agreement head shows the proposed name and version beside the current ones
+  until they are adopted.
+
 - **A team's nodes now sit in containers, one per kind.** Roles, membership
   types, members, applications, invitations, trusteeship, elections,
   candidacies, actions, lists, seats — each has a place of its own, and so do
