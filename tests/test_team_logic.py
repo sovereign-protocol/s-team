@@ -3315,7 +3315,20 @@ class TeamLogicTests(unittest.TestCase):
             node for node in runtime.logic._held(role, "answers")
             if node.data.get("actor_uuid") == child_uuid
         ]
-        self.assertEqual(len(decisions), 1)
+        # Taken, stepped out of, taken again - three links of one chain, not
+        # three claims on the seat. Stepping out appends a refusal rather
+        # than deleting the answer, so when the seat was held and when it was
+        # given up are both still readable.
+        self.assertEqual(len(decisions), 3)
+        self.assertEqual(
+            [node.data["decision"] for node in decisions],
+            ["accepted", "refused", "accepted"],
+        )
+        roots = [
+            node for node in decisions
+            if not node.data.get("previous_decision_uuid")
+        ]
+        self.assertEqual(len(roots), 1)
         head = runtime.logic._role_decision_for(role, child_uuid)
         self.assertEqual(head.data["decision"], "accepted")
         self.assertEqual(

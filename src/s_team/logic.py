@@ -491,13 +491,11 @@ class TeamLogic:
         re-accepts on each one's behalf, on top of each person re-accepting
         their own roles. Left for step 3b to decide with the ANY-path guard.
         """
-        answer = next(
-            (
-                child for child in self._held(role, "answers")
-                if child.data.get("actor_uuid") == actor_uuid
-            ),
-            None,
-        )
+        # The end of the actor's chain, not the first link in it. An actor
+        # who took the seat and later stepped out has two answers now that
+        # stepping out appends rather than deletes, and reading the earlier
+        # one said they still held it.
+        answer = self._role_decision_for(role, actor_uuid)
         return bool(
             answer
             and answer.data.get("decision") == "accepted"
@@ -5790,17 +5788,31 @@ class TeamLogic:
 
         The Team actor's resign_role: the only record this side wrote up
         there is the acceptance, so that is all that goes. The role is the
-        parent's, and it may seat several actors at once - deleting it to
-        empty one seat would take everybody else's with it.
+        parent's, and it may seat several actors at once - answering for one
+        actor is what empties one seat.
+
+        Appended, not deleted, for the same reason the holding beside it is:
+        stepping out is a thing that happened, and deleting the answer left
+        no record that the seat was ever taken. It also left the answer
+        undeletable in practice - a participation record is append-only, so
+        the peer holding a copy could never take the deletion, and the two
+        sides sat in a divergence neither was allowed to settle.
         """
         role = self._node(
             str(holding.data.get("role_uuid") or "").strip(), "team_role",
         )
         decision = self._role_decision_for(role, seated.uuid) if role else None
-        if not decision:
+        if not decision or decision.data.get("decision") == "refused":
             return []
-        removed = self.session.delete(decision.uuid)
-        return list(removed.effects) if removed.status == "ok" else []
+        team = self._local_team_topic(role.uuid)
+        if team is None:
+            return []
+        answered = self._record_role_decision(
+            team, role, "refused", None,
+            actor_uuid=seated.uuid, decided_by=self._identity_uuid,
+            seated_member_uuids=[],
+        )
+        return list(answered.effects) if answered.status == "ok" else []
 
     def move_parent_holding(
         self, holding_uuid: str, index: int,
@@ -6084,6 +6096,13 @@ class TeamLogic:
             if not is_team and not self._is_current_member(
                 standing_team, actor_uuid,
             ):
+                continue
+            # A Team that stepped out of its seat is not a holder of it. Its
+            # refusal is somebody else's act on its behalf - a body is seated
+            # and unseated, it does not answer for itself - so there is no
+            # "they said no" worth showing, unlike a person's own refusal,
+            # which stays struck through beside the others.
+            if is_team and self._answer_status(record, current) == "refused":
                 continue
             holders.append({
                 "actor_uuid": actor_uuid,
