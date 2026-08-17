@@ -698,8 +698,12 @@ class AssetTests(unittest.TestCase):
         # One field used to serve both, so renaming the body silently
         # retitled the document its members had accepted.
         self.assertIn("/api/team/agreement/rename", self.team)
-        self.assertIn("agreementData(current).name", self.team)
+        self.assertIn("agreementData(current).version", self.team)
         self.assertCodeContains("placeholder: 'Name this agreement'")
+        # The agreement is a node, so its name rides an element row like every
+        # other element - a dot saying whose move it is, a reaction to answer
+        # with - instead of loose text nobody could act on.
+        self.assertCodeContains("agreementRow.classList.add('agreement-head-row')")
         self.assertNotIn(".agreement-title:empty::before", css)
         # The team's name heads the page, outside every disclosure, and the
         # sections follow in the order the page now reads.

@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **Row status follows the stage, so one fact is one colour everywhere.** The
+  dots keyed on the event type while the header band and the transition list
+  keyed on the stage, so "the peer changed it" was blue on the document and
+  amber in the panel. They take the shared stage tokens now. Aligned draws
+  nothing; the box stays, or every label shifts sideways as things settle.
+  A change still travelling pulses, which is what separates it from one the
+  peer has seen and not answered now that both are grey.
+- **The Agreement is a row like every other element.** A dot saying whose move
+  it is, its name editable in place, version and the projection badge beside
+  it, and a reaction to answer with. It was loose text with no way to act on
+  it — a peer's rename showed as "Proposed name" that the receiving side could
+  neither take nor refuse. Name and version are two fields on one node, so one
+  row carries both and one reaction settles both, which is also why the
+  transition list shows one item for them rather than two.
 - **The two Agreement states now say whose state each is.** `consolidated`
   became `agreed` — the Identity holders publish the same Agreement, which
   pairs with `disputed` — and `agreement_aligned` became

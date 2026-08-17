@@ -447,19 +447,19 @@
         proposed = false,
         interactive = true,
         reactable = true,
+        placeholder,
       }) => {
         const row = document.createElement("div");
         row.className = "element-row";
         row.classList.toggle("is-proposed", proposed);
         row.dataset.reorderId = node.uuid || "";
         row.dataset.reorderKind = node.data.type || "";
+        // Keyed on the *stage* - whose move it is - which is what the header
+        // band and the transition list already report. Keying on the event
+        // type instead had "the peer changed it" reading blue here and amber
+        // there, for one fact about one node.
         const transition = payloadState.transition_by_node?.[node.uuid];
-        const status =
-          transition?.stage === "in_flight"
-            ? "in_flight"
-            : transition?.type && transition.type !== "in_agreement"
-              ? transition.type
-              : "in_agreement";
+        const status = transition?.stage || "settled";
         row.dataset.status = status;
 
         const lamp = document.createElement("span");
@@ -475,7 +475,7 @@
           SovereignUI.editableText({
             element: label,
             value: node.data[field],
-            placeholder: field === "title" ? "Title" : "Text",
+            placeholder: placeholder || (field === "title" ? "Title" : "Text"),
             multiline: field === "text",
             onCommit: rename,
             onChanged: () => load(),
@@ -2711,26 +2711,15 @@
         // would carry is already on the team name above. An unnamed agreement
         // stays genuinely empty - the prompt is a pseudo-element, so it can
         // never be committed as the name.
+        // The agreement is a node, so it gets a row like every other element:
+        // a dot on the left saying whose move it is, and a reaction on the
+        // right to answer with. Its name and version are two fields on that
+        // one node, so one row carries both and one reaction settles both -
+        // which is also why the transition list shows one item for them, not
+        // two. Loose text with no way to answer it is what this replaces.
+        const agreementNode = displayedChildren(current, "team_agreement")[0]?.node;
         const agreementHead = document.createElement("div");
         agreementHead.className = "agreement-head";
-        const agreementTitle = document.createElement("h2");
-        agreementTitle.className = "agreement-title";
-        agreementTitle.textContent = agreementData(current).name || "";
-        if (currentInteractionAllowed) {
-          SovereignUI.editableText({
-            element: agreementTitle,
-            value: agreementData(current).name || "",
-            placeholder: "Name this agreement",
-            onCommit: (value) =>
-              api("/api/team/agreement/rename", { team_uuid: current.uuid, title: value }),
-            onChanged: () => load(),
-            onError: (error) => showToast(error.message, true),
-          });
-        }
-        agreementHead.append(agreementTitle);
-        const agreementNode = displayedChildren(current, "team_agreement")[0]?.node;
-        const proposedTitle = proposedNote(agreementNode, "name", "Proposed name");
-        if (proposedTitle) agreementHead.append(proposedTitle);
         const agreementVersion = document.createElement("span");
         agreementVersion.className = "agreement-version";
         agreementVersion.textContent = agreementData(current).version || "";
@@ -2749,11 +2738,6 @@
             onError: (error) => showToast(error.message, true),
           });
         }
-        agreementHead.append(agreementVersion);
-        const proposedVersion = proposedNote(
-          agreementNode, "version", "Proposed version",
-        );
-        if (proposedVersion) agreementHead.append(proposedVersion);
         const agreementTruth = payload.membership?.agreement || {};
         const agreementState = document.createElement("span");
         agreementState.className = `agreement-state is-${agreementTruth.state || "unknown"}`;
@@ -2767,7 +2751,36 @@
             no_identity: "No Identity",
           }[agreementTruth.state] || "Agreement state unknown";
         agreementState.title = agreementTruth.reason || "";
-        agreementHead.append(agreementState);
+        if (agreementNode) {
+          const agreementRow = elementRow({
+            node: agreementNode,
+            tag: "h2",
+            field: "name",
+            placeholder: "Name this agreement",
+            rename: (value) =>
+              api("/api/team/agreement/rename", {
+                team_uuid: current.uuid,
+                title: value,
+              }),
+            interactive: currentInteractionAllowed,
+            reactable: currentInteractionAllowed,
+          });
+          agreementRow.classList.add("agreement-head-row");
+          agreementRow.querySelector(".element-label")
+            ?.classList.add("agreement-title");
+          const extras = [agreementVersion];
+          for (const [field, label] of [
+            ["name", "Proposed name"], ["version", "Proposed version"],
+          ]) {
+            const note = proposedNote(agreementNode, field, label);
+            if (note) extras.push(note);
+          }
+          extras.push(agreementState);
+          agreementRow.querySelector(".element-actions")?.prepend(...extras);
+          agreementHead.append(agreementRow);
+        } else {
+          agreementHead.append(agreementVersion, agreementState);
+        }
         let sectionComposerHost = null;
         if (currentInteractionAllowed) {
           sectionComposerHost = document.createElement("div");
