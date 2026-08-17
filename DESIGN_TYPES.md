@@ -796,8 +796,8 @@ one person who could not make it.
 What that costs is reach. Both sides of a seat have to be written, and the
 containment check reads the parent's memberships, so a team can only take a
 seat in a team **this client already has**. A topic nobody has given you is
-unreachable, not merely unread — the same property that makes `team_item_list`
-necessary.
+unreachable, not merely unread — the same property that makes a reference to
+what the team runs necessary.
 
 Seats form a DAG, and it is *drawn* as a tree by projecting through home, the
 first holding in order that reaches a root.
@@ -831,37 +831,66 @@ An **initiative** or a **flow** a team runs is another application's topic,
 published on the team's channel. The team owns no copy of it and stores
 nothing about its contents — only who says they have it.
 
-## `team_item_list`
+## `topic_link`
 
-One member's answer to "what of this team's work do I hold here". The whole
-list, not a record per item: what an item costs somebody is not a decision
-anybody takes, it is a topic a client either has or does not, and only that
-client can say which. Appended rather than rewritten, so it reaches the
-others the way every other record here does — adopted on its own, without
-each of them being asked to accept a stranger's list.
+**Core's node type, not this application's** — the fields it carries, and what
+following one does, are in `s-core/DESIGN_TOPIC_LINKS.md` and `PUBLIC_API.md`.
+S-Team owns only where they live, which is as direct children of the team, and
+what they mean here: one member's word that this team's work includes one
+topic.
 
-| Field                | Requirement                                              |
-| -------------------- | --------------------------------------------------------- |
-| `actor_uuid`         | required — whose list it is, and its only author           |
-| `items`              | required — each with a `topic_uuid`, an `application_id` and a `title` |
-| `previous_list_uuid` | required — empty for an actor's first list                 |
-| `recorded_at`        | required                                                  |
+It replaced a chain of per-actor snapshots, each carrying a *list field* of
+items — the only list field in the codebase, safe solely because a single
+author replaced their own wholesale. As separate nodes there is nothing to
+replace: **offering an item is creating one and taking it off is deleting
+one**, so the decision is the record. The stored set of items withdrawn from a
+team went with it, having existed only to stop a derived list from putting
+back what somebody had taken off.
 
-**An item is the team's while at least one member's current list names it.**
-When the last of them drops it, it is gone from the team — there is no
-tombstone and no collection, because there is nothing left to collect.
+**An item is the team's while at least one member's reference names it.** When
+the last of them takes theirs off, it is gone from the team.
+
+**Only a current Member's reference counts, and that is derived on every
+read.** It used to be gated when the record arrived, and the difference shows
+when somebody leaves: a stored answer would go on naming their items until
+something rewrote it, while a derived one stops the moment their standing
+does. Arrival is judged too — a stranger's reference is refused rather than
+merely ignored — but the two answer different questions and neither stands in
+for the other.
+
+**A reference is not a claim to hold a copy.** It says the team's work
+includes this; whether this client currently has one is read from the tree on
+every read and reported as `active`. So deleting your copy from the Cockpit
+leaves the item on the team shown as not held, rather than quietly taking it
+off — taking it off is somebody's act. *This is a change of meaning from the
+lists, which said "I hold this" and were recomputed when that stopped being
+true.*
+
+**Adoption:** `auto` and `same-origin` once held, so its author's removal
+travels as their offer did and nobody else may write it. Deliberately not
+`never` like a governance record — a record is appended and stands for good,
+while a reference is put up and taken down, and freezing one would need a
+second record saying it had been withdrawn, which is the shape the withdrawal
+set had.
 
 **Why this cannot be read off the channel instead.** An explicit relay target
 polls only the topics this client has assigned to it and the ones it has
 already consented to receive. A topic nobody has told you about is not
-unread, it is unreachable — so the list is what carries the uuid, and
+unread, it is unreachable — so the reference is what carries the uuid, and
 publishing an item beside the team tells nobody anything.
 
-**Nothing keeps an item alive but the people who want it.** A member who
-takes their copy away is not deleting the team's work, and a member who keeps
-theirs is the whole of why it still exists. That is the sovereign shape of
-it: you can hold what you care about, and you cannot oblige anybody to hold
-what you care about for you.
+**Nothing keeps an item alive but the people who want it.** A member who takes
+their reference off is not deleting the team's work, and a member who keeps
+theirs is the whole of why it still exists. That is the sovereign shape of it:
+you can hold what you care about, and you cannot oblige anybody to hold what
+you care about for you.
+
+**One thing still has to remember a refusal.** An election is the only item a
+member takes up without being asked, so removing one is recorded locally as
+declined — otherwise the next poll puts it straight back. That is not the
+withdrawal set returning: the old one stopped a *derived list* from
+resurrecting a decision, and there is no derived list now; this stops an
+*automatic adopter*, which is still there.
 
 Taking up an offered item is bidirectional. Core records both `desired` and
 the item's home-channel assignment even when its first local replica has not

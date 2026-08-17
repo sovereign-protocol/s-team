@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- **What a team runs is references now, not lists.** `team_item_list` was a
+  chain of per-actor snapshots, each carrying a *list field* of items — the
+  only list field in the codebase, safe solely because a single author
+  replaced their own wholesale. Each member's reference is its own
+  `topic_link` under the team: the team's list is the union of them, removing
+  yours leaves everybody else's standing, and one member's reference is not
+  another's to take off. Offering an item is creating a node and taking it off
+  is deleting one, so the decision is the record — which is why the stored set
+  of items withdrawn from a team is gone with it, having existed only to stop
+  a derived list from putting back what somebody had removed.
+
+- **Only a current Member's reference counts, and that is asked on every
+  read.** It used to be settled when the record arrived. A stored verdict goes
+  on being true after it stops being true, so somebody who left went on naming
+  the team's items until something rewrote the answer; a derived one stops the
+  moment their standing does. Arrival is still judged — a stranger's reference
+  is refused rather than merely ignored — but the two answer different
+  questions.
+
+- **Deleting your copy of an item no longer takes it off the team.** A list
+  said "I hold this", so deleting the copy made it false and something had to
+  recompute it away. A reference says the team's work includes this; whether a
+  copy is held here is read from the tree on every read and shown as `active`.
+  So an item deleted from the Cockpit is shown as not held rather than
+  vanishing from the team, and taking it off stays somebody's act. **This is a
+  change of meaning**, and it is what lets the exception set go.
+
+- Removing an election from a team is remembered locally as declined. It is
+  the one item a member takes up without being asked, so without that the next
+  poll would put it straight back — the references carry no history to read it
+  from, as the list chain did.
+
 - **Row status follows the stage, so one fact is one colour everywhere.** The
   dots keyed on the event type while the header band and the transition list
   keyed on the stage, so "the peer changed it" was blue on the document and

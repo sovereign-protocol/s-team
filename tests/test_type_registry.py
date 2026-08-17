@@ -37,6 +37,13 @@ RETIRED = frozenset({
     # The invitation. A role is taken, never handed out, so the record that
     # said somebody had been asked is gone and nothing writes one.
     "team_role_offer",
+    # One member's whole list of what they hold of the team's work, as a
+    # list field inside a single record. Each reference is its own
+    # `topic_link` now, so offering an item is creating a node and taking it
+    # off is deleting one - which is also why the set of items withdrawn
+    # from a team is gone: it existed to stop a derived list from putting
+    # back what somebody had removed.
+    "team_item_list",
     # The waiting room, and the round of applications it fed. The pool is
     # derived now - whoever publishes on the channel without being on the
     # team - so there is no topic to be let into, nothing to apply for and
@@ -47,6 +54,13 @@ RETIRED = frozenset({
     "team_member_opening", "team_member_application",
     "team_member_resolution",
 })
+
+# Documented here because this application decides where they live and what
+# they mean on a team, but declared by Core, so there is no contract in
+# TeamLogic for them to agree with. A literal list for the same reason
+# RETIRED is one: the alternative is a rule that silently stops checking a
+# type the day somebody forgets to declare it.
+BORROWED = frozenset({"topic_link"})
 
 # Every governance record carries it; the registry says so once instead of
 # repeating a row in each table.
@@ -131,11 +145,15 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(reviewed - set(self.documented), set())
 
     def test_every_documented_type_exists_in_source(self):
-        unknown = sorted(set(self.documented) - set(self.declared))
+        unknown = sorted(
+            set(self.documented) - set(self.declared) - BORROWED,
+        )
         self.assertEqual(unknown, [], f"documented but not declared: {unknown}")
 
     def test_documented_fields_match_the_declared_contract(self):
         for node_type, (required, optional) in sorted(self.documented.items()):
+            if node_type in BORROWED:
+                continue
             with self.subTest(node_type=node_type):
                 self.assertEqual(
                     (required, optional),

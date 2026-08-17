@@ -3809,10 +3809,99 @@ class TeamLogicTests(unittest.TestCase):
         self.assertEqual(opened.status, "error")
         self.assertIn("align", opened.reason)
 
-    def test_an_item_stops_being_offered_when_the_last_holder_drops_it(self):
-        # What "the team runs this" means: at least one member has it. The
-        # creator's own list is the only thing saying so, so when they say
-        # otherwise there is nothing left to offer.
+    def test_removing_my_reference_leaves_the_other_members_standing(self):
+        # The reason each member writes their own rather than everyone
+        # sharing one: a team's list is the union of them, so taking mine
+        # off the table is not taking theirs.
+        left, right = self.runtime(9811), self.runtime(9812)
+        topics = self.register_items_application(left)
+        self.register_items_application(right)
+        team_uuid = left.logic.create_team("Cooperative").value
+        connect(left, right, team_uuid)
+        self.admit(left, right, team_uuid)
+        item_uuid = self.an_item(left, topics)
+        left.logic.offer_team_item(team_uuid, item_uuid)
+        sync(left, right)
+        self.assertEqual(
+            right.logic.connect_team_item(team_uuid, item_uuid).status, "ok",
+        )
+        # Twice: right's own reference has to be published and then read
+        # back here before this side holds both.
+        sync(left, right)
+        sync(left, right)
+
+        team_l = left.session.protocol.index[team_uuid]
+        team_r = right.session.protocol.index[team_uuid]
+        self.assertEqual(len(right.logic.item_links(team_r)), 2)
+        self.assertEqual(len(left.logic.item_links(team_l)), 2)
+
+        self.assertEqual(
+            left.logic.remove_team_item(team_uuid, item_uuid).status, "ok",
+        )
+        sync(left, right)
+
+        # One reference gone, the other still saying the team runs it.
+        self.assertEqual(
+            [item["title"] for item in left.logic.team_items(team_l)],
+            ["Roadmap"],
+        )
+        self.assertEqual(
+            [item["title"] for item in right.logic.team_items(team_r)],
+            ["Roadmap"],
+        )
+        # And it is not left's to take off on right's behalf.
+        self.assertEqual(
+            left.logic.remove_team_item(team_uuid, item_uuid).status, "error",
+        )
+
+        self.assertEqual(
+            right.logic.remove_team_item(team_uuid, item_uuid).status, "ok",
+        )
+        sync(left, right)
+        self.assertEqual(left.logic.team_items(team_l), [])
+
+    def test_a_reference_from_somebody_who_has_left_stops_counting(self):
+        # Derived on every read rather than judged once on arrival. A stored
+        # verdict would go on naming their items after their standing ended,
+        # with nothing to rewrite it.
+        left, right = self.runtime(9813), self.runtime(9814)
+        self.register_items_application(left)
+        right_topics = self.register_items_application(right)
+        team_uuid = left.logic.create_team("Cooperative").value
+        connect(left, right, team_uuid)
+        self.admit(left, right, team_uuid)
+        item_uuid = self.an_item(right, right_topics)
+        right.logic.offer_team_item(team_uuid, item_uuid)
+        sync(left, right)
+        team_l = left.session.protocol.index[team_uuid]
+        right_actor = right.logic._identity_uuid
+        self.assertEqual(
+            [item["title"] for item in left.logic.team_items(team_l)],
+            ["Roadmap"],
+        )
+
+        self.assertEqual(right.logic.leave_team(team_uuid).status, "ok")
+        # Twice: the standing has to arrive and then be adopted here before
+        # a read of it can answer differently.
+        sync(left, right)
+        sync(left, right)
+
+        team_l = left.session.protocol.index[team_uuid]
+        self.assertEqual(left.logic.member_standing(team_l, right_actor), "former")
+        self.assertEqual(left.logic.team_items(team_l), [])
+
+    def test_deleting_a_copy_is_not_taking_the_item_off_the_team(self):
+        # A deliberate change of meaning when item lists became references,
+        # so it is asserted rather than left to be discovered.
+        #
+        # A list said "I hold this", so deleting the copy made it false and
+        # something had to recompute it away - and because the list was
+        # derived, "I no longer offer this" then needed a stored exception to
+        # stop the next recomputation putting it back. A reference says "the
+        # team's work includes this, and I say so". Deleting a copy does not
+        # make that false; it makes `active` false, which is read from the
+        # tree on every read. So nothing recomputes, nothing is stored, and
+        # taking an item off the team stays somebody's act.
         left, right = self.runtime(9809), self.runtime(9810)
         topics = self.register_items_application(left)
         self.register_items_application(right)
@@ -3830,14 +3919,22 @@ class TeamLogicTests(unittest.TestCase):
             1,
         )
 
-        # Deleted from the Cockpit rather than from the team page: the list
-        # is recomputed from what is really here, so it catches up either
-        # way.
         left.session.delete(item_uuid)
         topics.clear()
         left.logic.reconcile_governance_updates()
         sync(left, right)
 
+        still_named = left.logic.team_items(
+            left.session.protocol.index[team_uuid],
+        )
+        self.assertEqual([item["title"] for item in still_named], ["Roadmap"])
+        self.assertFalse(still_named[0]["active"])
+
+        # And it comes off when its holder says so, which is the act that
+        # was missing above.
+        removed = left.logic.remove_team_item(team_uuid, item_uuid)
+        self.assertEqual(removed.status, "ok")
+        sync(left, right)
         self.assertEqual(
             right.logic.team_items(
                 right.session.protocol.index[team_uuid],

@@ -36,7 +36,6 @@ class TeamLogic:
         "team_membership",
         "team_membership_application",
         "team_membership_invitation",
-        "team_item_list",
         "team_trustee_election",
         "team_trustee_candidacy",
         "team_trustee_action",
@@ -212,19 +211,6 @@ class TeamLogic:
                 "authority_basis_uuid",
             }),
             frozenset({"closed_at"}),
-        ),
-        # One member's answer to "what of this team's work do I have
-        # here". Not a record per item: an item is not a decision anybody
-        # takes, it is something a client either holds or does not, and the
-        # list is that client's own statement of it. Appended rather than
-        # rewritten because that is what carries it to the others without
-        # each of them being asked to accept a stranger's list.
-        "team_item_list": (
-            frozenset({
-                "type", "actor_uuid", "items", "previous_list_uuid",
-                "recorded_at",
-            }),
-            frozenset(),
         ),
         # An election is a flow the team runs, and this says which flow
         # is one. It used to carry the whole apparatus of a verified
@@ -594,7 +580,6 @@ class TeamLogic:
         "team_membership": "members",
         "team_membership_application": "membership-applications",
         "team_membership_invitation": "membership-invitations",
-        "team_item_list": "lists",
         "team_trustee_state": "trusteeship",
         "team_trustee_election": "elections",
         "team_trustee_candidacy": "candidacies",
@@ -2284,24 +2269,6 @@ class TeamLogic:
     # Each check below is what one record type asks of its own values, beyond
     # the fields it must carry. They answer with the complaint, or nothing.
 
-    def _item_list_schema_error(self, data: dict) -> str | None:
-        items = data.get("items")
-        if not isinstance(items, list):
-            return "items must be a list"
-        for item in items:
-            if not isinstance(item, dict):
-                return "each item must be an object"
-            if set(item) != {"topic_uuid", "application_id", "title"}:
-                return (
-                    "each item carries a topic_uuid, an application_id and "
-                    "a title"
-                )
-            if any(not isinstance(value, str) for value in item.values()):
-                return "every item field must be a string"
-            if not item["topic_uuid"] or not item["application_id"]:
-                return "an item names a topic and the application that owns it"
-        return None
-
     def _trustee_state_schema_error(self, data: dict) -> str | None:
         cause = data.get("cause")
         if cause not in self.TRUSTEE_CAUSES:
@@ -3498,7 +3465,7 @@ class TeamLogic:
         # a process the others can never fetch is not the team's work, it is
         # this client's.
         if bridged:
-            self.publish_my_items(
+            self.name_my_item(
                 self._node(team.uuid, "team") or team, process_uuid,
             )
         recorded.effects = [*created.effects, *recorded.effects]
@@ -3528,22 +3495,27 @@ class TeamLogic:
         nothing on its own; this is the application asking, on behalf of
         somebody who already agreed to be here.
 
-        Asked once, and never again after a refusal. Whether this client
-        has ever held it is readable from its own lists: they are a chain,
-        so a topic named in an earlier one and not in the current one was
-        put down deliberately, and putting it back would be arguing.
+        Asked once, and never again after a refusal. This used to be read
+        from this client's own item lists: they were a chain, so a topic
+        named in an earlier one and not in the current one had been put down
+        deliberately. References replaced the chain and carry no history -
+        removing one deletes a node, and the tombstone is pruned as soon as
+        every peer has confirmed it - so the refusal is recorded here
+        instead, and this is the one thing that has to remember it.
+
+        Which is worth separating from the withdrawal set this replaced.
+        That one existed to stop a *derived* list from putting back an item
+        somebody had taken off, and there is no derived list any more: a
+        reference is the decision. This one exists to stop an *automatic
+        adopter* from doing the same thing, and the automatic adopter is
+        still here - it is the whole point of this method.
         """
         if not self._is_current_member(team, self._identity_uuid):
             return []
         join = getattr(self.collaboration, "join_bridged_topic", None)
         if not callable(join):
             return []
-        ever_mine = {
-            str(item.get("topic_uuid") or "")
-            for record in self.governance_records(team, "team_item_list")
-            if record.data.get("actor_uuid") == self._identity_uuid
-            for item in record.data.get("items") or []
-        }
+        ever_mine = self._declined_elections(team.uuid)
         adopted = []
         for trust in sorted(self.TRUSTS):
             for election in self.elections_under_way(team, trust):
@@ -3738,142 +3710,153 @@ class TeamLogic:
             "active": active,
         }
 
-    def item_lists(self, team: ProtocolNode) -> dict[str, list[dict]]:
-        """What each member currently says they hold, by actor.
+    def item_links(self, team: ProtocolNode) -> list[ProtocolNode]:
+        """Every reference to the team's work, from every member who wrote one.
 
-        The end of each actor's chain, and nothing before it: an earlier
-        list is what they used to have.
+        A link per member per item, rather than a list per member. The list
+        used to be one node carrying a list field - the only one in this
+        codebase - safe only because a single author replaced their own
+        wholesale. As separate nodes there is nothing to replace: offering an
+        item *is* creating one and removing it *is* deleting one, so the
+        decision is the record and no exception set is needed beside it.
         """
-        by_actor: dict[str, list[ProtocolNode]] = {}
-        for record in self.governance_records(team, "team_item_list"):
-            by_actor.setdefault(
-                str(record.data.get("actor_uuid") or ""), [],
-            ).append(record)
-        current = {}
-        for actor_uuid, records in by_actor.items():
-            head = self._chain_head(records, "previous_list_uuid")
-            if head is None:
-                # Two lists claiming to follow the same one is a contest,
-                # and a contest holds nothing - the same answer every other
-                # chain here gives.
-                continue
-            current[actor_uuid] = list(head.data.get("items") or [])
-        return current
+        return [
+            link for link in self.session.topic_links(team.uuid)
+            if str(link.data.get("application_id") or "")
+            in self.ITEM_APPLICATIONS
+        ]
+
+    def _item_link_author(self, team: ProtocolNode, link: ProtocolNode) -> str:
+        """Whose reference this is. Its signature, and nothing else.
+
+        A link carries no actor field, and one would be a second copy of what
+        the revision already proves - free, then, to disagree with it. The
+        same attribution every other unnamed record here gets.
+        """
+        return self._author_actor_uuid(team, link)
 
     def team_items(self, team: ProtocolNode) -> list[dict]:
         """Every initiative and flow this team runs.
 
-        The union of what its members say they have. An item is listed while
-        at least one of them still holds it and stops being listed when the
-        last one drops it - which is the whole of what "the team runs this"
-        can mean, since a client that holds none of it has nothing else to
-        go on.
+        The union of what its members reference. An item is listed while at
+        least one of them still names it and stops being listed when the last
+        one takes their reference off - which is the whole of what "the team
+        runs this" can mean, since a client that holds none of it has nothing
+        else to go on.
+
+        **Only a current Member's reference counts**, and that is derived on
+        every read rather than gated when the record arrives. It used to be
+        the latter, and the difference shows when somebody leaves: a stored
+        answer would go on naming their items until something rewrote it,
+        while a derived one stops the moment their standing does, with
+        nothing to rewrite and nothing to remember.
 
         It cannot be read off the channel instead. An explicit relay target
         polls only what this client has assigned to it and what it has
         already consented to receive, so an item nobody has told you about
-        is not merely unread - it is unreachable. The list is what carries
+        is not merely unread - it is unreachable. The link is what carries
         the uuid.
         """
         found: dict[str, dict] = {}
-        for items in self.item_lists(team).values():
-            for item in items:
-                topic_uuid = str(item.get("topic_uuid") or "")
-                application_id = str(item.get("application_id") or "")
-                entry = self.ITEM_APPLICATIONS.get(application_id)
-                if not topic_uuid or not entry or topic_uuid in found:
-                    continue
-                found[topic_uuid] = {
-                    "topic_uuid": topic_uuid,
-                    "application_id": application_id,
-                    "label": entry["label"],
-                    "title": str(item.get("title") or "Untitled"),
-                    "href": f"{entry['path']}{topic_uuid}",
-                    # Held here, not merely known about. Read from the tree
-                    # rather than from this client's own list, so a copy
-                    # deleted from the Cockpit reads as gone at once.
-                    "active": self.session.get_node(topic_uuid) is not None,
-                }
+        for link in self.item_links(team):
+            topic_uuid = str(link.data.get("topic_uuid") or "")
+            if not topic_uuid or topic_uuid in found:
+                continue
+            if not self._is_current_member(
+                team, self._item_link_author(team, link),
+            ):
+                continue
+            held = self.session.get_node(topic_uuid)
+            entry = self.ITEM_APPLICATIONS[str(link.data["application_id"])]
+            found[topic_uuid] = {
+                "topic_uuid": topic_uuid,
+                "application_id": link.data["application_id"],
+                "label": entry["label"],
+                # The recorded title is what a reference says before the
+                # topic is here; once it is, its own name wins.
+                "title": self._link_title(held, link),
+                "href": f"{entry['path']}{topic_uuid}",
+                # Held here, not merely known about, and read from the tree
+                # so a copy deleted from the Cockpit reads as gone at once.
+                "active": held is not None,
+            }
         return sorted(
             found.values(),
             key=lambda item: (item["label"], item["title"].lower()),
         )
 
+    @staticmethod
+    def _link_title(held: ProtocolNode | None, link: ProtocolNode) -> str:
+        if held is not None:
+            live = str(held.data.get("title") or held.data.get("name") or "")
+            if live:
+                return live
+        return str(link.data.get("title") or "Untitled")
+
     def _named_by_the_team(self, team: ProtocolNode) -> set[str]:
-        """Every topic any member says is this team's."""
+        """Every topic anybody's reference names, whoever wrote it.
+
+        Deliberately unfiltered by membership, unlike `team_items`: this
+        answers "is there already a reference to this here", which decides
+        whether one more would be a second copy, and a non-member's reference
+        is still a node in the tree.
+        """
         named = {
-            str(item.get("topic_uuid") or "")
-            for items in self.item_lists(team).values()
-            for item in items
+            str(link.data.get("topic_uuid") or "")
+            for link in self.item_links(team)
         }
         named.discard("")
         return named
 
-    def _my_items(
-        self, team: ProtocolNode, including: str = "",
-    ) -> list[dict]:
-        """What this client holds of this team's work, right now.
+    def _my_item_link(
+        self, team: ProtocolNode, topic_uuid: str,
+    ) -> ProtocolNode | None:
+        for link in self.session.topic_links(team.uuid, authored_here=True):
+            if link.data.get("topic_uuid") == topic_uuid:
+                return link
+        return None
 
-        Read from the tree: something the team names, that this client
-        actually has. Deliberately *not* read from the channel - asking
-        which channel a topic sits on takes a lock beneath Session's and is
-        the wrong question besides, since an item is the team's because a
-        member says so, not because of where it is published.
-
-        `including` is the one nobody has said anything about yet: what this
-        client has just made or just offered, which becomes the team's by
-        being said here first.
-        """
-        named = self._named_by_the_team(team) - self._withdrawn_items(team.uuid)
-        if including:
-            named.add(including)
-            self._set_withdrawn(team.uuid, including, False)
-        mine = []
-        for topic_uuid in sorted(named):
-            entry = self._item_entry(
-                topic_uuid, self.session.get_node(topic_uuid), True,
-            )
-            if entry:
-                mine.append({
-                    "topic_uuid": entry["topic_uuid"],
-                    "application_id": entry["application_id"],
-                    "title": entry["title"],
-                })
-        return mine
-
-    def publish_my_items(
-        self, team: ProtocolNode, including: str = "",
+    def name_my_item(
+        self, team: ProtocolNode, topic_uuid: str,
     ) -> SessionResult:
-        """Say what this client holds, if that is not what it last said.
+        """Say that this team's work includes one topic. This client's own word.
 
-        Computed from the tree every time rather than kept up by hand: a
-        stored "I have it" that nothing recomputes goes stale the moment
-        somebody deletes the board from the Cockpit instead, and a list that
-        lies is worse than no list.
+        Nothing recomputes it afterwards. A reference is a decision, and a
+        decision something recomputes is one that undoes itself: the stored
+        set of items withdrawn from a team existed only to stop a derived
+        list from putting back what somebody had taken off, and there is no
+        derived list any more.
         """
-        mine = self._my_items(team, including)
-        lists = self.item_lists(team)
-        if mine == lists.get(self._identity_uuid, []):
+        normalized = str(topic_uuid or "").strip()
+        if self._my_item_link(team, normalized):
             return SessionResult("ok", value=False)
-        head = self._chain_head(
-            [
-                record for record in self.governance_records(
-                    team, "team_item_list",
-                )
-                if record.data.get("actor_uuid") == self._identity_uuid
-            ],
-            "previous_list_uuid",
+        # Which application owns it, and what it is called. Read from the
+        # topic where this client holds one, and otherwise from a reference
+        # somebody else already wrote - taking up an item is bidirectional
+        # and records the consent before the first local replica has to
+        # exist, so at that moment their reference is the only thing here
+        # that can say what it is. A reference that could not say would
+        # filter itself out of the very list it was written for.
+        node = self.session.get_node(normalized)
+        entry = self._item_entry(normalized, node, True)
+        application_id = str(entry["application_id"]) if entry else ""
+        title = str(entry["title"]) if entry else ""
+        if not application_id:
+            for link in self.item_links(team):
+                if link.data.get("topic_uuid") == normalized:
+                    application_id = str(link.data.get("application_id") or "")
+                    title = title or str(link.data.get("title") or "")
+                    break
+        if not application_id:
+            return SessionResult(
+                "error", reason="nothing here says what that item is",
+            )
+        created = self.session.create_topic_link(
+            team.uuid, normalized, application_id, title,
         )
-        recorded = self.append_governance_record(team.uuid, {
-            "type": "team_item_list",
-            "actor_uuid": self._identity_uuid,
-            "items": mine,
-            "previous_list_uuid": head.uuid if head else "",
-            "recorded_at": self._now(),
-        })
-        if recorded.status != "ok":
-            return recorded
-        return SessionResult("ok", value=True, effects=recorded.effects)
+        if created.status != "ok":
+            return created
+        return SessionResult("ok", value=True, effects=created.effects)
 
     def offerable_items(self, team: ProtocolNode) -> list[dict]:
         """This client's own items that are not on the team's channel yet.
@@ -3988,7 +3971,7 @@ class TeamLogic:
         # this person's until there is somewhere - and offering it then is
         # one act (see offer_team_item).
         if self._bridge_to_team(str(created.value or ""), team):
-            self.publish_my_items(
+            self.name_my_item(
                 self._node(team_uuid, "team") or team, str(created.value),
             )
         return created
@@ -4049,7 +4032,7 @@ class TeamLogic:
                     "publish it"
                 ),
             )
-        self.publish_my_items(
+        self.name_my_item(
             self._node(team_uuid, "team") or team, str(topic_uuid),
         )
         return SessionResult("ok", value=str(topic_uuid))
@@ -4086,11 +4069,14 @@ class TeamLogic:
         for application_id in self.ITEM_APPLICATIONS:
             self.session.mount_cached_topics(application_id)
         # Joining records both the receiving consent and this replica's
-        # publication binding before the first local copy has to exist.
-        if self.session.get_node(normalized_topic) is not None:
-            self.publish_my_items(
-                self._node(team_uuid, "team") or team, normalized_topic,
-            )
+        # publication binding before the first local copy has to exist - and
+        # the reference is written either way. A reference to a topic not
+        # here yet is not broken, it is the invitation this join just
+        # accepted, so waiting for the replica would only mean losing the
+        # act if it took a while to arrive.
+        self.name_my_item(
+            self._node(team_uuid, "team") or team, normalized_topic,
+        )
         return SessionResult("ok", value=normalized_topic)
 
     def remove_team_item(self, team_uuid: str, topic_uuid: str) -> SessionResult:
@@ -4104,19 +4090,42 @@ class TeamLogic:
 
         What a team lists is what its members offer it. Withdrawing is
         therefore a statement about this client and nothing else: the item
-        stays on the team's list while another member still publishes it,
-        and comes off when the last of them withdraws. Deleting it remains
-        the owning application's own act, where what it destroys is plain.
+        stays on the team's list while another member still names it, and
+        comes off when the last of them withdraws. Deleting it remains the
+        owning application's own act, where what it destroys is plain.
+
+        It is one reference that goes - this client's own. Somebody else's
+        is not this client's to take off, which is why the guard is that
+        there is one here to remove rather than that the item is on the team
+        at all.
         """
         team, allowed = self._item_guard(team_uuid)
         if allowed.status != "ok":
             return allowed
         normalized = str(topic_uuid or "").strip()
-        if normalized not in self._named_by_the_team(team):
-            return SessionResult("error", reason="that item is not on this team")
-        self._set_withdrawn(team.uuid, normalized, True)
-        self.publish_my_items(self._node(team_uuid, "team") or team)
-        return SessionResult("ok", value=normalized)
+        mine = self._my_item_link(team, normalized)
+        if mine is None:
+            return SessionResult(
+                "error", reason="you are not offering that to this team",
+            )
+        removed = self.session.remove_topic_link(mine.uuid)
+        if removed.status != "ok":
+            return removed
+        # An election is the one item this client takes up without being
+        # asked, so it is the one whose removal has to be remembered: the
+        # reference is gone and nothing else would stop the next poll
+        # putting it straight back.
+        if self._names_an_election(team, normalized):
+            self._set_election_declined(team.uuid, normalized)
+        return SessionResult(
+            "ok", value=normalized, effects=list(removed.effects),
+        )
+
+    def _names_an_election(self, team: ProtocolNode, topic_uuid: str) -> bool:
+        return any(
+            record.data.get("process_uuid") == topic_uuid
+            for record in self.governance_records(team, "team_trustee_election")
+        )
 
     def _canonical_flow_result_hash(result: dict) -> str:
         unsigned = {
@@ -4262,9 +4271,6 @@ class TeamLogic:
         "team_trustee_action": (
             "acted_by", "_trustee_action_schema_error",
             "_assess_trustee_action",
-        ),
-        "team_item_list": (
-            "actor_uuid", "_item_list_schema_error", "_assess_item_list",
         ),
         "team_trustee_reality": ("observed_by", "", "_assess_trustee_reality"),
     }
@@ -4581,27 +4587,6 @@ class TeamLogic:
                 "reason": (
                     "an election for this trusteeship is already under way"
                 ),
-            }
-        return None
-
-    def _assess_item_list(
-        self, team: ProtocolNode, data: dict, actor_uuid: str,
-    ) -> dict | None:
-        """Only a member, and only about themselves.
-
-        There is nothing else to judge: a list says what one client has, not
-        what anybody may do, so the only way to get it wrong is to write
-        somebody else's.
-        """
-        if data["actor_uuid"] != actor_uuid:
-            return {
-                "status": "unauthorized",
-                "reason": "a list of items is its own holder's",
-            }
-        if not self._is_current_member(team, actor_uuid):
-            return {
-                "status": "unauthorized",
-                "reason": "only a current Member runs the team's work",
             }
         return None
 
@@ -6358,13 +6343,16 @@ class TeamLogic:
     def reconcile_governance_updates(self) -> SessionResult:
         """Auto-adopt verified governance facts and peer-authored role answers."""
         changed = False
-        # What this client holds changes without S-Team being told - a
-        # connected item arrives on a later sync, and one deleted from the
-        # Cockpit leaves without a word. Recomputing here is what keeps the
-        # published list from saying something that stopped being true.
+        # Nothing recomputes what this client offers any more. It used to,
+        # because the list was derived from what the tree held, so an item
+        # arriving or leaving quietly had to be noticed here or the list
+        # would state something that had stopped being true. A reference is
+        # not derived from anything: it is a decision, it says the team's
+        # work includes this, and whether this client currently holds a copy
+        # is read from the tree on every read as `active`. So an item deleted
+        # from the Cockpit shows as not held rather than silently leaving the
+        # team, and taking it off the team stays somebody's act.
         for team in self.teams():
-            said = self.publish_my_items(team)
-            changed = bool(said.value) or changed
             changed = self._reconcile_identity_membership_definitions(
                 team,
             ) or changed
@@ -6431,6 +6419,23 @@ class TeamLogic:
                 self._declare_record_container(role, name)
         for name in record_containers:
             self._declare_record_container(team, name)
+        # A reference to the team's work is its author's and settles on
+        # sight: `auto` so their later removal of it travels as well as its
+        # arrival did, `same-origin` so it is theirs alone to remove.
+        #
+        # It is not `never` like a governance record, and the difference is
+        # the point of the whole design: a record is appended and stands for
+        # good, while a reference is put up and taken down. Frozen, taking
+        # one off would need a second record saying so, which is the shape
+        # the withdrawal set had and the reason it existed.
+        #
+        # First arrival is still judged, by the resolver, because whether
+        # the author is a Member is not a fact a declaration can carry.
+        for link in self.item_links(team):
+            self.session.set_adoption_metadata(
+                link.uuid, adopt="auto", additions="never",
+                author="same-origin",
+            )
 
     def _declare_record_container(
         self, parent: ProtocolNode, name: str,
@@ -6492,6 +6497,17 @@ class TeamLogic:
         node_type = node.data.get("type")
         if node_type == "team_role_decision":
             authorized = self._role_answer_authorized(team, node, peer_addr)
+        elif node_type == self.session.TOPIC_LINK_TYPE:
+            # A member saying the team's work includes something is a fact
+            # about them, not a proposal to anybody: it settles on arrival
+            # the way their item list used to, rather than waiting in the
+            # divergence list for everyone else to agree they have it.
+            # Assessed here rather than stored for the usual reason - a
+            # verdict recorded when it arrived would go on being true after
+            # they left.
+            authorized = self._is_current_member(
+                team, self._author_actor_uuid(team, node),
+            )
         elif node_type in self.GOVERNANCE_RECORD_TYPES:
             assessment = self.assess_governance_record(team, node)
             authorized = assessment["status"] == "authorized"
@@ -8195,39 +8211,25 @@ class TeamLogic:
                 self.session.application_metadata(TEAM_APPLICATION_ID),
             )
 
-    def _withdrawn_items(self, team_uuid: str) -> set[str]:
-        """Items this client has taken off one team but still holds.
+    def _declined_elections(self, team_uuid: str) -> set[str]:
+        """Elections this client has taken off one team on purpose.
 
-        Stored rather than derived, because nothing else records it. What
-        this client *has* is read from the tree every time - a stored "I have
-        it" goes stale the moment somebody deletes it elsewhere - but "I no
-        longer offer this here" is a decision, and a decision that nothing
-        remembers is a decision that undoes itself on the next publication.
-
-        Local and per client: it says what this replica offers this team, not
-        what the team holds. Another member still publishing the same item
-        keeps it on the team's list, which is exactly right - taking mine off
-        the table is not taking theirs.
+        Local and per client, because that is what it is about: it says what
+        this replica has already answered, not anything the team holds.
+        Another member's decision is theirs, and this never speaks for it.
         """
-        withdrawn = self._metadata().get("withdrawn_items") or {}
+        declined = self._metadata().get("declined_elections") or {}
         return {
-            str(value) for value in withdrawn.get(team_uuid, []) if value
+            str(value) for value in declined.get(team_uuid, []) if value
         }
 
-    def _set_withdrawn(self, team_uuid: str, topic_uuid: str,
-                       withdrawn: bool) -> None:
+    def _set_election_declined(self, team_uuid: str, topic_uuid: str) -> None:
         with self.session.lock:
             metadata = self.session.application_metadata(TEAM_APPLICATION_ID)
-            store = metadata.setdefault("withdrawn_items", {})
+            store = metadata.setdefault("declined_elections", {})
             current = {str(value) for value in store.get(team_uuid, [])}
-            if withdrawn:
-                current.add(topic_uuid)
-            else:
-                current.discard(topic_uuid)
-            if current:
-                store[team_uuid] = sorted(current)
-            else:
-                store.pop(team_uuid, None)
+            current.add(topic_uuid)
+            store[team_uuid] = sorted(current)
 
     def _remember_team(self, team_uuid: str) -> None:
         with self.session.lock:
