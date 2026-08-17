@@ -884,26 +884,49 @@ h2.element-label { margin: 0 0 4px; }
   color: var(--text-muted);
   font-size: 13px;
 }
+/* A name and a number beside each other say nothing about which is which.
+   The label is the smallest thing that does, and it sits with its field
+   rather than above it, so the row stays one line. */
+.field-label {
+  margin-right: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.agreement-field { display: inline-flex; align-items: baseline; }
 /* A peer's proposed name or version, beside the one this client holds.
    Marked as a proposal the way a proposed row is, so it reads as somebody
    else's suggestion rather than as the current value. */
-.agreement-proposed {
-  padding: 1px 7px;
-  border: 1px dashed var(--line);
-  border-radius: 999px;
-  color: var(--text-muted);
-  font-size: 11px;
-}
-.agreement-state {
-  padding: 1px 7px;
+
+/* Every fact-about-something on this page is one tag, so a state, a proposal
+   and a marker in the tree are the same shape, weight and colour. What each
+   says is in its words, not in a style of its own. */
+.agreement-state,
+.agreement-proposed,
+.state-badge {
+  display: inline-flex;
+  align-items: center;
+  box-sizing: border-box;
+  padding: 1px 8px;
   border: 1px solid var(--line);
   border-radius: 999px;
+  background: transparent;
   color: var(--text-muted);
+  font: inherit;
   font-size: 11px;
+  line-height: 1.6;
+  white-space: nowrap;
 }
+.agreement-proposed,
+.state-badge { border-style: dashed; }
 .agreement-state.is-disputed,
 .agreement-state.is-invalid,
-.agreement-state.is-unavailable { color: var(--danger, #a33); }
+.agreement-state.is-unavailable,
+.agreement-state.is-no_identity {
+  border-color: var(--stage-conflict-fill);
+  color: var(--stage-conflict-text);
+}
 .agreement-head .ui-add-control { margin: 0; }
 .agreement-head .ui-add-trigger {
   background: none;
@@ -913,16 +936,7 @@ h2.element-label { margin: 0 0 4px; }
 /* A team nobody is in is worth marking in the tree, where it sits
    among teams people rely on. Nowhere else: on its own page the
    Identity line and every role already say the same thing. */
-.state-badge {
-  padding: 1px 8px;
-  border-radius: 999px;
-  border: 1px dashed var(--line);
-  color: var(--text-muted);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  white-space: nowrap;
-}
+
 /* In the tree the row is a name and a count, so an extra fact takes its own
    line underneath - the same shape as the other markers there. */
 .organization-row .state-badge {

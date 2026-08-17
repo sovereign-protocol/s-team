@@ -2720,6 +2720,12 @@
         const agreementNode = displayedChildren(current, "team_agreement")[0]?.node;
         const agreementHead = document.createElement("div");
         agreementHead.className = "agreement-head";
+        const versionField = document.createElement("span");
+        versionField.className = "agreement-field";
+        const versionLabel = document.createElement("span");
+        versionLabel.className = "field-label";
+        versionLabel.textContent = "Version";
+        versionField.append(versionLabel);
         const agreementVersion = document.createElement("span");
         agreementVersion.className = "agreement-version";
         agreementVersion.textContent = agreementData(current).version || "";
@@ -2738,6 +2744,7 @@
             onError: (error) => showToast(error.message, true),
           });
         }
+        versionField.append(agreementVersion);
         const agreementTruth = payload.membership?.agreement || {};
         const agreementState = document.createElement("span");
         agreementState.className = `agreement-state is-${agreementTruth.state || "unknown"}`;
@@ -2751,6 +2758,10 @@
             no_identity: "No Identity",
           }[agreementTruth.state] || "Agreement state unknown";
         agreementState.title = agreementTruth.reason || "";
+        // Agreement is the expected case and says nothing. A page that
+        // announces normality trains you to stop reading it, and then the one
+        // time it says something else you do not notice either.
+        const stateWorthSaying = agreementTruth.state !== "agreed";
         if (agreementNode) {
           const agreementRow = elementRow({
             node: agreementNode,
@@ -2768,18 +2779,19 @@
           agreementRow.classList.add("agreement-head-row");
           agreementRow.querySelector(".element-label")
             ?.classList.add("agreement-title");
-          const extras = [agreementVersion];
+          const extras = [versionField];
           for (const [field, label] of [
             ["name", "Proposed name"], ["version", "Proposed version"],
           ]) {
             const note = proposedNote(agreementNode, field, label);
             if (note) extras.push(note);
           }
-          extras.push(agreementState);
+          if (stateWorthSaying) extras.push(agreementState);
           agreementRow.querySelector(".element-actions")?.prepend(...extras);
           agreementHead.append(agreementRow);
         } else {
-          agreementHead.append(agreementVersion, agreementState);
+          agreementHead.append(versionField);
+          if (stateWorthSaying) agreementHead.append(agreementState);
         }
         let sectionComposerHost = null;
         if (currentInteractionAllowed) {
