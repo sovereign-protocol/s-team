@@ -1778,15 +1778,16 @@
             const remove = document.createElement("button");
             remove.type = "button";
             remove.className = "item-remove";
-            remove.textContent = "Remove";
-            remove.title = "Take it off this client. Nobody else loses theirs.";
+            remove.textContent = "Remove from team";
+            remove.title = "Stop offering it here. The item itself is untouched.";
             remove.onclick = () => {
               document.querySelector("#confirmModalConfirmBtn").textContent = "Remove";
               confirmAction(
-                `Remove ${item.title}?`,
-                "It is deleted from this client only. Everybody else keeps " +
-                  "their copy, and it stays on the list here for as long as " +
-                  "one of them has it - so you can take it up again.",
+                `Remove ${item.title} from this team?`,
+                "It stops being offered here and is not deleted: you keep " +
+                  "it, and so does everybody else. It stays on this list " +
+                  "while another member still offers it, and you can offer " +
+                  "it again yourself. Deleting it is done where it lives.",
                 async () => {
                   try {
                     await api("/api/team/items/remove", {

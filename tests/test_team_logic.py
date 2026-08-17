@@ -3926,10 +3926,23 @@ class TeamLogicTests(unittest.TestCase):
             [kind["application_id"] for kind in runtime.logic.item_kinds()],
             ["initiative"],
         )
-        # Removing is that application's own delete, and nothing else.
+        # Removing takes it off this team and leaves the item alone. Deleting
+        # it is the owning application's own act, asked for where what it
+        # destroys is plain - taking a flow off a team used to destroy it for
+        # everybody who had it.
         removed = runtime.logic.remove_team_item(team_uuid, created.value)
         self.assertEqual(removed.status, "ok")
-        self.assertEqual(made["deleted"], created.value)
+        self.assertNotIn("deleted", made)
+        team = runtime.session.protocol.index[team_uuid]
+        self.assertEqual(runtime.logic.team_items(team), [])
+        # And the item is still there to be offered again.
+        self.assertIsNotNone(runtime.session.get_node(created.value))
+        runtime.logic.offer_team_item(team_uuid, created.value)
+        team = runtime.session.protocol.index[team_uuid]
+        self.assertEqual(
+            [item["title"] for item in runtime.logic.team_items(team)],
+            ["Roadmap"],
+        )
 
     def test_an_application_this_client_does_not_run_cannot_be_asked(self):
         runtime = self.runtime(9808)

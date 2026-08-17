@@ -3824,9 +3824,10 @@ class TeamLogic:
         client has just made or just offered, which becomes the team's by
         being said here first.
         """
-        named = self._named_by_the_team(team)
+        named = self._named_by_the_team(team) - self._withdrawn_items(team.uuid)
         if including:
             named.add(including)
+            self._set_withdrawn(team.uuid, including, False)
         mine = []
         for topic_uuid in sorted(named):
             entry = self._item_entry(
@@ -4093,36 +4094,29 @@ class TeamLogic:
         return SessionResult("ok", value=normalized_topic)
 
     def remove_team_item(self, team_uuid: str, topic_uuid: str) -> SessionResult:
-        """Take an item off this client, and nothing more.
+        """Stop offering an item to this team. The item itself is untouched.
 
-        The same act as deleting it from the Cockpit, because it is the same
-        act: the owning application's own delete. Everybody else keeps
-        theirs, and the item goes on being offered here for as long as one
-        of them publishes it.
+        Removing and deleting are different acts and used to be the same
+        one - this called the owning application's delete, so taking a flow
+        off a team destroyed it for everybody who had it, and a member who
+        had not created it could not take it off at all, because deleting
+        was not theirs to do.
+
+        What a team lists is what its members offer it. Withdrawing is
+        therefore a statement about this client and nothing else: the item
+        stays on the team's list while another member still publishes it,
+        and comes off when the last of them withdraws. Deleting it remains
+        the owning application's own act, where what it destroys is plain.
         """
         team, allowed = self._item_guard(team_uuid)
         if allowed.status != "ok":
             return allowed
-        node = self.session.get_node(str(topic_uuid or "").strip())
-        item = self._item_entry(str(topic_uuid), node, True)
-        if item is None:
-            return SessionResult("error", reason="you do not have that item")
-        entry = self.ITEM_APPLICATIONS[item["application_id"]]
-        facade = self._application_facade(item["application_id"])
-        remove = getattr(facade, entry["delete"], None) if facade else None
-        if not callable(remove):
-            return SessionResult(
-                "error",
-                reason=f"{entry['label']}s are not available on this client",
-            )
-        removed = remove(str(topic_uuid))
-        if getattr(removed, "status", "") != "ok":
-            return removed
-        # Saying so is the whole of what the others learn from it: the item
-        # stays on the team's list while somebody else still has it, and
-        # comes off it when the last of them says this.
+        normalized = str(topic_uuid or "").strip()
+        if normalized not in self._named_by_the_team(team):
+            return SessionResult("error", reason="that item is not on this team")
+        self._set_withdrawn(team.uuid, normalized, True)
         self.publish_my_items(self._node(team_uuid, "team") or team)
-        return removed
+        return SessionResult("ok", value=normalized)
 
     def _canonical_flow_result_hash(result: dict) -> str:
         unsigned = {
@@ -8200,6 +8194,40 @@ class TeamLogic:
             return copy.deepcopy(
                 self.session.application_metadata(TEAM_APPLICATION_ID),
             )
+
+    def _withdrawn_items(self, team_uuid: str) -> set[str]:
+        """Items this client has taken off one team but still holds.
+
+        Stored rather than derived, because nothing else records it. What
+        this client *has* is read from the tree every time - a stored "I have
+        it" goes stale the moment somebody deletes it elsewhere - but "I no
+        longer offer this here" is a decision, and a decision that nothing
+        remembers is a decision that undoes itself on the next publication.
+
+        Local and per client: it says what this replica offers this team, not
+        what the team holds. Another member still publishing the same item
+        keeps it on the team's list, which is exactly right - taking mine off
+        the table is not taking theirs.
+        """
+        withdrawn = self._metadata().get("withdrawn_items") or {}
+        return {
+            str(value) for value in withdrawn.get(team_uuid, []) if value
+        }
+
+    def _set_withdrawn(self, team_uuid: str, topic_uuid: str,
+                       withdrawn: bool) -> None:
+        with self.session.lock:
+            metadata = self.session.application_metadata(TEAM_APPLICATION_ID)
+            store = metadata.setdefault("withdrawn_items", {})
+            current = {str(value) for value in store.get(team_uuid, [])}
+            if withdrawn:
+                current.add(topic_uuid)
+            else:
+                current.discard(topic_uuid)
+            if current:
+                store[team_uuid] = sorted(current)
+            else:
+                store.pop(team_uuid, None)
 
     def _remember_team(self, team_uuid: str) -> None:
         with self.session.lock:
