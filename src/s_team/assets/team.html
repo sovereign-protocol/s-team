@@ -2787,6 +2787,37 @@
             if (note) extras.push(note);
           }
           if (stateWorthSaying) extras.push(agreementState);
+          // The one act that answers an out-of-date acceptance. Offered only
+          // when there is an Agreement to accept and this Actor's own
+          // acceptance is not current - accepting what you already accepted
+          // is not an act, and a button for it is a button that does nothing.
+          const mine = payload.membership?.my_acceptance || {};
+          if (
+            currentInteractionAllowed
+            && agreementTruth.state === "agreed"
+            && mine.state !== "current"
+          ) {
+            const accept = document.createElement("button");
+            accept.type = "button";
+            accept.className = "ui-button ui-button-small";
+            accept.textContent =
+              mine.state === "outdated" ? "Re-accept" : "Accept";
+            accept.title =
+              mine.state === "outdated"
+                ? "The Agreement changed after you accepted it. Accept it as it now reads."
+                : "Accept this Agreement as it now reads.";
+            accept.onclick = async () => {
+              try {
+                await api("/api/team/agreement/accept", {
+                  team_uuid: current.uuid,
+                });
+                await load();
+              } catch (error) {
+                showToast(error.message, true);
+              }
+            };
+            extras.push(accept);
+          }
           agreementRow.querySelector(".element-actions")?.prepend(...extras);
           agreementHead.append(agreementRow);
         } else {

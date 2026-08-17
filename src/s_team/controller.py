@@ -103,6 +103,12 @@ def build_routes(logic, runtime) -> list[Route]:
             data["team_uuid"], data.get("version", ""),
         ))
 
+    async def api_accept_agreement(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.accept_agreement(
+            data["team_uuid"], data.get("text", ""),
+        ))
+
     async def api_rename_section(request: Request):
         data = await request.json()
         return await _json_result(runtime, logic.rename_section(
@@ -464,6 +470,11 @@ def build_routes(logic, runtime) -> list[Route]:
         Route(
             "/api/team/agreement/version",
             api_set_agreement_version,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/team/agreement/accept",
+            api_accept_agreement,
             methods=["POST"],
         ),
         Route("/api/team/sections/create", api_create_section, methods=["POST"]),

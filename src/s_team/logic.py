@@ -2795,10 +2795,16 @@ class TeamLogic:
         accepted = str(
             current.data.get("agreement_version") or "",
         ) if current else ""
-        return (
-            "accepted" if accepted == str(agreement.get("version") or "")
-            else "outdated"
-        )
+        if accepted == str(agreement.get("version") or ""):
+            return "accepted"
+        # Admission recorded the version somebody joined under; accepting the
+        # Agreement again is how they say they have read what it says now.
+        # Without this an acceptance had nowhere to show: the badge went on
+        # reading the version stored at admission, so accepting cleared
+        # nothing and there was no act that could.
+        if self.acceptance_projection(team, actor_uuid)["state"] == "current":
+            return "accepted"
+        return "outdated"
 
     def membership_types(self, team: ProtocolNode) -> list[ProtocolNode]:
         return self._held(team, "membership-types")
@@ -3151,6 +3157,12 @@ class TeamLogic:
             "agreement_exists": agreement.get("state") == "agreed",
             "agreement": agreement,
             "my_agreement_current": my_agreement_current,
+            # Where this Actor's own acceptance has got to, so the page can
+            # offer the one act that answers an outdated one: accept the
+            # Agreement as it now reads.
+            "my_acceptance": self.acceptance_projection(
+                team, self._identity_uuid,
+            ),
             "applications": [
                 {
                     "uuid": application.uuid,

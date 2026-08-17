@@ -2041,6 +2041,32 @@ class TeamLogicTests(unittest.TestCase):
             "Terms of trade",
         )
 
+    def test_accepting_the_agreement_again_clears_the_membership_badge(self):
+        """Accepting had nowhere to show: the badge read the admission."""
+        runtime = self.runtime(9446)
+        team_uuid = runtime.logic.create_team("Cooperative").value
+        runtime.logic.rename_agreement(team_uuid, "Terms")
+        runtime.logic.set_agreement_version(team_uuid, "1")
+        runtime.logic.create_section(team_uuid, "Scope")
+        mine = runtime.session.identity.uuid
+
+        # A new version is what makes an admission stale.
+        runtime.logic.set_agreement_version(team_uuid, "2")
+        team = runtime.session.protocol.index[team_uuid]
+        self.assertEqual(runtime.logic.membership_status(team, mine), "outdated")
+
+        self.assertEqual(
+            runtime.logic.accept_agreement(team_uuid, "Read and accepted.").status,
+            "ok",
+        )
+
+        team = runtime.session.protocol.index[team_uuid]
+        self.assertEqual(runtime.logic.membership_status(team, mine), "accepted")
+        # And editing it again puts them back where they were.
+        runtime.logic.create_section(team_uuid, "Scope two")
+        team = runtime.session.protocol.index[team_uuid]
+        self.assertEqual(runtime.logic.membership_status(team, mine), "outdated")
+
     def test_an_acceptance_names_the_text_it_accepted(self):
         """A badge that named only a version label would not be falsifiable."""
         runtime = self.runtime(9436)
