@@ -233,10 +233,10 @@ class TeamFacade:
 
     def create_item(
         self, team_uuid: str, application_id: str, title: str,
-        template: str = "",
+        template: str = "", snapshot: dict | None = None,
     ):
         return self._logic.create_team_item(
-            team_uuid, application_id, title, template,
+            team_uuid, application_id, title, template, snapshot,
         )
 
     def offer_item(self, team_uuid: str, topic_uuid: str):

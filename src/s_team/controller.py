@@ -334,6 +334,7 @@ def build_routes(logic, runtime) -> list[Route]:
             data.get("application_id", ""),
             data.get("title", ""),
             data.get("template", ""),
+            data.get("snapshot"),
         ))
 
     async def api_offer_item(request: Request):

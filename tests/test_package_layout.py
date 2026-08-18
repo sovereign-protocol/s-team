@@ -232,7 +232,11 @@ class AssetTests(unittest.TestCase):
 
     def test_topic_header_delegates_navigation_and_creation_to_the_shell(self):
         self.assertNotIn("onCreateTopic", self.team)
-        self.assertIn("SovereignShell.setTopicSelector", self.team)
+        self.assertIn("SovereignShell.setTopicName", self.team)
+        # Which team you are on is chosen in the Organizations tree beside
+        # the page. A second list of the same teams in the bar was the
+        # shell's before Core owned one, and two of them is one too many.
+        self.assertNotIn("payload.teams.map", self.team)
 
     def test_root_teams_are_worded_as_organizations(self):
         self.assertIn("<h2>New Organization</h2>", self.team)
@@ -494,25 +498,21 @@ class AssetTests(unittest.TestCase):
             "/api/team/items/connect",
             "/api/team/items/offer",
             "/api/team/items/remove",
-            "Connect to…",
-            "Offer one of mine…",
-            'id="newItemModal"',
+            # The chips are the shell's, beside the team's name, and so is
+            # the dialog that makes one - naming the snapshot it accepts is
+            # what keeps a file as good a start here as anywhere.
+            "SovereignShell.setTopicLinks",
+            "SovereignShell.openNewTopicDialog",
+            "snapshotType: kind.application_id",
         ):
             self.assertIn(marker, self.team)
-        # Only what you hold is a row: an offer is a name until you take it
-        # up. Parentheses around a single arrow-function argument are a
-        # formatter choice, not part of this contract.
-        self.assertRegex(
-            self.team,
-            r"items\.filter\(\(?item\)?\s*=>\s*item\.active\)",
-        )
-        self.assertRegex(
-            self.team,
-            r"items\.filter\(\(?item\)?\s*=>\s*!item\.active\)",
-        )
-        # Removing says what it does not do, because the word is the same
-        # one the Cockpit uses for deleting.
-        self.assertIn("Everybody else keeps ", self.team)
+        # An item somebody offers and you have not taken up is a link like
+        # any other, drawn dimmed - not a second control beside the list.
+        self.assertIn("held: item.active", self.team)
+        self.assertNotIn("Connect to…", self.team)
+        # Only your own reference is yours to take off, and only while you
+        # are a member.
+        self.assertIn("mine: mine && item.mine", self.team)
 
     def test_the_onboarding_pool_is_derived_rather_than_a_second_topic(self):
         # The pool is whoever publishes on the channel without being on the
@@ -608,19 +608,18 @@ class AssetTests(unittest.TestCase):
             ("Agreement", "document"),
             ("Members", "actors"),
             ("Roles", "roles"),
-            # What the team is doing, which is what somebody opening it
-            # came for.
-            ("Initiatives and Flows", "work"),
             # What has already happened, named for the general case rather
             # than for the decision trail that is currently all of it.
             ("History", "history"),
         ):
             self.assertCodeContains(f"disclosure('{title}', '{key}')")
-        # The work is open and everything else arrives closed. The agreement
-        # is the longest section and the least often changed, and who is on
-        # the team changes rarely enough not to greet you.
-        self.assertIn("work: true", self.team)
-        self.assertIn("actors: false", self.team)
+        # What the team runs has no section: it is in the bar, where every
+        # application says what its topic is attached to.
+        self.assertNotIn('"Initiatives and Flows"', self.team)
+        # Members opens the page and everything else arrives closed. The
+        # agreement is the longest section and the least often changed.
+        self.assertIn("actors: true", self.team)
+        self.assertIn("document: false", self.team)
         self.assertIn("roles: false", self.team)
         self.assertIn("document: false", self.team)
         self.assertIn("history: false", self.team)
@@ -713,7 +712,7 @@ class AssetTests(unittest.TestCase):
         positions = [
             appended.index(part)
             for part in (
-                "workPart.section", "membersPart.section", "rolesPart.section",
+                "membersPart.section", "rolesPart.section",
                 "documentPart.section", "membershipPart.section", "historyPart.section",
             )
         ]

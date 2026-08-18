@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- **The shell's vocabulary, and one node label with it.** `NODE_LABELS` calls
+  an agenda item an agenda item rather than a "discussion topic", which was
+  Core's word for a shared root used here for something else entirely. The
+  application mark is an org chart: it was a document, and paper is what the
+  Agreement is — the application cannot claim its own object's glyph. See
+  Core's `DESIGN_VOCABULARY.md` and `DESIGN_UI_CONSISTENCY.md` U8.
+
+- **S-Team says how a team is made, and stops saying how anything else is.**
+  Its registration carries the noun ("Organization" — a team made from
+  outside is a root team), what one starts from, and the call that makes one,
+  so the Cockpit and S-Initiative can offer a new team without knowing any of
+  it. In the other direction `ITEM_APPLICATIONS` is down to which kinds a
+  team runs and what to call them: the facade api versions, the per-kind
+  template lookup and the two create paths are Core's routing now.
+
+- **What a team runs moved into the bar, and Members opens the page.** The
+  "Initiatives and Flows" section is gone: its items are on the shell's
+  navigation row beneath the team's name, drawn like every other
+  application's links — the "Connect to…" pulldown it used to need is gone
+  with it, and so is the confirmation on removing one. An item somebody
+  offers that you have not taken up is not on that row: going somewhere and
+  taking a reference up are different acts, and the second one lives in the
+  "Related" dialog. Taking your reference off is one act with one meaning.
+  `team_items` reports `mine` and no longer composes an item's URL.
+
+- **An initiative or a flow can start from a snapshot file here too.**
+  `create_team_item` takes the same exported document the Cockpit imports and
+  hands it to the application that owns the kind, reading none of it. Making
+  one now uses the shell's dialog (`SovereignShell.openNewTopicDialog`) rather
+  than this page's copy of it — and the copy was the only place a snapshot
+  could not be loaded, which nobody had decided about teams.
+
 - **What a team runs is references now, not lists.** `team_item_list` was a
   chain of per-actor snapshots, each carrying a *list field* of items — the
   only list field in the codebase, safe solely because a single author

@@ -559,59 +559,6 @@ h2.element-label { margin: 0 0 4px; }
 .holder-action:hover { opacity: 1; }
 .role-answer-prompt { flex: 1; min-width: 0; }
 
-/* What the team runs. A row is something you hold and can open; an offer is
-   a name in a pulldown until you take it up, because that is all anybody
-   has of somebody else's copy. */
-.items-panel { margin: 0 4px 6px 22px; }
-.items-controls {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 10px;
-}
-.items-controls button { padding: 4px 8px; font-size: 12px; }
-.items-picker {
-  max-width: min(260px, 100%);
-}
-.item-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 8px;
-  margin-bottom: 6px;
-  border-radius: 8px;
-  background: var(--hover);
-  font-size: 13px;
-}
-.item-open {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text);
-  font-weight: 600;
-}
-.item-label {
-  color: var(--text-muted);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  white-space: nowrap;
-}
-.item-remove {
-  padding: 3px 8px;
-  font-size: 11px;
-  color: var(--text-muted);
-}
-.item-remove:hover { color: var(--text); }
-.items-empty { margin: 4px 0; color: var(--text-muted); font-size: 13px; }
-#newItemForm { min-width: min(420px, 80vw); }
-#newItemForm label { display: grid; gap: 4px; margin: 10px 0; }
-#newItemForm input,
-#newItemForm select { box-sizing: border-box; width: 100%; }
-
 /* What the team supports, directly above the actors who are on it - no rule
    between them, because it is the same subject stated twice over: first what
    the memberships are, then who is on one. */

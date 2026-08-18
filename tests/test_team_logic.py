@@ -3482,8 +3482,16 @@ class TeamLogicTests(unittest.TestCase):
     # string S-Team keeps.
 
     @staticmethod
-    def register_items_application(runtime, application_id="initiative"):
-        """A second application on this session, owning one root type."""
+    def register_items_application(
+        runtime, application_id="initiative", noun="", made=None,
+    ):
+        """A second application on this session, owning one root type.
+
+        It says how one of its topics is made when asked to - which is how
+        a real one says it, and the only way S-Team can make one: what
+        starts from nothing, from a template or from a file is that
+        application's own answer, and this side knows none of it.
+        """
         topics = []
 
         def list_topics():
@@ -3499,6 +3507,18 @@ class TeamLogicTests(unittest.TestCase):
                     topics.append(mounted)
             return accepted
 
+        def create_topic(title, template, snapshot):
+            if made is not None:
+                made.update(title=title, template=template, snapshot=snapshot)
+            created = runtime.session.create_child(
+                runtime.session.protocol.root.uuid,
+                {"type": f"{application_id}_topic", "name": title},
+                {},
+            )
+            topics.append(created.value)
+            runtime.session.start_discussion(created.value.uuid)
+            return created
+
         runtime.session.register_application(ApplicationRegistration(
             application_id,
             frozenset({f"{application_id}_topic"}),
@@ -3506,6 +3526,12 @@ class TeamLogicTests(unittest.TestCase):
             accept_topic,
             assignment_scoped=True,
             mount_invitation=True,
+            topic_noun=noun,
+            list_templates=(
+                lambda: [{"value": item.uuid, "name": item.data.get("name", "")}
+                         for item in topics]
+            ),
+            create_topic=create_topic if noun else None,
         ))
         return topics
 
@@ -3972,36 +3998,12 @@ class TeamLogicTests(unittest.TestCase):
             self.assertIn("Member", refused.reason)
 
     def test_making_an_item_asks_its_own_application_and_publishes_it(self):
-        # S-Team knows how to ask for one and where its page is, and
-        # nothing else about it.
+        # S-Team knows which kinds it runs and what to call them, and
+        # nothing else about them - not what one starts from, and not the
+        # call that makes one. Core routes that to whoever registered it.
         runtime = self.runtime(9807)
-        topics = self.register_items_application(runtime)
         made = {}
-
-        class InitiativeFacade:
-            def boards(self):
-                return list(topics)
-
-            def create_board(self, name):
-                made["name"] = name
-                return SessionResult(
-                    "ok",
-                    value=TeamLogicTests.an_item(
-                        TeamLogicTests(), runtime, topics, name,
-                    ),
-                )
-
-            def delete_board(self, board_uuid):
-                made["deleted"] = board_uuid
-                return SessionResult("ok", value=board_uuid)
-
-        class Facades:
-            def find(self, application_id, facade_api_version):
-                if (application_id, facade_api_version) == ("initiative", 1):
-                    return InitiativeFacade()
-                return None
-
-        runtime.logic.facades = Facades()
+        self.register_items_application(runtime, noun="Initiative", made=made)
         team_uuid = runtime.logic.create_team("Cooperative").value
         runtime.session.start_discussion(team_uuid)
         runtime.mailbox_channel.attach_topics(
@@ -4013,11 +4015,16 @@ class TeamLogicTests(unittest.TestCase):
         )
 
         self.assertEqual(created.status, "ok")
-        self.assertEqual(made["name"], "Roadmap")
+        self.assertEqual(made["title"], "Roadmap")
         team = runtime.session.protocol.index[team_uuid]
         items = runtime.logic.team_items(team)
         self.assertEqual([item["title"] for item in items], ["Roadmap"])
-        self.assertEqual(items[0]["href"], f"/apps/initiative?board={created.value}")
+        # Which application owns it, and not where its page is: the shell
+        # composes that from what the host reports is running.
+        self.assertEqual(items[0]["application_id"], "initiative")
+        self.assertNotIn("href", items[0])
+        # This client wrote the reference, so this client can take it off.
+        self.assertTrue(items[0]["mine"])
         # Only the kinds actually loaded here can be made.
         self.assertEqual(
             [kind["application_id"] for kind in runtime.logic.item_kinds()],
@@ -4029,12 +4036,48 @@ class TeamLogicTests(unittest.TestCase):
         # everybody who had it.
         removed = runtime.logic.remove_team_item(team_uuid, created.value)
         self.assertEqual(removed.status, "ok")
-        self.assertNotIn("deleted", made)
         team = runtime.session.protocol.index[team_uuid]
         self.assertEqual(runtime.logic.team_items(team), [])
         # And the item is still there to be offered again.
         self.assertIsNotNone(runtime.session.get_node(created.value))
         runtime.logic.offer_team_item(team_uuid, created.value)
+        team = runtime.session.protocol.index[team_uuid]
+        self.assertEqual(
+            [item["title"] for item in runtime.logic.team_items(team)],
+            ["Roadmap"],
+        )
+
+    def test_an_item_can_start_from_a_snapshot_file(self):
+        """The same document the Cockpit imports, offered where the work is.
+
+        The file goes through untouched to the application that owns the
+        kind. S-Team had templates but no snapshots for no reason anybody
+        chose - the dialog was a copy of the Cockpit's, and the copy had
+        lost half the ways of starting.
+        """
+        runtime = self.runtime(9807)
+        made = {}
+        self.register_items_application(runtime, noun="Initiative", made=made)
+        team_uuid = runtime.logic.create_team("Cooperative").value
+        runtime.session.start_discussion(team_uuid)
+        runtime.mailbox_channel.attach_topics(
+            [team_uuid], {"target_id": runtime.relay_target},
+        )
+        document = {
+            "format": "s-protocol.item-snapshot",
+            "format_version": 1,
+            "item_type": "initiative",
+            "content": {"objective": "", "columns": []},
+        }
+
+        created = runtime.logic.create_team_item(
+            team_uuid, "initiative", "Roadmap", "", document,
+        )
+
+        self.assertEqual(created.status, "ok")
+        self.assertEqual(made["snapshot"], document)
+        # A file is one of the three starts, not an extra one taken as well.
+        self.assertEqual(made["template"], "")
         team = runtime.session.protocol.index[team_uuid]
         self.assertEqual(
             [item["title"] for item in runtime.logic.team_items(team)],
@@ -4050,7 +4093,7 @@ class TeamLogicTests(unittest.TestCase):
         )
 
         self.assertEqual(refused.status, "error")
-        self.assertIn("not available on this client", refused.reason)
+        self.assertIn("not available here", refused.reason)
         self.assertEqual(runtime.logic.item_kinds(), [])
 
     def test_a_team_that_could_take_a_seat_is_offered_it_on_its_own_page(self):

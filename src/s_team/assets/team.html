@@ -110,25 +110,11 @@
         </menu>
       </form>
     </dialog>
-    <!-- Making an initiative or a flow for the team. The same shape as the
-       Cockpit's own new-initiative modal, because it is the same act: a
-       name, and something to start from. Which of the two the "start from"
-       is - one of your own boards, or a bundled workflow - is the only
-       difference between the kinds, and the kind supplies it. -->
-    <dialog id="newItemModal">
-      <form method="dialog" id="newItemForm">
-        <h2 id="newItemTitle">New item</h2>
-        <label>Name<input id="newItemName" class="ui-text-field" /></label>
-        <label id="newItemTemplateLabel"
-          >Start from
-          <select id="newItemTemplate" class="ui-select"></select>
-        </label>
-        <menu>
-          <button type="button" id="cancelNewItemBtn">Cancel</button>
-          <button type="submit" class="primary">Create</button>
-        </menu>
-      </form>
-    </dialog>
+    <!-- Making an initiative or a flow for the team is the shell's dialog
+       (SovereignShell.openNewTopicDialog). It was a copy of the Cockpit's,
+       because it is the same act: a name, and something to start from. It
+       was also the one place a snapshot file could not be loaded, which is
+       the cost of a copy rather than a decision anybody took. -->
     <!-- Recording a trustee action is something you do *in* a trusteeship, so
        it starts from the trustee role card. Five fields do not belong inline
        on a card, and none of them is required: a record with only some of
@@ -465,7 +451,7 @@
         const lamp = document.createElement("span");
         lamp.className = "status-lamp";
         lamp.dataset.status = status;
-        lamp.title = transition ? transitionLabel(transition) : "Aligned";
+        lamp.title = transition ? transitionLabel(transition) : "No open changes";
         lamp.setAttribute("aria-label", lamp.title);
 
         const label = document.createElement(tag);
@@ -722,44 +708,34 @@
       // team is one: it is built once and lives outside the rebuild the poll
       // does every three seconds, so a half-typed name survives.
       const openNewItemModal = (kind) => {
-        document.querySelector("#newItemTitle").textContent = `New ${kind.label.toLowerCase()}`;
-        document.querySelector("#newItemName").value = "";
-        document.querySelector("#newItemName").placeholder = `Untitled ${kind.label.toLowerCase()}`;
-        const template = document.querySelector("#newItemTemplate");
-        // An initiative may start from nothing, which is what "start empty"
-        // is; a flow may not - a process with no workflow is not a process.
-        SovereignUI.selectOptions(
-          template,
-          (kind.templates || []).map((option) => [option.value, option.name]),
-          kind.template_required
-            ? {value: kind.templates?.[0]?.value || ""}
-            : {emptyLabel: "Start empty", value: ""},
-        );
-        document.querySelector("#newItemTemplateLabel").hidden = !template.childElementCount;
-        document.querySelector("#newItemForm").onsubmit = async (event) => {
-          event.preventDefault();
-          const title =
-            document.querySelector("#newItemName").value.trim() ||
-            `Untitled ${kind.label.toLowerCase()}`;
-          const chosen = template.value;
-          document.querySelector("#newItemModal").close();
-          try {
-            await api("/api/team/items/create", {
-              team_uuid: current.uuid,
-              application_id: kind.application_id,
-              title,
-              template: chosen,
-            });
-            await load();
-            showToast(`${title} is on this team`);
-          } catch (error) {
-            showToast(error.message, true);
-          }
-        };
-        document.querySelector("#newItemModal").showModal();
+        SovereignShell.openNewTopicDialog({
+          noun: kind.noun,
+          templates: (kind.templates || []).map(
+            (option) => [option.value, option.name],
+          ),
+          // An initiative may start from nothing, which is what "start empty"
+          // is; a flow may not - a process with no workflow is not a process.
+          templateRequired: kind.template_required,
+          // The team makes the item through the same application the Cockpit
+          // does, so a file that one accepts this one accepts too.
+          snapshotType: kind.application_id,
+          onCreate: async ({name, template, snapshot}) => {
+            try {
+              await api("/api/team/items/create", {
+                team_uuid: current.uuid,
+                application_id: kind.application_id,
+                title: name,
+                template,
+                snapshot,
+              });
+              await load();
+              showToast(`${name} is on this team`);
+            } catch (error) {
+              showToast(error.message, true);
+            }
+          },
+        });
       };
-      document.querySelector("#cancelNewItemBtn").onclick = () =>
-        document.querySelector("#newItemModal").close();
 
       const renderOrganization = (organization) => {
         const tree = document.querySelector("#organizationTree");
@@ -1670,150 +1646,68 @@
         return Number.isNaN(parsed.valueOf()) ? String(value) : parsed.toLocaleDateString();
       };
 
-      // What the team runs. Nothing here is stored on the team: an item is
-      // the team's because it is published on the team's channel, and it is
-      // yours because you hold it. Both are read afresh on every payload, so
-      // the last person to delete their copy takes it off the list for
-      // everybody - there is no offer left over to point at nothing.
+      // What the team runs, beside its name in the shell's bar. Nothing here
+      // is stored on the team: an item is the team's because it is published
+      // on the team's channel, and it is yours because you hold it. Both are
+      // read afresh on every payload, so the last person to delete their copy
+      // takes it off the list for everybody - there is no offer left over to
+      // point at nothing.
+      //
+      // An item somebody else offers and you have not taken up is a link like
+      // any other, drawn dimmed; clicking it connects. It used to be a
+      // separate pulldown, on the reasoning that a row is something you can
+      // open and an offer is not - true of a row, and not of a chip that says
+      // so itself.
       const renderItems = (payload, interactive) => {
-        const section = document.createElement("div");
-        section.className = "items-panel";
         const items = payload.items || [];
-        const kinds = payload.item_kinds || [];
-        const offerable = payload.offerable_items || [];
         const mine = interactive && payload.membership?.is_member;
-
-        const controls = document.createElement("div");
-        controls.className = "items-controls";
-        if (mine) {
-          for (const kind of kinds) {
-            const make = document.createElement("button");
-            make.type = "button";
-            make.textContent = `+ ${kind.label}`;
-            make.onclick = () => openNewItemModal(kind);
-            controls.append(make);
-          }
-          // Everything the team runs that this client has not taken up. A
-          // pulldown rather than rows: until you connect to one it is
-          // somebody else's copy, and all you have is its name.
-          const offered = items.filter((item) => !item.active);
-          if (offered.length) {
-            const {control} = SovereignUI.selectionControl({
-              items: offered.map((item) => [
-                item.topic_uuid, `${item.title} · ${item.label}`,
-              ]),
-              emptyLabel: "Connect to…",
-              value: "",
-              variant: "compact",
-              controlClass: "items-picker",
-              onChange: async ({currentTarget: picker}) => {
-                if (!picker.value) return;
-                const chosen = picker.value;
-                picker.value = "";
-                picker.blur();
-                try {
-                  await api("/api/team/items/connect", {
-                    team_uuid: current.uuid,
-                    topic_uuid: chosen,
-                  });
-                  await load();
-                  showToast("It will arrive on the next sync");
-                } catch (error) {
-                  showToast(error.message, true);
-                }
-              },
-            });
-            controls.append(control);
-          }
+        SovereignShell.setTopicLinks({
+          links: items.map((item) => ({
+            topic_uuid: item.topic_uuid,
+            application_id: item.application_id,
+            label: item.label,
+            title: item.title,
+            held: item.active,
+            // Only your own reference, and only while you are a member.
+            mine: mine && item.mine,
+          })),
+          make: !mine ? [] : (payload.item_kinds || []).map((kind) => ({
+            label: `New ${kind.noun.toLowerCase()}`,
+            onSelect: () => openNewItemModal(kind),
+          })),
           // Your own, not on this team's channel. This is how a team that was
           // private when the work started gets it: the item was yours until
           // there was somewhere to publish it.
-          if (offerable.length) {
-            const {control} = SovereignUI.selectionControl({
-              items: offerable.map((item) => [
-                item.topic_uuid, `${item.title} · ${item.label}`,
-              ]),
-              emptyLabel: "Offer one of mine…",
-              value: "",
-              variant: "compact",
-              controlClass: "items-picker",
-              onChange: async ({currentTarget: picker}) => {
-                if (!picker.value) return;
-                const chosen = picker.value;
-                picker.value = "";
-                picker.blur();
-                try {
-                  await api("/api/team/items/offer", {
-                    team_uuid: current.uuid,
-                    topic_uuid: chosen,
-                  });
-                  await load();
-                  showToast("The team can see it now");
-                } catch (error) {
-                  showToast(error.message, true);
-                }
-              },
+          link: !mine ? [] : (payload.offerable_items || []).map((item) => ({
+            label: `${item.title} · ${item.label}`,
+            onSelect: async () => {
+              await api("/api/team/items/offer", {
+                team_uuid: current.uuid,
+                topic_uuid: item.topic_uuid,
+              });
+              await load();
+              showToast("The team can see it now");
+            },
+          })),
+          onFollow: async (link) => {
+            await api("/api/team/items/connect", {
+              team_uuid: current.uuid,
+              topic_uuid: link.topic_uuid,
             });
-            controls.append(control);
-          }
-        }
-        if (controls.childElementCount) section.append(controls);
-
-        // Only what you hold is a row: a row is something you can open, and
-        // an offer is not - it is a name until you take it up.
-        const active = items.filter((item) => item.active);
-        for (const item of active) {
-          const row = document.createElement("div");
-          row.className = "item-row";
-          const open = document.createElement("a");
-          open.className = "item-open";
-          open.href = item.href;
-          open.textContent = item.title;
-          open.title = `Open ${item.title} in S-${item.label === "Initiative" ? "Initiative" : "Flow"}`;
-          const label = document.createElement("span");
-          label.className = "item-label";
-          label.textContent = item.label;
-          row.append(open, label);
-          if (mine) {
-            const remove = document.createElement("button");
-            remove.type = "button";
-            remove.className = "item-remove";
-            remove.textContent = "Remove from team";
-            remove.title = "Stop offering it here. The item itself is untouched.";
-            remove.onclick = () => {
-              document.querySelector("#confirmModalConfirmBtn").textContent = "Remove";
-              confirmAction(
-                `Remove ${item.title} from this team?`,
-                "It stops being offered here and is not deleted: you keep " +
-                  "it, and so does everybody else. It stays on this list " +
-                  "while another member still offers it, and you can offer " +
-                  "it again yourself. Deleting it is done where it lives.",
-                async () => {
-                  try {
-                    await api("/api/team/items/remove", {
-                      team_uuid: current.uuid,
-                      topic_uuid: item.topic_uuid,
-                    });
-                    await load();
-                  } catch (error) {
-                    showToast(error.message, true);
-                  }
-                },
-              );
-            };
-            row.append(remove);
-          }
-          section.append(row);
-        }
-        if (!active.length) {
-          const none = document.createElement("p");
-          none.className = "items-empty";
-          none.textContent = items.length
-            ? "Nothing taken up here yet."
-            : "This team runs nothing yet.";
-          section.append(none);
-        }
-        return section;
+            await load();
+            showToast("It will arrive on the next sync");
+          },
+          // It stops being offered here and is not deleted: you keep it, and
+          // so does everybody else. It stays on this list while another
+          // member still offers it.
+          onRemove: async (link) => {
+            await api("/api/team/items/remove", {
+              team_uuid: current.uuid,
+              topic_uuid: link.topic_uuid,
+            });
+            await load();
+          },
+        });
       };
 
       // What has already happened, under the text it happened against. It
@@ -2611,14 +2505,12 @@
         currentInteractionAllowed = Boolean(payload.interaction?.allowed);
         document.querySelector(".organization-header h2").textContent = "Organizations";
         renderOrganization(payload.organization);
-        SovereignShell.setTopicSelector({
+        // Which team you are on is chosen in the Organizations tree beside
+        // the page - a second list of the same teams in the bar was the
+        // shell's before Core owned one, and two of them is one too many.
+        SovereignShell.setTopicName({
           label: payload.is_organization ? "Organization" : "Team",
-          topics: payload.teams.map((item) => ({
-            uuid: item.uuid,
-            title: item.data.title || "Untitled team",
-          })),
-          selectedUuid: current?.uuid || "",
-          onSelect: selectTeam,
+          title: current?.data?.title || "",
           onRename:
             current && currentInteractionAllowed
               ? async (title) => {
@@ -2651,16 +2543,16 @@
         }
 
         if (!ephemeral.disclosures || ephemeral.disclosures.agreementUuid !== current.uuid) {
-          // Who is here, first and open. The agreement is the longest thing on
-          // the page and the least often changed, so it arrives closed - the
-          // team is people and roles, and the text is what they hold to.
-          // What the team is doing, open. Who is on it comes next and
-          // arrives closed: the actors change rarely, and the work is what
-          // somebody opening the team came for.
+          // Who is here, first and open. What the team runs used to hold that
+          // place, on the reasoning that the work is what somebody opening a
+          // team came for - and it is, which is why it is in the bar now,
+          // visible without opening anything. What is left below it is the
+          // team itself, and that starts with its people. The agreement
+          // arrives closed: it is the longest thing on the page and the least
+          // often changed, and the team is people and roles before it is text.
           ephemeral.disclosures = {
             agreementUuid: current.uuid,
-            work: true,
-            actors: false,
+            actors: true,
             roles: false,
             document: false,
             membership: false,
@@ -2961,8 +2853,10 @@
         });
         documentPart.content.append(content);
 
-        const workPart = disclosure("Initiatives and Flows", "work");
-        workPart.content.append(renderItems(payload, currentInteractionAllowed));
+        // What the team runs has no section any more: it is in the bar,
+        // beside the team's name, where every application says what its
+        // topic is attached to.
+        renderItems(payload, currentInteractionAllowed);
 
         // Who is here, and nothing else. Where a trusteeship stands, and what
         // is being decided about it, is on that trusteeship's own card under
@@ -2998,12 +2892,12 @@
         historyPart.content.append(
           renderDecisionTrail(payload.decision_trail || [], currentInteractionAllowed),
         );
-        // What the team is doing, then who is here, then what is expected of
-        // them, then the text they hold to, then what being on it means. The
-        // agreement used to come first; it is the longest section and the
-        // least often changed, and leading with it buried the team.
+        // Who is here, then what is expected of them, then the text they hold
+        // to, then what being on it means. The agreement used to come first;
+        // it is the longest section and the least often changed, and leading
+        // with it buried the team. What the team runs led until it moved to
+        // the bar, so Members opens the page now.
         article.append(
-          workPart.section,
           membersPart.section,
           rolesPart.section,
           documentPart.section,
@@ -3059,18 +2953,20 @@
         reactNode: (uuid, choice) => applyReaction(uuid, choice),
       });
 
-      // Deep link from the overview: /apps/team?team=<uuid> selects
-      // that team on arrival, mirroring Kanban's ?board=<uuid>.
+      // Deep link from anywhere: /apps/team?topic=<uuid> selects that team
+      // on arrival. `topic` and not `team` - one name for "open this one",
+      // in every application, so the shell can compose a link to any
+      // application's topic without knowing what it calls its topics.
       async function selectTeamFromUrl() {
         const params = new URLSearchParams(window.location.search);
-        const uuid = params.get("team");
+        const uuid = params.get("topic");
         if (!uuid) return;
         try {
           await api("/api/team/teams/select", { team_uuid: uuid });
         } catch (error) {
           showToast(error.message, true);
         }
-        params.delete("team");
+        params.delete("topic");
         const query = params.toString();
         window.history.replaceState({}, "", window.location.pathname + (query ? `?${query}` : ""));
       }

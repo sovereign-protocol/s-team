@@ -16,9 +16,12 @@ APPLICATION_MANIFEST = ApplicationManifest(
     data_schema_version=13,
     asset_package="s_team.assets",
     icon=(
-        '<path d="M6 3h8l4 4v14H6z"></path>'
-        '<path d="M14 3v4h4"></path><path d="M9 13h6"></path>'
-        '<path d="M9 17h6"></path>'
+        # An org chart, not a document: paper is what the Agreement is,
+        # and the application cannot claim its own object's mark (U8).
+        '<rect x="9" y="3" width="6" height="5" rx="1"></rect>'
+        '<rect x="3" y="16" width="6" height="5" rx="1"></rect>'
+        '<rect x="15" y="16" width="6" height="5" rx="1"></rect>'
+        '<path d="M12 8v4"></path><path d="M6 16v-4h12v4"></path>'
     ),
     ui_file="team.html",
     css_file="team.css",

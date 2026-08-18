@@ -380,7 +380,7 @@ inherit this for free.
 **Constraint that follows:** no editable surface may live outside
 `#document` — or, if one must, it has to be built once rather than per
 render. `renderOrganization` (`tree.replaceChildren()`) and
-`setTopicSelector` both run _before_ the guard, unconditionally. This is why
+`setTopicName` both run _before_ the guard, unconditionally. This is why
 the ordered parent list and its reorder control live on the team's own page
 and not in the organization tree (§4.6), and why the new-team composer
 (§4.7) is constructed once and re-attached rather than rebuilt: a rebuild on

@@ -26,9 +26,10 @@ TEAM_APP_NAME = "S-Team"
 SNAPSHOT_FORMAT = "s-protocol.item-snapshot"
 SNAPSHOT_FORMAT_VERSION = 1
 FLOW_APPLICATION_ID = "flow"
+# Elections are the one thing this application asks S-Flow to do for it.
+# Making a process is Core's to route now, from S-Flow's own registration.
 FLOW_FACADE_API_VERSION = 1
 INITIATIVE_APPLICATION_ID = "initiative"
-INITIATIVE_FACADE_API_VERSION = 1
 class TeamLogic:
     GOVERNANCE_RECORD_TYPES = frozenset({
         "team_trustee_state",
@@ -319,6 +320,34 @@ class TeamLogic:
             assignment_scoped=True,
             mount_invitation=True,
             on_peer_update=self.reconcile_governance_updates,
+            # "Organization" and not "Team": a team made from outside this
+            # application is a root team, and that is what a root team is
+            # called. Nested ones are made here, from their parent.
+            topic_noun="Organization",
+            list_templates=self.team_templates,
+            create_topic=self.make_team,
+        )
+
+    def team_templates(self) -> list[dict]:
+        """One you already hold. Copying a team is choosing where a new one
+        starts, which is what a template is - it arrives with the text and
+        the roles and nobody in it."""
+        return [
+            {"value": team.uuid, "name": str(team.data.get("title") or "Untitled team")}
+            for team in self.teams()
+        ]
+
+    def make_team(
+        self, title: str, template: str = "", snapshot: dict | None = None,
+    ) -> SessionResult:
+        """One team, however it starts. Core's create contract."""
+        if snapshot is not None:
+            return self.create_from_snapshot(snapshot, title)
+        source = str(template or "").strip()
+        # Cloning takes the title, so unlike a copied board there is nothing
+        # to rename afterwards.
+        return (
+            self.clone_team(source, title) if source else self.create_team(title)
         )
 
     def shared_topics(self) -> list[ProtocolNode]:
@@ -3651,36 +3680,19 @@ class TeamLogic:
     # recorded here.** What the team keeps is who says they hold it, which
     # is the only thing the others could not work out for themselves.
     #
-    # Listing and connecting are Core's, and know nothing about initiatives
-    # or flows. Making one and removing it are that application's own calls,
-    # so they are named in this table and nowhere else. A fourth application
-    # is listed and connected to for free; it needs a row here before one
-    # can be made or removed from this page.
+    # Which kinds a team runs, and the word it uses for each. Nothing else:
+    # this held an api version, a delete call and whether a template was
+    # required, which was a copy of what each of those applications already
+    # knows about its own topics - and one of three such copies, beside the
+    # Cockpit's and S-Initiative's. Making one is Core's to route now, from
+    # what the owning application registered.
+    #
+    # Where an item's page is does not appear here either. The shell composes
+    # that from what the host reports about active applications.
     ITEM_APPLICATIONS = {
-        INITIATIVE_APPLICATION_ID: {
-            "label": "Initiative",
-            "api_version": INITIATIVE_FACADE_API_VERSION,
-            "path": "/apps/initiative?board=",
-            "delete": "delete_board",
-            "template_required": False,
-        },
-        FLOW_APPLICATION_ID: {
-            "label": "Flow",
-            "api_version": FLOW_FACADE_API_VERSION,
-            "path": "/apps/flow?process_uuid=",
-            "delete": "delete_process",
-            "template_required": True,
-        },
+        INITIATIVE_APPLICATION_ID: "Initiative",
+        FLOW_APPLICATION_ID: "Flow",
     }
-
-    def _application_facade(self, application_id: str):
-        entry = self.ITEM_APPLICATIONS.get(application_id)
-        if self.facades is None or not entry:
-            return None
-        try:
-            return self.facades.find(application_id, entry["api_version"])
-        except ValueError:
-            return None
 
     def _item_entry(
         self, topic_uuid: str, node: ProtocolNode | None, active: bool,
@@ -3695,18 +3707,17 @@ class TeamLogic:
             self.session.shared_topic_handler_for(node) if node else None
         )
         application_id = str(getattr(handler, "application_id", "") or "")
-        entry = self.ITEM_APPLICATIONS.get(application_id)
-        if not entry:
+        label = self.ITEM_APPLICATIONS.get(application_id)
+        if not label:
             return None
         data = node.data if node else {}
         return {
             "topic_uuid": topic_uuid,
             "application_id": application_id,
-            "label": entry["label"],
+            "label": label,
             "title": str(
                 data.get("title") or data.get("name") or "Untitled",
             ),
-            "href": f"{entry['path']}{topic_uuid}",
             "active": active,
         }
 
@@ -3767,18 +3778,21 @@ class TeamLogic:
             ):
                 continue
             held = self.session.get_node(topic_uuid)
-            entry = self.ITEM_APPLICATIONS[str(link.data["application_id"])]
             found[topic_uuid] = {
                 "topic_uuid": topic_uuid,
                 "application_id": link.data["application_id"],
-                "label": entry["label"],
+                "label": self.ITEM_APPLICATIONS[
+                    str(link.data["application_id"])
+                ],
                 # The recorded title is what a reference says before the
                 # topic is here; once it is, its own name wins.
                 "title": self._link_title(held, link),
-                "href": f"{entry['path']}{topic_uuid}",
                 # Held here, not merely known about, and read from the tree
                 # so a copy deleted from the Cockpit reads as gone at once.
                 "active": held is not None,
+                # Whether there is a reference of this client's own to take
+                # off. Somebody else's is not this client's to remove.
+                "mine": self._my_item_link(team, topic_uuid) is not None,
             }
         return sorted(
             found.values(),
@@ -3880,46 +3894,15 @@ class TeamLogic:
     def item_kinds(self) -> list[dict]:
         """What can be made here, and what each can be started from.
 
-        Only applications actually loaded in this process: the facades are
-        per-process, so a standalone S-Team can list and connect but has
-        nothing to make one with.
+        Core answers it, from what each application said about its own
+        topics. This only says which kinds a team runs - it does not know
+        what an initiative or a flow starts from, or which call makes one,
+        and it used to carry a table of exactly that beside the Cockpit's
+        and S-Initiative's copies of the same thing.
         """
-        kinds = []
-        for application_id, entry in sorted(self.ITEM_APPLICATIONS.items()):
-            facade = self._application_facade(application_id)
-            if facade is None:
-                continue
-            kinds.append({
-                "application_id": application_id,
-                "label": entry["label"],
-                "template_required": entry["template_required"],
-                "templates": self._item_templates(application_id, facade),
-            })
-        return kinds
-
-    def _item_templates(self, application_id: str, facade) -> list[dict]:
-        """What a new item can be copied from, as (value, name) pairs.
-
-        An initiative starts from one of this client's own, which is what
-        makes a template a template. A flow starts from a bundled
-        definition, and must: a process with no workflow is not a process.
-        """
-        if application_id == INITIATIVE_APPLICATION_ID:
-            boards = getattr(facade, "boards", None)
-            return [
-                {
-                    "value": board.uuid,
-                    "name": str(board.data.get("name") or "Untitled"),
-                }
-                for board in (boards() if callable(boards) else [])
-            ]
-        templates = getattr(facade, "templates", None)
         return [
-            {
-                "value": str(template.get("id") or ""),
-                "name": str(template.get("name") or template.get("id") or ""),
-            }
-            for template in (templates() if callable(templates) else [])
+            kind for kind in self.session.topic_kinds()
+            if kind["application_id"] in self.ITEM_APPLICATIONS
         ]
 
     def _item_guard(self, team_uuid: str) -> tuple[ProtocolNode | None, SessionResult]:
@@ -3935,7 +3918,7 @@ class TeamLogic:
 
     def create_team_item(
         self, team_uuid: str, application_id: str, title: str,
-        template: str = "",
+        template: str = "", snapshot: dict | None = None,
     ) -> SessionResult:
         """Make an initiative or a flow, and put it on the team's channel.
 
@@ -3943,26 +3926,19 @@ class TeamLogic:
         nobody shares has nowhere to put it, and the item is that person's
         until the team has a channel and somebody offers it (see
         offer_team_item).
+
+        Where it starts from is one of three: nothing, a template, or a
+        snapshot file. The third is the same document the Cockpit imports
+        and the owning application validates it, so a file that makes an
+        initiative there makes one here.
         """
         team, allowed = self._item_guard(team_uuid)
         if allowed.status != "ok":
             return allowed
-        entry = self.ITEM_APPLICATIONS.get(str(application_id or "").strip())
-        if not entry:
+        if str(application_id or "").strip() not in self.ITEM_APPLICATIONS:
             return SessionResult("error", reason="unknown kind of item")
-        facade = self._application_facade(application_id)
-        if facade is None:
-            return SessionResult(
-                "error",
-                reason=f"{entry['label']}s are not available on this client",
-            )
-        normalized = str(title or "").strip()
-        if not normalized:
-            return SessionResult("error", reason="a name is required")
-        created = (
-            self._create_initiative(facade, normalized, template)
-            if application_id == INITIATIVE_APPLICATION_ID
-            else self._create_flow(facade, normalized, template)
+        created = self.session.create_application_topic(
+            application_id, title, template, snapshot,
         )
         if created.status != "ok":
             return created
@@ -3975,46 +3951,6 @@ class TeamLogic:
                 self._node(team_uuid, "team") or team, str(created.value),
             )
         return created
-
-    def _create_initiative(self, facade, title: str, template: str):
-        source = str(template or "").strip()
-        if not source:
-            created = facade.create_board(title)
-            return created
-        copied = facade.copy_board(source)
-        if copied.status != "ok":
-            return copied
-        # copy_board names the copy after its source. The name asked for
-        # here is the one that was meant.
-        board_uuid = getattr(copied.value, "uuid", copied.value)
-        renamed = facade.rename_board(str(board_uuid), title)
-        if renamed.status != "ok":
-            return renamed
-        return SessionResult(
-            "ok", value=str(board_uuid), effects=copied.effects,
-        )
-
-    def _create_flow(self, facade, title: str, template: str):
-        definition = str(template or "").strip()
-        chosen = next(
-            (
-                item for item in (facade.templates() or [])
-                if str(item.get("id") or "") == definition
-            ),
-            None,
-        )
-        if not chosen:
-            return SessionResult("error", reason="choose a workflow to start from")
-        created = facade.create_process(
-            title, definition, str(chosen.get("version") or ""),
-        )
-        if created.status != "ok":
-            return created
-        return SessionResult(
-            "ok",
-            value=str(getattr(created.value, "uuid", created.value) or ""),
-            effects=created.effects,
-        )
 
     def offer_team_item(self, team_uuid: str, topic_uuid: str) -> SessionResult:
         """Put an item this client already holds on the team's channel."""
@@ -6728,7 +6664,7 @@ class TeamLogic:
         "team_domain": "Domain",
         "team_role_decision": "Role answer",
         "team_role_holding": "Seat",
-        "agenda_item": "Discussion topic",
+        "agenda_item": "Agenda item",
         "team_trustee_state": "Trusteeship state",
         "team_membership": "Membership",
         "team_membership_application": "Membership application",
