@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **`config/team.example.json` started the server again.** It still set
+  `"primary_application_id": "agreement"`, the application id from before the
+  rename to S-Team. Core's `ApplicationHost` rejects a primary id naming no
+  active application, so the shipped example config failed at startup with
+  `primary application 'agreement' is not active`. It now says `"team"`.
+
+- **A role, that role held, and a trusteeship are three different things.**
+  They were one `kind` with three characters passed beside it. Now the badge
+  names the object — `role`, `seat`, `trustee`, `membership` — and Core draws
+  it: a shield for an office, a shield with somebody in it for one that is
+  held, a key for a trusteeship, two people for a membership. Role cards and
+  the Identity and Trust cards carry their mark beside the name, and the
+  Roles and Members sections carry it on the heading, from the same table the
+  badges use. The mark shares the label's grid cell for the reason the
+  disclosure caret already did: a fourth child would move every other row's
+  actions into a different column.
+
 - **The shell's vocabulary, and one node label with it.** `NODE_LABELS` calls
   an agenda item an agenda item rather than a "discussion topic", which was
   Core's word for a shared root used here for something else entirely. The

@@ -2,7 +2,7 @@
   "applications": [
     {"module": "s_team.application"}
   ],
-  "primary_application_id": "agreement",
+  "primary_application_id": "team",
   "advertise_host": "127.0.0.1",
   "offer_http_channel": true
 }

@@ -127,7 +127,7 @@ class BoundaryTests(unittest.TestCase):
             self.assertFalse(used & forbidden, str(path))
 
     def test_reads_the_transition_ranking_rather_than_copying_it(self):
-        # Kanban and Team had each copied Session's ranking and the
+        # S-Initiative and S-Team had each copied Session's ranking and the
         # copies drifted: one ranked divergence 6, the other 5, so the same
         # conflict surfaced differently in each. Session owns the ranking.
         for path in SOURCES:
@@ -192,7 +192,7 @@ class AssetTests(unittest.TestCase):
         self.assertIn("SovereignUI.reactionControl", self.team)
         self.assertNotIn("Accept proposal", self.team)
         self.assertNotIn("Withdraw proposal", self.team)
-        # "Keep mine" is the Kanban reaction, offered after a merge. An
+        # "Keep mine" is the S-Initiative reaction, offered after a merge. A
         # team never merges a peer's node first, so it must not appear.
         self.assertNotIn("Keep mine", self.team)
 
@@ -600,19 +600,50 @@ class AssetTests(unittest.TestCase):
         ):
             self.assertNotIn(gone, self.team)
 
+    def test_roles_members_and_trusteeships_name_their_kind(self):
+        """An office, that office filled, and a trusteeship are three things.
+
+        Every badge used to be `kind: "role"` with a different character
+        passed alongside it - a key for a trusteeship, an open diamond for a
+        role, a filled one for a membership. The kind is the distinction, so
+        the kind is what is passed; Core draws it (U8).
+        """
+        for kind in (
+            'kind: "seat"',
+            'kind: role.trustee ? "trustee" : "seat"',
+            'kind: "membership"',
+        ):
+            self.assertCodeContains(kind)
+        # No drawing is chosen here any more.
+        self.assertNotIn("icon:", self.team)
+        # A role card is the office, so it carries the shield; the
+        # trusteeship cards carry the key instead.
+        self.assertIn('glyph: "role"', self.team)
+        self.assertIn('glyph: "trustee"', self.team)
+        # The mark shares the label's cell. A fourth grid child would put
+        # every other row's actions in a different column - the same reason
+        # the disclosure caret shares it.
+        self.assertIn("heading.prepend(mark)", self.team)
+        self.assertIn("row.append(lamp, heading, actions)", self.team)
+
     def test_the_team_parts_use_shared_disclosures(self):
-        for title, key in (
+        # The third argument is the kind the section holds, and Core draws
+        # its mark from the same table the badges inside it use (U8) - which
+        # is what stops a heading and its contents drawing one object two
+        # ways. Sections that hold document structure ask for no mark.
+        for title, key, glyph in (
             # "Agreement" and not "Team document": this section *is* the
             # agreement - the text the members consent to - and it is the
             # one place the word survives the move to Team.
-            ("Agreement", "document"),
-            ("Members", "actors"),
-            ("Roles", "roles"),
+            ("Agreement", "document", None),
+            ("Members", "actors", "membership"),
+            ("Roles", "roles", "role"),
             # What has already happened, named for the general case rather
             # than for the decision trail that is currently all of it.
-            ("History", "history"),
+            ("History", "history", None),
         ):
-            self.assertCodeContains(f"disclosure('{title}', '{key}')")
+            call = f"disclosure('{title}', '{key}'"
+            self.assertCodeContains(f"{call}, '{glyph}')" if glyph else f"{call})")
         # What the team runs has no section: it is in the bar, where every
         # application says what its topic is attached to.
         self.assertNotIn('"Initiatives and Flows"', self.team)

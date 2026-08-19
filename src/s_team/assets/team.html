@@ -434,6 +434,7 @@
         interactive = true,
         reactable = true,
         placeholder,
+        glyph,
       }) => {
         const row = document.createElement("div");
         row.className = "element-row";
@@ -488,7 +489,7 @@
         // Core draws the control and words it: one available act reads as a
         // button naming it, several become a menu. The wording is the same
         // sentence both ends already see on the status lamp, so a team's
-        // proposals read exactly like a board's.
+        // proposals read exactly like an initiative's.
         const reaction = reactable
           ? SovereignUI.reactionControl({
               info: transition,
@@ -534,6 +535,24 @@
             toggle.onToggle(open);
           };
           heading.append(label, caret);
+        }
+
+        // An office, beside the name of the office. Only the kinds that have
+        // a mark ask for one - a clause and a section are document structure,
+        // and a glyph on every row would say nothing.
+        //
+        // It shares the label's cell for the same reason the caret does: a
+        // fourth grid child would put every other row's actions in a
+        // different column.
+        const mark = glyph ? SovereignUI.entityGlyph(glyph) : null;
+        if (mark) {
+          mark.classList.add("element-glyph");
+          if (heading === label) {
+            heading = document.createElement("span");
+            heading.className = "element-heading";
+            heading.append(label);
+          }
+          heading.prepend(mark);
         }
 
         row.append(lamp, heading, actions);
@@ -690,9 +709,9 @@
         const template = document.querySelector("#newTeamTemplate").value;
         document.querySelector("#newTeamModal").close();
         try {
-          // One request either way: clone takes the title, so unlike a board
-          // copy there is nothing to rename afterwards. Creating selects, so
-          // you land in the new team rather than back where you started.
+          // One request either way: clone takes the title, so unlike an
+          // initiative copy there is nothing to rename afterwards. Creating
+          // selects, so you land in the new team rather than where you were.
           const created = await api(
             template ? "/api/team/teams/clone" : "/api/team/teams/create",
             template ? { team_uuid: template, title } : { title },
@@ -929,7 +948,7 @@
       const teamRoleChip = (seat, index, total, mine) => {
         const label = `${seat.role_name || "Role"} in ${seat.title}`;
         const chip = SovereignUI.entityBadge({
-          kind: "role",
+          kind: "seat",
           label,
           status: seat.live ? "accepted" : "outdated",
           interactive: true,
@@ -1048,11 +1067,14 @@
           (person.roles || []).filter((role) => role.status !== "refused");
 
         const badgeElement = (role, actionable) => {
+          // A role this person holds is a seat, not an office standing
+          // empty - and a trusteeship is its own kind again. Core draws each
+          // from the kind; the emoji this used to pass were the application
+          // choosing a drawing, which is how one object gets two.
           const chip = SovereignUI.entityBadge({
-            kind: "role",
+            kind: role.trustee ? "trustee" : "seat",
             label: role.name,
             status: role.status,
-            icon: role.trustee ? "🔑" : "◇",
             interactive: true,
             className: "role-chip",
           });
@@ -1146,10 +1168,9 @@
           if (!["accepted", "outdated"].includes(status)) return null;
           const name = person.membership_type || "Member";
           const chip = SovereignUI.entityBadge({
-            kind: "role",
+            kind: "membership",
             label: name,
             status,
-            icon: "◆",
             interactive: true,
             className: "membership-badge",
           });
@@ -1944,6 +1965,7 @@
             node: role,
             tag: "h4",
             field: "name",
+            glyph: "role",
             rename: (value) => api("/api/team/roles/rename", { role_uuid: role.uuid, name: value }),
             proposed,
             interactive,
@@ -2158,6 +2180,10 @@
             node: { uuid: trusteeship.node_uuid || "", data: { name: label } },
             tag: "h4",
             field: "name",
+            // The key, not the shield: Identity and Trust are trusteeships,
+            // and what separates a trusteeship from an ordinary office is
+            // exactly what the key says - it is held on everybody's behalf.
+            glyph: "trustee",
             // The word "Identity" is not editable - it is the role's name, not
             // its content - but a handover in flight is answered right here.
             interactive: false,
@@ -2559,8 +2585,9 @@
             history: false,
           };
         }
-        const disclosure = (title, key) =>
+        const disclosure = (title, key, glyph) =>
           SovereignUI.disclosure(title, {
+            glyph,
             expanded: ephemeral.disclosures[key],
             onToggle: (open) => {
               ephemeral.disclosures[key] = open;
@@ -2862,12 +2889,12 @@
         // is being decided about it, is on that trusteeship's own card under
         // Roles - it used to be stated again here, as a warning line and a
         // panel of elections, about seats neither of them named.
-        const membersPart = disclosure("Members", "actors");
+        const membersPart = disclosure("Members", "actors", "membership");
         membersPart.content.append(
           renderParticipants(payload.participants, payload.trusteeships, currentInteractionAllowed),
         );
 
-        const rolesPart = disclosure("Roles", "roles");
+        const rolesPart = disclosure("Roles", "roles", "role");
         rolesPart.content.append(renderRoles(current, currentInteractionAllowed));
 
         // A section of its own, below the Agreement. A membership is part of

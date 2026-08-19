@@ -791,6 +791,12 @@ h2.element-label { margin: 0 0 4px; }
   gap: 6px;
   min-width: 0;
 }
+/* Shares the label's cell, so it aligns to the text rather than to the row -
+   `baseline` would hang an svg off the bottom of the line box. */
+.element-heading > .element-glyph {
+  align-self: center;
+  flex: none;
+}
 .element-toggle {
   border: none;
   padding: 0 3px;

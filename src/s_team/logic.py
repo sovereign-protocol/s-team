@@ -344,8 +344,8 @@ class TeamLogic:
         if snapshot is not None:
             return self.create_from_snapshot(snapshot, title)
         source = str(template or "").strip()
-        # Cloning takes the title, so unlike a copied board there is nothing
-        # to rename afterwards.
+        # Cloning takes the title, so unlike a copied initiative there is
+        # nothing to rename afterwards.
         return (
             self.clone_team(source, title) if source else self.create_team(title)
         )
@@ -1274,7 +1274,7 @@ class TeamLogic:
     def delete_team(self, team_uuid: str) -> SessionResult:
         # A team is a topic, so deleting it also stops sharing it -
         # otherwise peers keep syncing a document this side no longer has.
-        # There is no "last team" to protect: unlike a board, nothing
+        # There is no "last team" to protect: unlike an initiative, nothing
         # here creates one on demand, and a host with none is a valid state.
         team = self._node(team_uuid, "team")
         if not team:
@@ -3700,7 +3700,7 @@ class TeamLogic:
         """One item, or nothing when no application here claims the topic.
 
         Core answers which application owns a root type, so this never has
-        to know what a board or a process is - and a topic belonging to
+        to know what an initiative or a process is - and a topic belonging to
         S-Team itself is left out by the same test.
         """
         handler = (
