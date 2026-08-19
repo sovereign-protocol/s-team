@@ -294,6 +294,37 @@
           dialog.showModal();
         });
 
+      // What each trusteeship is for, in the team's own terms. Copy rather
+      // than a record: a team does not write these, it chooses whether to
+      // have the seat.
+      const TRUSTEE_PURPOSES = {
+        identity:
+          "Control membership and represent the Team in its identity domain.",
+        trust:
+          "Facilitate decisions about the other trusteeships and represent " +
+          "the Team in its trust domain.",
+        focus:
+          "Hold what the Team is for, and represent it in its focus domain.",
+        market:
+          "Hold the Team's relationships outward, and represent it in its " +
+          "market domain.",
+        equity:
+          "Hold what the Team owns and owes, and represent it in its equity " +
+          "domain.",
+      };
+
+      // A trusteeship's name is its own word capitalised - Identity, Trust,
+      // Focus, Market, Equity - so there is no table here to fall out of
+      // step with the vocabulary the records are written from.
+      const trustLabel = (trust) =>
+        String(trust || "").charAt(0).toUpperCase() + String(trust || "").slice(1);
+
+      // The seats a team has, as the payload lists them. Looked up rather
+      // than indexed by name, because which seats exist is the team's
+      // answer and this file does not get to assume any of them.
+      const seatByTrust = (trust) =>
+        (payloadState.seats || []).find((seat) => seat.trust === trust) || {};
+
       // The five fields a trustee action carries. Nothing here is enforced:
       // the page used to refuse to submit without a subject and a decision,
       // and a half-filled record is a truer record than none at all.
@@ -1042,16 +1073,17 @@
         section.className = "acceptance-panel";
 
         // Trustee roles are derived from their append-only state chains.
+        // Which seats there are to badge is the team's answer, not a pair
+        // this file knows: `trusteeships` carries the ones it established.
         const trusteeBadges = (person) => {
           const badges = [];
-          for (const trust of ["identity", "trust"]) {
-            const state = trusteeships?.[trust] || {};
+          for (const [trust, state] of Object.entries(trusteeships || {})) {
             if (
               ["held", "contested"].includes(state.state) &&
               state.holder_actor_uuid === person.uuid
             ) {
               badges.push({
-                name: trust === "identity" ? "Identity" : "Trust",
+                name: trustLabel(trust),
                 status: "accepted",
                 trustee: trust,
               });
@@ -1857,9 +1889,12 @@
         if (!(payloadState.membership || {}).is_member) return null;
         const group = document.createElement("span");
         group.className = "election-start-group";
-        const facilitatorTrust = trust === "identity" ? "trust" : "identity";
-        const facilitatorLabel = facilitatorTrust === "identity" ? "Identity" : "Trust";
-        const facilitator = payloadState[facilitatorTrust] || {};
+        // Which seat facilitates this one comes from the team, not from a
+        // rule kept here. Empty means no seat does and the members decide,
+        // so there is no facilitator seat to answer a vacancy in.
+        const facilitatorTrust = seatByTrust(trust).facilitator_trust || "";
+        const facilitatorLabel = trustLabel(facilitatorTrust);
+        const facilitator = facilitatorTrust ? seatByTrust(facilitatorTrust) : {};
         const acting = facilitator.state === "vacant" ? facilitator.candidates || [] : [];
         // An election is facilitated by the counterpart trusteeship, so a
         // vacancy there has to be answered before one can be started. A
@@ -1880,7 +1915,7 @@
           facilitatorPicker = selection.select;
           group.append(selection.control);
         }
-        const running = Boolean((payloadState[trust] || {}).election_under_way);
+        const running = Boolean(seatByTrust(trust).election_under_way);
         const blocked = running || (facilitator.state === "vacant" && !acting.length);
         const start = document.createElement("button");
         start.type = "button";
@@ -2170,9 +2205,9 @@
       // reason (§1.3) - so it is read where the roles are read rather than as
       // a line off to one side. It carries no accountabilities or domains
       // yet, and the card says so rather than drawing two empty columns.
-      const renderTrusteeRoleCard = (trust, interactive) => {
-        const label = trust === "identity" ? "Identity" : "Trust";
-        const trusteeship = payloadState[trust] || { state: "unconfigured" };
+      const renderTrusteeRoleCard = (trusteeship, interactive) => {
+        const trust = trusteeship.trust;
+        const label = trustLabel(trust);
         const card = document.createElement("article");
         card.className = "role-card is-identity";
         card.append(
@@ -2193,10 +2228,7 @@
 
         const purpose = document.createElement("p");
         purpose.className = "role-purpose";
-        purpose.textContent =
-          trust === "identity"
-            ? "Control membership and represent the Team in its identity domain."
-            : "Facilitate decisions about Identity and represent the Team in its trust domain.";
+        purpose.textContent = TRUSTEE_PURPOSES[trust] || "";
         card.append(purpose);
 
         const held = document.createElement("div");
@@ -2322,25 +2354,27 @@
         // the seat they were about.
         const actions = document.createElement("div");
         actions.className = "role-card-actions";
-        if (interactive && trusteeship.state === "unconfigured") {
-          // A template has no trusteeships yet. Instantiating is one act for
-          // the whole team, so it is offered on Identity's card alone.
-          if (trust === "identity") {
-            const instantiate = document.createElement("button");
-            instantiate.type = "button";
-            instantiate.textContent = "Instantiate";
-            instantiate.title = "Give this team its Member, Identity and Trust records";
-            instantiate.onclick = async () => {
-              try {
-                await api("/api/team/identity/take", { team_uuid: current.uuid });
-                await load();
-                showToast("Organization instantiated");
-              } catch (error) {
-                showToast(error.message, true);
-              }
-            };
-            actions.append(instantiate);
-          }
+        if (interactive && trusteeship.can_dissolve) {
+          // Only ever offered on a seat standing empty, and never on
+          // Identity - the payload has already answered both.
+          const dissolve = document.createElement("button");
+          dissolve.type = "button";
+          dissolve.textContent = `Dissolve ${label}`;
+          dissolve.title =
+            `Stop this team having a ${label} trusteeship. Its trail stays.`;
+          dissolve.onclick = async () => {
+            try {
+              await api("/api/team/trusteeships/dissolve", {
+                team_uuid: current.uuid,
+                trust,
+              });
+              await load();
+              showToast(`${label} dissolved`);
+            } catch (error) {
+              showToast(error.message, true);
+            }
+          };
+          actions.append(dissolve);
         }
         if (interactive && trusteeship.can_enter_candidacy) {
           const enter = document.createElement("button");
@@ -2397,7 +2431,7 @@
           const settlementCandidates = (payloadState.participants || []).filter(
             (person) => person.is_member && person.actor_kind !== "team",
           );
-          const running = (payloadState[trust] || {}).election_under_way;
+          const running = trusteeship.election_under_way;
           const {control} = SovereignUI.selectionControl({
             items: settlementCandidates.map((person) => [
               person.uuid, person.is_self ? "You" : person.name,
@@ -2460,8 +2494,70 @@
         explanation.className = "section-intro";
         explanation.textContent = "What this team expects, and who has taken it on.";
         section.append(explanation);
-        section.append(renderTrusteeRoleCard("identity", interactive));
-        section.append(renderTrusteeRoleCard("trust", interactive));
+        // One card per seat this team has, in the order the payload lists
+        // them. Two calls by name stood here, which made the set of
+        // trusteeships something this file knew rather than something the
+        // team said.
+        const seats = payloadState.seats || [];
+        seats.forEach((seat) => {
+          section.append(renderTrusteeRoleCard(seat, interactive));
+        });
+        if (interactive && !seats.length) {
+          // A template has no trusteeships yet, so there is no card to put
+          // this on. One act for the whole team.
+          const instantiate = document.createElement("button");
+          instantiate.type = "button";
+          instantiate.className = "trusteeship-add";
+          instantiate.textContent = "Instantiate";
+          instantiate.title =
+            "Give this team its Member, Identity and Trust records";
+          instantiate.onclick = async () => {
+            try {
+              await api("/api/team/identity/take", { team_uuid: current.uuid });
+              await load();
+              showToast("Organization instantiated");
+            } catch (error) {
+              showToast(error.message, true);
+            }
+          };
+          section.append(instantiate);
+        }
+        const addable = payloadState.establishable_trusts || [];
+        if (interactive && addable.length) {
+          // What a team may add, offered where its seats are shown. Each
+          // one begins empty: adding a trusteeship is not a way into it.
+          const add = document.createElement("div");
+          add.className = "trusteeship-add-group";
+          const selection = SovereignUI.selectionControl({
+            items: addable.map((trust) => [trust, trustLabel(trust)]),
+            title: "A trusteeship this team could add",
+            variant: "compact",
+            controlClass: "trusteeship-add-control",
+          });
+          add.append(selection.control);
+          const establish = document.createElement("button");
+          establish.type = "button";
+          establish.className = "trusteeship-add";
+          establish.textContent = "Add trusteeship";
+          establish.title =
+            "Give this team the trusteeship, standing empty until somebody " +
+            "is elected or settled into it";
+          establish.onclick = async () => {
+            const trust = selection.select.value;
+            try {
+              await api("/api/team/trusteeships/establish", {
+                team_uuid: current.uuid,
+                trust,
+              });
+              await load();
+              showToast(`${trustLabel(trust)} established`);
+            } catch (error) {
+              showToast(error.message, true);
+            }
+          };
+          add.append(establish);
+          section.append(add);
+        }
 
         const roles = displayedChildren(team, "team_role");
         const rolesHaveProposals = roles.some((entry) => entry.proposed);

@@ -113,7 +113,13 @@ class TeamLogic:
             frozenset(),
         ),
     }
-    TRUSTS = frozenset({"identity", "trust"})
+    # The trusteeships a team may establish. Which of them it has is the
+    # team's own answer, read from the records - this is the vocabulary they
+    # are named from, and a `trust` field naming something outside it is a
+    # schema error wherever it appears.
+    TRUSTS = frozenset({
+        "identity", "trust", "focus", "market", "equity",
+    })
     # Which trusteeship decides who belongs. Invitations and removals rest on
     # this one, and it was the same string written out at each of them. Named
     # here so that "membership is Identity's" is something the model says
@@ -124,9 +130,27 @@ class TeamLogic:
     # team supports and when each is open, plus removing one person after the
     # fact. Whether to be on the team is the Actor's own answer.
     MEMBERSHIP_TRUST = "identity"
+    # Which trusteeship supervises the others. Elections, settlements and
+    # observations all rest on a trusteeship other than the one being acted
+    # on, and "the counterpart" only said what that meant while there were
+    # two of them. Supervision is what a team establishes Trust for, so it
+    # goes there when Trust exists and falls back to Identity when it does
+    # not. Named here for the reason MEMBERSHIP_TRUST is: so the rule is one
+    # statement in a place that can be read, rather than a literal at each
+    # of the six places that derive it.
+    SUPERVISORY_TRUST = "trust"
     TRUSTEE_CAUSES = frozenset({
-        "genesis", "election", "resignation", "resolution",
+        "genesis", "establishment", "election", "resignation", "resolution",
+        "dissolution",
     })
+    # The two causes that are about the seat rather than about who sits in
+    # it. A team decides which trusteeships it has, and it decides that the
+    # same way it decides anything else about one: an append-only record,
+    # written on the facilitating trusteeship's authority. Establishing and
+    # dissolving are links in the same chain as the holders, so a seat's
+    # whole life - that it exists, who has held it, that it stopped
+    # existing - reads as one line rather than two that have to agree.
+    SEAT_CAUSES = frozenset({"establishment", "dissolution"})
     # How a badge came to stand or stop standing. Identity issues founding
     # and accepted badges. The holder may invalidate their own badge, while
     # Identity may terminate it.
@@ -840,10 +864,14 @@ class TeamLogic:
             {},
         )
         if result.status == "ok":
-            identity = self._create_trusteeship(result.value, "identity")
+            identity = self._create_trusteeship(
+                result.value, self.MEMBERSHIP_TRUST,
+            )
             current = self._node(result.value.uuid, "team")
             member = self._found_membership(current)
-            trust = self._create_trusteeship(result.value, "trust")
+            trust = self._create_trusteeship(
+                result.value, self.SUPERVISORY_TRUST,
+            )
             self._remember_team(result.value.uuid)
             return SessionResult(
                 "ok",
@@ -909,10 +937,10 @@ class TeamLogic:
         if created.status != "ok":
             return created
         child = created.value
-        identity = self._create_trusteeship(child, "identity")
+        identity = self._create_trusteeship(child, self.MEMBERSHIP_TRUST)
         current = self._node(child.uuid, "team")
         member = self._found_membership(current)
-        trust = self._create_trusteeship(child, "trust")
+        trust = self._create_trusteeship(child, self.SUPERVISORY_TRUST)
         seated = self.seat_team(role.uuid, child.uuid)
         if seated.status != "ok":
             self.session.delete(child.uuid)
@@ -1472,32 +1500,25 @@ class TeamLogic:
             return allowed
         return self.session.move_child_to_index(clause_uuid, index)
 
-    def identity_holder(self, team: ProtocolNode) -> str:
+    def trustee_holder(self, team: ProtocolNode, trust: str) -> str:
         """The settled incumbent, including while successors are contested."""
         return str(
-            self.trustee_projection(team, "identity").get(
+            self.trustee_projection(team, trust).get(
                 "holder_actor_uuid",
             ) or ""
         ).strip()
 
-    def trust_holder(self, team: ProtocolNode) -> str:
-        return str(
-            self.trustee_projection(team, "trust").get(
-                "holder_actor_uuid",
-            ) or ""
-        ).strip()
+    def holds_trusteeship(self, team: ProtocolNode, trust: str) -> bool:
+        return bool(
+            (holder := self.trustee_holder(team, trust))
+            and holder == self._identity_uuid
+        )
+
+    def identity_holder(self, team: ProtocolNode) -> str:
+        return self.trustee_holder(team, self.MEMBERSHIP_TRUST)
 
     def holds_identity(self, team: ProtocolNode) -> bool:
-        return bool(
-            (holder := self.identity_holder(team))
-            and holder == self._identity_uuid
-        )
-
-    def holds_trust(self, team: ProtocolNode) -> bool:
-        return bool(
-            (holder := self.trust_holder(team))
-            and holder == self._identity_uuid
-        )
+        return self.holds_trusteeship(team, self.MEMBERSHIP_TRUST)
 
     def _holds_identity_of(self, team_uuid: str) -> bool:
         """Same question about a team named only by uuid, which may be
@@ -1519,28 +1540,12 @@ class TeamLogic:
                 reason="Identity changes require a facilitated decision",
             )
         member = self._found_membership(team)
-        identity = self._create_trusteeship(team, "identity")
-        trust = self._create_trusteeship(team, "trust")
+        identity = self._create_trusteeship(team, self.MEMBERSHIP_TRUST)
+        trust = self._create_trusteeship(team, self.SUPERVISORY_TRUST)
         return SessionResult(
             "ok",
             value=identity.value,
-            effects=[
-                *member.effects, *identity.effects, *trust.effects,
-            ],
-        )
-
-    def offer_identity(
-        self, team_uuid: str, actor_uuid: str,
-    ) -> SessionResult:
-        """Direct handover is not part of the append-only authority model."""
-        team = self._node(team_uuid, "team")
-        if not team:
-            return SessionResult("error", reason="team not found")
-        allowed = self._interaction_guard(team)
-        if allowed.status != "ok":
-            return allowed
-        return SessionResult(
-            "error", reason="Identity changes require a facilitated decision",
+            effects=[*member.effects, *identity.effects, *trust.effects],
         )
 
     def resign_identity(self, team_uuid: str) -> SessionResult:
@@ -1556,10 +1561,7 @@ class TeamLogic:
             return SessionResult("error", reason="team not found")
         if trust not in self.TRUSTS:
             return SessionResult("error", reason="unknown trusteeship")
-        holder = (
-            self.identity_holder(team) if trust == "identity"
-            else self.trust_holder(team)
-        )
+        holder = self.trustee_holder(team, trust)
         if holder != self._identity_uuid:
             return SessionResult(
                 "error",
@@ -1576,6 +1578,97 @@ class TeamLogic:
             "acted_by": self._identity_uuid,
             "acted_at": self._now(),
             "authority_basis_uuid": current_uuid,
+            "signals": str(signals or "").strip(),
+            "consideration": str(consideration or "").strip(),
+            "expectation": str(expectation or "").strip(),
+        })
+
+    def establish_trusteeship(
+        self, team_uuid: str, trust: str,
+        signals: str = "", consideration: str = "", expectation: str = "",
+    ) -> SessionResult:
+        """Give the team a trusteeship it did not have.
+
+        The seat begins empty. Who sits in it is a separate decision, taken
+        the way every other seat is filled - by election, or by the
+        facilitating trusteeship settling a vacancy - so establishing one is
+        never a way to appoint oneself to it.
+        """
+        return self._seat_record(
+            team_uuid, trust, "establishment",
+            signals, consideration, expectation,
+        )
+
+    def dissolve_trusteeship(
+        self, team_uuid: str, trust: str,
+        signals: str = "", consideration: str = "", expectation: str = "",
+    ) -> SessionResult:
+        """Stop the team having this trusteeship. Vacant seats only, and
+        never Identity."""
+        return self._seat_record(
+            team_uuid, trust, "dissolution",
+            signals, consideration, expectation,
+        )
+
+    def _seat_record(
+        self, team_uuid: str, trust: str, cause: str,
+        signals: str = "", consideration: str = "", expectation: str = "",
+    ) -> SessionResult:
+        """Establishing and dissolving are the same act facing two ways:
+        the facilitating trusteeship's authority, and a link in the seat's
+        own chain."""
+        team = self._node(team_uuid, "team")
+        if not team:
+            return SessionResult("error", reason="team not found")
+        normalized_trust = str(trust or "").strip().lower()
+        if normalized_trust not in self.TRUSTS:
+            return SessionResult("error", reason="unknown trusteeship")
+        projection = self.trustee_projection(team, normalized_trust)
+        state = projection.get("state")
+        established = normalized_trust in self.established_trusts(team)
+        if cause == "establishment" and established:
+            return SessionResult(
+                "error",
+                reason=f"{normalized_trust.title()} is already established",
+            )
+        if cause == "dissolution":
+            if not established:
+                return SessionResult(
+                    "error",
+                    reason=f"{normalized_trust.title()} is not established",
+                )
+            if state != "vacant":
+                return SessionResult(
+                    "error",
+                    reason=(
+                        f"{normalized_trust.title()} must be vacant before it "
+                        "is dissolved"
+                    ),
+                )
+        basis_uuid = self.facilitating_basis_for_actor(
+            team, normalized_trust, self._identity_uuid,
+        )
+        if not basis_uuid:
+            return SessionResult(
+                "error",
+                reason=self._facilitation_error(team, normalized_trust),
+            )
+        return self.append_governance_record(team.uuid, {
+            "type": "team_trustee_state",
+            "trust": normalized_trust,
+            "holder_actor_uuid": "",
+            # A dissolution follows the vacancy it ends. An establishment
+            # follows nothing the first time, and the dissolution it undoes
+            # when the team is taking a seat up again - one chain per seat
+            # either way, because a second root would read as a contest.
+            "previous_state_uuid": (
+                projection.get("current_state_uuid") or ""
+                if cause == "dissolution" or state == "dissolved" else ""
+            ),
+            "cause": cause,
+            "acted_by": self._identity_uuid,
+            "acted_at": self._now(),
+            "authority_basis_uuid": basis_uuid,
             "signals": str(signals or "").strip(),
             "consideration": str(consideration or "").strip(),
             "expectation": str(expectation or "").strip(),
@@ -2039,12 +2132,6 @@ class TeamLogic:
             {},
         )
 
-    def identity_payload(self, team: ProtocolNode) -> dict:
-        return self.trusteeship_payload(team, "identity")
-
-    def trust_payload(self, team: ProtocolNode) -> dict:
-        return self.trusteeship_payload(team, "trust")
-
     def trusteeship_payload(self, team: ProtocolNode, trust: str) -> dict:
         """Render one append-only trusteeship and any successor contest."""
         blank = {
@@ -2060,6 +2147,9 @@ class TeamLogic:
             "can_act": False,
             "election_under_way": False,
             "can_settle": False,
+            "can_establish": False,
+            "can_dissolve": False,
+            "facilitator_trust": "",
         }
         projection = self.trustee_projection(team, trust)
         current_uuid = projection.get("current_state_uuid") or ""
@@ -2078,6 +2168,12 @@ class TeamLogic:
             (candidate for candidate in candidates if candidate["is_self"]),
             None,
         )
+        # Everything this Actor may do *to* this seat rests on one question -
+        # whether they can act in the seat that facilitates it - so it is
+        # asked once here rather than three times below.
+        facilitates = bool(self.facilitating_basis_for_actor(
+            team, trust, self._identity_uuid,
+        ))
         return {
             **blank,
             "trust": trust,
@@ -2105,13 +2201,24 @@ class TeamLogic:
             "election_under_way": bool(
                 self.elections_under_way(team, trust),
             ),
-            # Whoever holds the counterpart seat, or is acting in it, is who
+            # Whoever holds the facilitating seat, or is acting in it, is who
             # reads the result and puts somebody in this one.
-            "can_settle": bool(
-                (facilitator := self._sole_facilitating_trust(trust))
-                and self._authority_basis_for_actor(
-                    team, facilitator, self._identity_uuid,
-                )
+            "can_settle": facilitates,
+            # Which seat decides this one. The view used to work it out from
+            # "the other one", which is a rule, and a rule the browser held
+            # a second copy of. Empty means the members decide it.
+            "facilitator_trust": self.facilitating_trust(team, trust),
+            # Whether the team has this seat at all is that same authority's
+            # decision, so the two sit beside `can_settle` rather than in a
+            # section of their own.
+            "can_establish": bool(
+                facilitates
+                and projection.get("state") in {"unconfigured", "dissolved"}
+            ),
+            "can_dissolve": bool(
+                facilitates
+                and projection.get("state") == "vacant"
+                and trust != self.MEMBERSHIP_TRUST
             ),
         }
 
@@ -2306,8 +2413,36 @@ class TeamLogic:
             data.get("previous_state_uuid") or data.get("authority_basis_uuid")
         ):
             return "genesis cannot name previous state or authority basis"
-        if cause != "genesis" and not data.get("previous_state_uuid"):
+        # Genesis is the founding pair and nothing else. It is the one cause
+        # that answers to no facilitator - the holder writes it for
+        # themself - so leaving it open to every seat in the vocabulary
+        # would make Focus, Market and Equity self-appointed the moment they
+        # could be named. Every other seat begins with an establishment,
+        # which does answer to one.
+        if cause == "genesis" and data.get("trust") not in {
+            self.MEMBERSHIP_TRUST, self.SUPERVISORY_TRUST,
+        }:
+            return "only Identity and Trust are founded at genesis"
+        # An establishment is a root the first time and a link after a
+        # dissolution, so it is the one cause that may go either way. A
+        # trusteeship taken up again continues its own chain rather than
+        # starting a second one beside it, which would read as a contest.
+        if cause not in {"genesis", "establishment"} and not data.get(
+            "previous_state_uuid",
+        ):
             return "non-genesis trustee state requires previous_state_uuid"
+        if cause == "establishment" and not data.get("authority_basis_uuid"):
+            return "an establishment names the authority that decided it"
+        if cause in self.SEAT_CAUSES and data.get("holder_actor_uuid"):
+            return "a trusteeship is established and dissolved empty"
+        # Identity is the minimum a team has. Everything that decides who
+        # belongs rests on it, so a team without one has no way to say who
+        # is on it - and no way back, since standing is what a decision to
+        # re-establish it would have to come from.
+        if cause == "dissolution" and data.get(
+            "trust",
+        ) == self.MEMBERSHIP_TRUST:
+            return "Identity cannot be dissolved"
         if cause == "election" and not data.get("process_uuid"):
             return "an election state names the process it read"
         return None
@@ -2442,9 +2577,13 @@ class TeamLogic:
             ]
             if not successors:
                 holder = str(current.data.get("holder_actor_uuid") or "")
+                dissolved = current.data.get("cause") == "dissolution"
                 return {
                     **blank,
-                    "state": "held" if holder else "vacant",
+                    "state": (
+                        "dissolved" if dissolved
+                        else "held" if holder else "vacant"
+                    ),
                     "current_state_uuid": current.uuid,
                     "holder_actor_uuid": holder,
                 }
@@ -3279,18 +3418,94 @@ class TeamLogic:
             return ("deferred", "the named holder is not known")
         return ("authorized", "")
 
-    def _sole_facilitating_trust(self, trust: str) -> str:
-        """Which trusteeship facilitates an action of this one, if only one can.
+    def established_trusts(self, team: ProtocolNode) -> frozenset[str]:
+        """Which trusteeships this team has, as against which may exist.
 
-        No trusteeship supervises itself, and while there are two that
-        leaves exactly one. It returns nothing rather than choosing once a
-        third exists, so the caller refuses: "the other one" written as an
-        if/else would quietly become "Identity facilitates everything" the
-        moment a third trusteeship was added, which is a decision nobody
-        would have made on purpose.
+        A seat is this team's from its chain's root until a dissolution
+        ends it, so what a team is made of is read from its records rather
+        than from the vocabulary. A replica that has not seen the root yet
+        reads the seat as absent, which is what `unconfigured` has always
+        meant.
         """
-        eligible = sorted(self.TRUSTS - {trust})
-        return eligible[0] if len(eligible) == 1 else ""
+        return frozenset(
+            trust for trust in self.TRUSTS
+            if self.trustee_projection(team, trust).get("state")
+            not in {"unconfigured", "dissolved"}
+        )
+
+    # The order they are offered and shown in: the two that supervise, then
+    # the three a team adds to say what else it keeps for itself. Not
+    # alphabetical, because Equity first would put the rarest seat at the
+    # top of every list.
+    TRUST_ORDER = ("identity", "trust", "focus", "market", "equity")
+
+    def establishable_trusts(self, team: ProtocolNode) -> list[str]:
+        """Which seats this team does not have and this Actor could add.
+
+        The basis is the whole question: a seat the team does not have is
+        already in the state `can_establish` asks about, so this does not
+        build the payload again to read one field off it.
+        """
+        established = self.established_trusts(team)
+        return [
+            trust for trust in self.TRUST_ORDER
+            if trust not in established
+            and self.facilitating_basis_for_actor(
+                team, trust, self._identity_uuid,
+            )
+        ]
+
+    def facilitating_trust(self, team: ProtocolNode, trust: str) -> str:
+        """Which trusteeship supervises an act on this one.
+
+        No trusteeship supervises itself, which used to leave exactly one
+        answer because there were only two. The rule that means something
+        beyond two: Trust supervises, and Identity supervises Trust and
+        stands in wherever Trust has not been established.
+
+        Which is the whole table - Identity by Trust, Trust by Identity,
+        every other seat by Trust and by Identity where there is no Trust -
+        because it reads as "the first of the two supervising seats that
+        this is not, and that the team has".
+
+        An empty answer means no established seat supervises this one.
+        """
+        established = self.established_trusts(team)
+        return next(
+            (
+                seat
+                for seat in (self.SUPERVISORY_TRUST, self.MEMBERSHIP_TRUST)
+                if seat != trust and seat in established
+            ),
+            "",
+        )
+
+    def eligible_facilitating_trusts(
+        self, team: ProtocolNode, trust: str,
+    ) -> frozenset[str]:
+        """Every seat a record may name as the authority it acted from.
+
+        `facilitating_trust` picks one: what a client offers, and what it
+        writes into its own records. This is what a record already written
+        is *judged* against, and it is a set rather than that one answer
+        because the one answer moves when a seat is established. Judging an
+        adopted record against the answer of the moment would make its
+        authority depend on how far this replica had synced - the same fault
+        `_trust_authority` describes one level down, where requiring the
+        basis to still be current made a trustee's whole trail unauthorized
+        the day they resigned.
+
+        Supervision is Identity's and Trust's alone. Focus, Market and
+        Equity are held, never supervising, so the set can only ever be
+        those two less this seat, and establishing a fourth cannot change
+        what an existing record was authorized by.
+        """
+        established = self.established_trusts(team)
+        return frozenset(
+            seat
+            for seat in (self.SUPERVISORY_TRUST, self.MEMBERSHIP_TRUST)
+            if seat != trust and seat in established
+        )
 
     def _authority_basis_for_actor(
         self, team: ProtocolNode, trust: str, actor_uuid: str,
@@ -3304,6 +3519,47 @@ class TeamLogic:
             if candidacy.data.get("actor_uuid") == actor_uuid:
                 return candidacy.uuid
         return ""
+
+    def _facilitation_error(self, team: ProtocolNode, trust: str) -> str:
+        """Why this Actor may not act on a seat, said in terms of who may."""
+        facilitator = self.facilitating_trust(team, trust)
+        if facilitator:
+            return (
+                f"only {facilitator.title()} or an authorised acting "
+                f"candidate can decide {trust.title()}"
+            )
+        return (
+            f"only a current Member other than the {trust.title()} holder "
+            f"can decide {trust.title()}"
+        )
+
+    def facilitating_basis_for_actor(
+        self, team: ProtocolNode, trust: str, actor_uuid: str,
+    ) -> str:
+        """What this Actor may name as their authority over this seat.
+
+        The facilitating trusteeship's, where the team has one. Where it has
+        none - Identity on a team that has dissolved Trust - their own
+        membership, because the members are who is left. Identity is the
+        minimum a team keeps, so this is the only seat that ever reaches
+        the second case.
+
+        Never the seat's own holder. Nobody supervises themself, and an
+        incumbent who could would be settling their own succession, which is
+        the handover this model has no way to write.
+        """
+        facilitator = self.facilitating_trust(team, trust)
+        if facilitator:
+            return self._authority_basis_for_actor(
+                team, facilitator, actor_uuid,
+            )
+        if self.trustee_holder(team, trust) == actor_uuid:
+            return ""
+        if not self._is_current_member(team, actor_uuid):
+            return ""
+        return str(self.membership_projection(
+            team, actor_uuid,
+        ).get("current_uuid") or "")
 
     def enter_trustee_candidacy(
         self, team_uuid: str, trust: str,
@@ -3387,28 +3643,44 @@ class TeamLogic:
         if not electorate:
             return SessionResult("error", reason="the Team has no current Members")
         target = self.trustee_projection(team, normalized_trust)
-        facilitator_trust = self._sole_facilitating_trust(normalized_trust)
-        if not facilitator_trust:
-            return SessionResult(
-                "error",
-                reason="the facilitating trusteeship must be chosen explicitly",
-            )
+        facilitator_trust = self.facilitating_trust(team, normalized_trust)
+        requested_facilitator = str(facilitator_actor_uuid or "").strip()
         # Who facilitates is an input to the process, not an authority this
         # record rests on: nothing is implemented from the result, so there
         # is no basis to check here. What it still has to be is somebody -
-        # S-Flow needs a facilitator, and the counterpart trusteeship is
+        # S-Flow needs a facilitator, and the facilitating trusteeship is
         # where one comes from, because no trusteeship supervises itself.
-        facilitator = self.trustee_projection(team, facilitator_trust)
-        requested_facilitator = str(facilitator_actor_uuid or "").strip()
-        settled_facilitator = str(facilitator.get("holder_actor_uuid") or "")
-        if settled_facilitator:
+        if not facilitator_trust:
+            # Where no trusteeship supervises this seat, the members do, and
+            # whoever is starting the election is the member doing it. Not
+            # the incumbent: nobody runs the decision about their own seat.
+            if self.trustee_holder(
+                team, normalized_trust,
+            ) == self._identity_uuid:
+                return SessionResult(
+                    "error",
+                    reason=(
+                        f"the {normalized_trust.title()} holder does not "
+                        f"facilitate {normalized_trust.title()}"
+                    ),
+                )
+            facilitator_actor_uuid = (
+                requested_facilitator or self._identity_uuid
+            )
+            settled_facilitator = ""
+        else:
+            facilitator = self.trustee_projection(team, facilitator_trust)
+            settled_facilitator = str(
+                facilitator.get("holder_actor_uuid") or "",
+            )
+        if facilitator_trust and settled_facilitator:
             facilitator_actor_uuid = settled_facilitator
             if requested_facilitator and requested_facilitator != settled_facilitator:
                 return SessionResult(
                     "error",
                     reason=f"{facilitator_trust.title()} is held by another Actor",
                 )
-        else:
+        elif facilitator_trust:
             candidate_actors = [
                 str(candidate.data.get("actor_uuid") or "")
                 for candidate in self.active_trustee_candidates(
@@ -3444,6 +3716,8 @@ class TeamLogic:
                 reason=(
                     f"{facilitator_trust.title()} has no facilitator; "
                     "choose an active candidate"
+                ) if facilitator_trust else self._facilitation_error(
+                    team, normalized_trust,
                 ),
             )
         flow, flow_error = self._flow_facade()
@@ -3546,7 +3820,7 @@ class TeamLogic:
             return []
         ever_mine = self._declined_elections(team.uuid)
         adopted = []
-        for trust in sorted(self.TRUSTS):
+        for trust in sorted(self.established_trusts(team)):
             for election in self.elections_under_way(team, trust):
                 process_uuid = str(election.data.get("process_uuid") or "")
                 if not process_uuid or process_uuid in ever_mine:
@@ -3580,22 +3854,13 @@ class TeamLogic:
             return SessionResult("error", reason="team not found")
         if normalized_trust not in self.TRUSTS:
             return SessionResult("error", reason="unknown trusteeship")
-        facilitator_trust = self._sole_facilitating_trust(normalized_trust)
-        if not facilitator_trust:
-            return SessionResult(
-                "error",
-                reason="the facilitating trusteeship must be chosen explicitly",
-            )
-        basis_uuid = self._authority_basis_for_actor(
-            team, facilitator_trust, self._identity_uuid,
+        basis_uuid = self.facilitating_basis_for_actor(
+            team, normalized_trust, self._identity_uuid,
         )
         if not basis_uuid:
             return SessionResult(
                 "error",
-                reason=(
-                    f"only {facilitator_trust.title()} or an authorised "
-                    "acting candidate may settle this trusteeship"
-                ),
+                reason=self._facilitation_error(team, normalized_trust),
             )
         holder = str(holder_actor_uuid or "").strip()
         if not holder:
@@ -4276,6 +4541,107 @@ class TeamLogic:
             return None
         return {"status": status, "reason": reason}
 
+    def _basis_trust(
+        self, team: ProtocolNode, basis_uuid: str,
+    ) -> str | None:
+        """Which seat a record's authority basis was held in, if it can be
+        placed at all. Nothing means the basis has not arrived here yet."""
+        for node_type in ("team_trustee_state", "team_trustee_candidacy"):
+            basis = self._governance_node(team, basis_uuid, node_type)
+            if basis is not None:
+                return str(basis.data.get("trust") or "")
+        return None
+
+    def _member_facilitation_refusal(
+        self, team: ProtocolNode, trust: str, actor_uuid: str,
+        basis_uuid: str,
+    ) -> dict | None:
+        """No trusteeship supervises this seat, so the members do.
+
+        Which is not a weaker authority than a trusteeship's - it is where a
+        trusteeship's comes from. A team that has dissolved Trust has not
+        put Identity beyond reach; it has left it to the people who would
+        have elected the Trust that supervised it.
+
+        All the members but one. The incumbent is not among those who decide
+        their own seat, which is the same invariant as "no trusteeship
+        supervises itself", asked one level down.
+        """
+        basis = self._governance_node(team, basis_uuid, "team_membership")
+        if basis is None:
+            return {
+                "status": "deferred",
+                "reason": "the authority basis is not available",
+            }
+        if basis.data.get("actor_uuid") != actor_uuid:
+            return {
+                "status": "unauthorized",
+                "reason": "the membership named is somebody else's",
+            }
+        if not self._is_current_member(team, actor_uuid):
+            return {
+                "status": "unauthorized",
+                "reason": (
+                    f"only a current Member facilitates {trust.title()} "
+                    "where no trusteeship does"
+                ),
+            }
+        if self.trustee_holder(team, trust) == actor_uuid:
+            return {
+                "status": "unauthorized",
+                "reason": (
+                    f"the {trust.title()} holder does not facilitate "
+                    f"{trust.title()}"
+                ),
+            }
+        return None
+
+    def _facilitation_refusal(
+        self, team: ProtocolNode, trust: str, actor_uuid: str,
+        basis_uuid: str,
+    ) -> dict | None:
+        """Whether this Actor may act on a seat that is not theirs.
+
+        The seat they acted from is read off the basis they named, not
+        derived here, and then checked against the seats eligible to
+        supervise this one. Deriving it would re-decide an adopted record
+        every time the team established another trusteeship.
+        """
+        eligible = self.eligible_facilitating_trusts(team, trust)
+        if not eligible:
+            return self._member_facilitation_refusal(
+                team, trust, actor_uuid, basis_uuid,
+            )
+        basis_trust = self._basis_trust(team, basis_uuid)
+        if basis_trust is None:
+            # A membership as the basis is the members' case, and this seat
+            # is not in it. Refused rather than deferred: deferring would
+            # leave the record waiting for a condition that has already been
+            # answered, and answered the other way.
+            if self._governance_node(team, basis_uuid, "team_membership"):
+                return {
+                    "status": "unauthorized",
+                    "reason": (
+                        f"a membership does not facilitate {trust.title()} "
+                        "while a trusteeship does"
+                    ),
+                }
+            return {
+                "status": "deferred",
+                "reason": "the authority basis is not available",
+            }
+        if basis_trust not in eligible:
+            return {
+                "status": "unauthorized",
+                "reason": (
+                    f"{basis_trust.title() or 'That authority'} does not "
+                    f"facilitate {trust.title()}"
+                ),
+            }
+        return self._authority_refusal(
+            team, basis_trust, actor_uuid, basis_uuid,
+        )
+
     def _membership_authority_refusal(
         self, team: ProtocolNode, data: dict, actor_uuid: str,
     ) -> dict | None:
@@ -4304,6 +4670,21 @@ class TeamLogic:
             if data["holder_actor_uuid"] != actor_uuid:
                 return {"status": "unauthorized", "reason": "genesis must be authored by its holder"}
             return None
+        if data["cause"] == "establishment" and not data[
+            "previous_state_uuid"
+        ]:
+            # A second root is *not* refused here, unlike genesis and a
+            # membership invitation's. Those have one possible author, so a
+            # competing root is junk. This one has two - the rule names
+            # Trust, the check accepts Identity - so two people who may both
+            # decide it can write the seat into being at the same moment.
+            # Refusing whichever arrived second would settle that by arrival
+            # order, and each replica would settle it differently and never
+            # come back together. The projection shows the fork instead, the
+            # way it shows every other one.
+            return self._facilitation_refusal(
+                team, trust, actor_uuid, data["authority_basis_uuid"],
+            )
         previous = self._governance_node(
             team, data["previous_state_uuid"], "team_trustee_state",
         )
@@ -4318,6 +4699,34 @@ class TeamLogic:
             )
             if not competing:
                 return {"status": "unauthorized", "reason": "previous trustee state is stale"}
+        dissolved = previous.data.get("cause") == "dissolution"
+        if dissolved and data["cause"] != "establishment":
+            return {
+                "status": "unauthorized",
+                "reason": f"{trust.title()} is dissolved",
+            }
+        if data["cause"] == "establishment":
+            if not dissolved:
+                return {
+                    "status": "unauthorized",
+                    "reason": f"{trust.title()} is already established",
+                }
+            return self._facilitation_refusal(
+                team, trust, actor_uuid, data["authority_basis_uuid"],
+            )
+        if data["cause"] == "dissolution":
+            if previous.data.get("holder_actor_uuid"):
+                # The way out of an occupied seat is the holder's own
+                # resignation, here as everywhere else. Dissolving one
+                # somebody is sitting in would take their authority away
+                # without them having given it up.
+                return {
+                    "status": "unauthorized",
+                    "reason": "a held trusteeship cannot be dissolved",
+                }
+            return self._facilitation_refusal(
+                team, trust, actor_uuid, data["authority_basis_uuid"],
+            )
         if data["cause"] == "resignation":
             return self._assess_resignation(data, previous, actor_uuid)
         if data["cause"] == "election":
@@ -4332,14 +4741,8 @@ class TeamLogic:
                     "status": "deferred",
                     "reason": "the trustee election record is not available",
                 }
-        facilitator = self._sole_facilitating_trust(trust)
-        if not facilitator:
-            return {
-                "status": "invalid",
-                "reason": "the facilitating trusteeship is ambiguous",
-            }
-        return self._authority_refusal(
-            team, facilitator, actor_uuid, data["authority_basis_uuid"],
+        return self._facilitation_refusal(
+            team, trust, actor_uuid, data["authority_basis_uuid"],
         )
 
     def _assess_resignation(
@@ -4604,16 +5007,9 @@ class TeamLogic:
         )
         if action is None:
             return {"status": "deferred", "reason": "observed trustee action is not available"}
-        facilitator = self._sole_facilitating_trust(
-            str(action.data.get("trust") or ""),
-        )
-        if not facilitator:
-            return {
-                "status": "invalid",
-                "reason": "the facilitating trusteeship is ambiguous",
-            }
-        return self._authority_refusal(
-            team, facilitator, actor_uuid, data["authority_basis_uuid"],
+        return self._facilitation_refusal(
+            team, str(action.data.get("trust") or ""), actor_uuid,
+            data["authority_basis_uuid"],
         )
 
     def append_governance_record(
@@ -4946,16 +5342,9 @@ class TeamLogic:
             return SessionResult("error", reason="trustee action not found")
         if not normalized_reality:
             return SessionResult("error", reason="Reality is required")
-        facilitator_trust = self._sole_facilitating_trust(
-            str(action.data.get("trust") or ""),
-        )
-        if not facilitator_trust:
-            return SessionResult(
-                "error",
-                reason="the facilitating trusteeship must be chosen explicitly",
-            )
-        basis_uuid = self._authority_basis_for_actor(
-            team, facilitator_trust, self._identity_uuid,
+        observed_trust = str(action.data.get("trust") or "")
+        basis_uuid = self.facilitating_basis_for_actor(
+            team, observed_trust, self._identity_uuid,
         )
         return self.append_governance_record(team.uuid, {
             "type": "team_trustee_reality",
@@ -4993,7 +5382,6 @@ class TeamLogic:
             actor_uuid = str(action.data.get("acted_by") or "")
             actor = people.get(actor_uuid) or {}
             key = group_key(action)
-            facilitator_trust = self._sole_facilitating_trust(key[0])
             observations = []
             for observation in self._realities_of(action):
                 observer_uuid = str(observation.data.get("observed_by") or "")
@@ -5024,8 +5412,8 @@ class TeamLogic:
                     peer.uuid for peer in groups[key] if peer.uuid != action.uuid
                 ],
                 "realities": observations,
-                "can_observe": bool(self._authority_basis_for_actor(
-                    team, facilitator_trust, self._identity_uuid,
+                "can_observe": bool(self.facilitating_basis_for_actor(
+                    team, key[0], self._identity_uuid,
                 )),
             })
         return payload
@@ -7033,8 +7421,15 @@ class TeamLogic:
             "trusteeships": (
                 {
                     trust: self.trustee_projection(selected, trust)
-                    for trust in sorted(self.TRUSTS)
+                    for trust in sorted(self.established_trusts(selected))
                 } if selected else {}
+            ),
+            # The seats this team could add, and this Actor could decide.
+            # Beside the trusteeships rather than among them because they
+            # are not the team's yet - there is nothing to show about one
+            # except that it could exist.
+            "establishable_trusts": (
+                self.establishable_trusts(selected) if selected else []
             ),
             "governance_attempts": (
                 self.governance_attempts(selected) if selected else []
@@ -7063,13 +7458,16 @@ class TeamLogic:
             "holds_role": (
                 self._has_current_acceptance(selected) if selected else False
             ),
-            "identity": (
-                self.identity_payload(selected) if selected
-                else {"state": "vacant"}
-            ),
-            "trust": (
-                self.trust_payload(selected) if selected
-                else {"state": "vacant"}
+            # One card per seat the team has, in the order they are offered.
+            # Two keys stood here while there were two seats, which made the
+            # view's list of trusteeships a thing the view knew rather than
+            # something the team said.
+            "seats": (
+                [
+                    self.trusteeship_payload(selected, trust)
+                    for trust in self.TRUST_ORDER
+                    if trust in self.established_trusts(selected)
+                ] if selected else []
             ),
             # Resolved here rather than in the view: a holder's status
             # depends on peer replicas the browser never sees.
@@ -7081,9 +7479,6 @@ class TeamLogic:
             ),
             "holds_identity": (
                 self.holds_identity(selected) if selected else False
-            ),
-            "holds_trust": (
-                self.holds_trust(selected) if selected else False
             ),
             # Template, instantiated or working - a count of actors, not a
             # kind of node (2.8).
@@ -7523,10 +7918,8 @@ class TeamLogic:
         had already lost.
         """
         actors = set(self.current_member_uuids(team))
-        if holder := self.identity_holder(team):
-            actors.add(holder)
-        if holder := self.trust_holder(team):
-            actors.add(holder)
+        for trust in self.established_trusts(team):
+            actors.add(self.trustee_holder(team, trust))
         actors.discard("")
         for role in self.roles(team):
             actors.update(

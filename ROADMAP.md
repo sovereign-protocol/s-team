@@ -37,9 +37,6 @@ Neither is S-Team's to make, and both came out of the design review.
 
 ### Smaller
 
-- **A third trusteeship.** The class generalises and the encoding is ready,
-  but the rule saying which trusteeship facilitates another means nothing
-  beyond two, so nothing is added until it does.
 - **Versioned releases of a document**, distinct from the node history
   underneath it.
 - **Roles as actors in their own right** — a role, rather than the person in
@@ -52,8 +49,6 @@ Deliberate, and not on the list because they were forgotten.
 
 - Global ordering, or first-come-first-served arbitration. Concurrency is
   shown, not settled by a machine.
-- Focus, Market and Equity trusteeships, until the facilitation rule above is
-  decided.
 - Asset or budget copying and division.
 - Automatic parent funding or escalation.
 - Copying decision or protocol history into a fork.

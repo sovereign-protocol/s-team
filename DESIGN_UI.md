@@ -104,6 +104,25 @@ marked with a key and carrying no accountabilities or domains yet. It used to
 be a line off to one side, which said in layout that it was a different kind
 of thing — and left it the one holding on the page with no way out of it.
 
+**[DONE] One card per trusteeship the team has**, in vocabulary order —
+Identity, Trust, Focus, Market, Equity — read from the payload's `seats`
+rather than drawn by name. Two calls stood here while there were two seats,
+which made the set of trusteeships something the page knew rather than
+something the team said.
+
+Under the cards, and not on any of them, an **Add trusteeship** control
+offering the seats this team could have and this Actor could decide — it is
+about the set, not about a seat. **Dissolve** sits on a card, because that
+one is about a seat: offered only where it stands empty, and never on
+Identity. Both are the payload's answer (`can_establish`, `can_dissolve`)
+rather than the page working out who may do what.
+
+**The page holds no copy of the facilitation rule.** Which seat decides
+another arrives as each seat's `facilitator_trust`. It used to be
+`trust === "identity" ? "trust" : "identity"` in three places, which was the
+rule written a second time, in a language that could not be tested against
+the records.
+
 ### 4.3 Holder status
 
 Four, and every one of them is something the holder said. A **membership**

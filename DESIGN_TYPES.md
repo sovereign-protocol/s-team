@@ -47,19 +47,25 @@ the only case the reverse rule ever covered was somebody whose membership ended
 while they still held a seat, and that is a state worth seeing rather than
 papering over. The trail records it; the remedy is to fill the trusteeship.
 
-Two exist, named by the `trust` field, created together at team genesis and
-both held by whoever made the team.
+Five may exist, named by the `trust` field. **Which of them a team has is the
+team's own answer**, read from its records: a trusteeship is established once
+its chain has a root, so the vocabulary says what may be named and the records
+say what this team is made of.
 
-**Vocabulary — `TRUSTS`:** `identity`, `trust`
+**Vocabulary — `TRUSTS`:** `identity`, `trust`, `focus`, `market`, `equity`
 
-Five are the target — Identity, Trust, Focus, Market and Equity. No third is
-added before the facilitator rule below has a basis that means something for
-more than two.
+Identity and Trust are created together at team genesis and both held by
+whoever made the team.
+
+**Vocabulary — `SUPERVISORY_TRUST`:** `trust`
+
+Supervision is Identity's and Trust's alone — see § The facilitating
+trusteeship. Focus, Market and Equity are held, never supervising.
 
 Authority is **append-only**. Nothing about a trusteeship is ever rewritten:
 who holds it is the head of a chain of `team_trustee_state` records linked by
-`previous_state_uuid`. Direct handover does not exist — `offer_identity`
-refuses on purpose, because a handover would be a rewrite. The seat moves by
+`previous_state_uuid`. Direct handover does not exist, because it would be a
+rewrite: nothing offers one, so there is nothing to refuse. The seat moves by
 resignation, then election.
 
 ## `team_trustee_state`
@@ -73,7 +79,7 @@ and `team_membership` (somebody standing inside it).
 | ----------------------- | --------------------------------------------------------------------------- |
 | `trust`                 | required — which trusteeship, from `TRUSTS`                                  |
 | `holder_actor_uuid`     | required — empty string means vacant                                         |
-| `previous_state_uuid`   | required — empty only for the genesis link                                   |
+| `previous_state_uuid`   | required — empty for a chain's root, which is a `genesis` or a first `establishment` |
 | `cause`                 | required — from `TRUSTEE_CAUSES`                                             |
 | `acted_by`              | required                                                                     |
 | `acted_at`              | required                                                                     |
@@ -83,7 +89,9 @@ and `team_membership` (somebody standing inside it).
 | `expectation`           | required — what is expected to follow. May be empty                          |
 | `process_uuid`          | optional — the S-Flow process that informed it, when `cause` is `election`   |
 
-**Vocabulary — `TRUSTEE_CAUSES`:** `genesis`, `election`, `resignation`, `resolution`
+**Vocabulary — `TRUSTEE_CAUSES`:** `genesis`, `establishment`, `election`, `resignation`, `resolution`, `dissolution`
+
+**Vocabulary — `SEAT_CAUSES`:** `establishment`, `dissolution`
 
 **Only an Individual may hold a trusteeship.** A Team *holding* one would leave
 invitations, removals, resignations and elections resting on an authority with
@@ -95,15 +103,42 @@ unknown signing key: the absence of a Team node is not evidence of a person.
 
 ### How a seat moves
 
-Each cause is a different authority, and that is the whole of what the four
+Each cause is a different authority, and that is the whole of what the six
 mean:
 
-| Cause         | Who writes it            | What it needs                                                                                     |
-| ------------- | ------------------------ | -------------------------------------------------------------------------------------------------- |
-| `genesis`     | the holder, for themself | Nothing precedes it, so `previous_state_uuid` and `authority_basis_uuid` are both empty, and no other state for this trusteeship may exist |
-| `resignation` | the incumbent only       | Their own current state as the basis — the authority to give a seat up is the authority of holding it. Must leave the seat vacant |
-| `election`    | the facilitating trustee | A `team_trustee_election` naming the same `process_uuid`. **The result is not checked against the holder** — see below |
-| `resolution`  | the facilitating trustee | Facilitating authority, and a **vacant** seat. No process, no election record: a seat filled where nobody ran one |
+| Cause           | Who writes it            | What it needs                                                                                     |
+| --------------- | ------------------------ | -------------------------------------------------------------------------------------------------- |
+| `genesis`       | the holder, for themself | Nothing precedes it, so `previous_state_uuid` and `authority_basis_uuid` are both empty, and no other state for this trusteeship may exist. **Identity and Trust only** — every other seat begins with an establishment |
+| `establishment` | the facilitating trustee | Facilitating authority, and the seat not being established already. Leaves it **vacant**: giving the team a trusteeship is never a way into it |
+| `resignation`   | the incumbent only       | Their own current state as the basis — the authority to give a seat up is the authority of holding it. Must leave the seat vacant |
+| `election`      | the facilitating trustee | A `team_trustee_election` naming the same `process_uuid`. **The result is not checked against the holder** — see below |
+| `resolution`    | the facilitating trustee | Facilitating authority, and a **vacant** seat. No process, no election record: a seat filled where nobody ran one |
+| `dissolution`   | the facilitating trustee | Facilitating authority, and a **vacant** seat. **Never Identity** |
+
+**A seat's whole life is one chain.** That it exists, who has held it and that
+it stopped existing are links in the same line, so there is no second record to
+keep in step with the first and no way for the two to disagree. A trusteeship a
+team takes up again continues its own chain from the dissolution — a second
+root beside the first would read as a contest, which is the one thing this
+walk is for.
+
+**Two establishments of one seat are a contest, not a refusal.** Genesis and a
+membership invitation both refuse a competing root, because each has one
+possible author and anything else is junk. An establishment has two — the rule
+names Trust, the check accepts Identity — so two people who may both decide it
+can write the seat into being at the same moment. Refusing whichever arrived
+second would settle that by arrival order, and each replica would settle it
+differently and never come back together. The fork is shown instead, the way
+every other fork here is.
+
+**Identity cannot be dissolved.** Everything deciding who belongs rests on it,
+so a team without one could not say who was on it — and could not decide to
+have one again, because standing is where that decision would have to come
+from. It can be resigned and stand empty; that is different, and recoverable.
+
+**Dissolving needs a vacant seat.** The way out of an occupied one is the
+holder's own resignation, here as everywhere else: dissolving a seat somebody
+sits in would take their authority away without them having given it up.
 
 There is no direct handover. Giving a seat to somebody else is resignation
 followed by an election or a settlement, because a handover would be a rewrite
@@ -228,25 +263,67 @@ written under **Trust**'s authority, and one about a Trust action under
 
 Elections, settlements and observations all rest on a trusteeship *other than*
 the one being acted on. The invariant is that **no trusteeship supervises
-itself**; "the counterpart" is only what that means when there happen to be
+itself**; "the counterpart" was only what that meant while there happened to be
 two.
 
-The places that *derive* a facilitator ask for the single eligible one and
-refuse when there is more than one, so adding a third trusteeship fails loudly
-at the point of use instead of quietly resolving to Identity, which is what an
-`else` branch would have done.
+| Seat acted on         | Facilitated by                                |
+| --------------------- | --------------------------------------------- |
+| Identity              | Trust, where the team has established it — otherwise **the members** |
+| Trust                 | Identity                                      |
+| Focus, Market, Equity | Trust where it exists, otherwise Identity      |
+
+Which is one sentence rather than three rows — **the first of Trust and
+Identity that this seat is not, and that the team has**. `facilitating_trust`
+is that sentence.
+
+**Supervision is Identity's and Trust's alone.** Focus, Market and Equity are
+held, never supervising, and that is what makes the rule safe to apply to a
+record written before this replica knew the team's full set of seats. The
+answer for any seat can only ever be one of two, so establishing a fourth
+cannot retroactively unauthorise a settlement somebody already wrote.
+
+**Where no trusteeship supervises a seat, the members do.** Identity is the
+minimum a team keeps, so that case is reached only by a team that has
+established Trust and then dissolved it, and only ever for Identity itself.
+The basis such a record names is the Actor's own `team_membership` — which is
+not a weaker authority than a trusteeship's, but where a trusteeship's comes
+from. `facilitating_basis_for_actor` is the one question the write paths ask,
+and it answers with a seat's state or a membership without the caller having
+to know which case it is in.
+
+**All the members but one.** The incumbent is not among those who decide their
+own seat: the same invariant as "no trusteeship supervises itself", asked one
+level down, and what keeps a lone Identity holder from settling their own
+succession — the handover this model has no way to write.
+
+That distinction is why there are two functions rather than one.
+`facilitating_trust` picks the single seat a client **offers** and writes into
+its own records. `eligible_facilitating_trusts` is the pair a record already
+written is **judged** against, and `_facilitation_refusal` reads the seat off
+the basis the record names rather than deriving it again. Deriving it at
+assessment time would make an adopted record's authority depend on how far this
+replica had synced — the same fault § Authority basis describes one level down,
+where requiring the basis to still be current made a trustee's whole trail
+unauthorised the day they resigned.
 
 ## The projection, and divergence
 
 `trustee_projection` walks the `previous_state_uuid` chain from the record with
-an empty predecessor and returns one of four states:
+an empty predecessor and returns one of five states:
 
 | State           | When                                                       |
 | --------------- | ---------------------------------------------------------- |
 | `unconfigured`  | no valid root record                                        |
 | `held`          | the chain ends at a record with a holder                    |
 | `vacant`        | the chain ends at a record with an empty holder             |
+| `dissolved`     | the chain ends at a `dissolution`                           |
 | `contested`     | more than one root, or more than one successor to the head  |
+
+`established_trusts` is the team's set of seats read from these: every
+trusteeship whose projection is neither `unconfigured` nor `dissolved`. The
+difference between the two matters — `unconfigured` may mean the records have
+not arrived here yet, which is why a seat this replica cannot place defers
+rather than being treated as absent.
 
 `contested` is a **fork in the chain**, carrying the contending record uuids.
 Nothing resolves it automatically. Both writes are kept; the UI shows the
@@ -550,6 +627,16 @@ each legitimate on its own — and nothing can happen on that team again: no
 invitation without Identity's authority, no candidacy without membership, no
 settlement without Trust. This is a real end state, not an oversight. The record
 survives, and a fork carries the work on.
+
+**What is not that end state**, and used to be read as it: a team that has
+*dissolved* Trust rather than resigned it. Where no trusteeship supervises
+Identity, the members do — §  The facilitating trusteeship — so Identity being
+vacant is something the people on the team can answer. Dissolved and vacant are
+different, and this is where the difference is worth the most: a seat standing
+empty with nobody able to fill it is the dead end, while a seat the team has
+decided not to have leaves the decision with the members.
+
+It takes zero members to reach the end state, not zero trusteeships.
 
 ## Where the blueprint's vocabulary lands
 

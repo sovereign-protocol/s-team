@@ -2,6 +2,73 @@
 
 ## Unreleased
 
+- **Which trusteeship facilitates another is a rule now, not an arithmetic
+  accident.** `TRUSTS` carries all five — Identity, Trust, Focus, Market and
+  Equity — and which of them a team has is read from its own records by
+  `established_trusts`. Facilitation follows from that: the first of Trust and
+  Identity that a seat is not, and that the team has. Supervision is those two
+  seats' alone, so a record's authority cannot move under it when the team
+  establishes a fourth. `_sole_facilitating_trust`, which answered "the other
+  one" and had nothing to say beyond two, is gone.
+
+  The two places that assess somebody else's record — a settlement and an
+  observation — read the seat off the basis the record names instead of
+  deriving it again, so an adopted record is not re-decided every time the
+  team's set of seats changes. That is the same reasoning `_trust_authority`
+  already carried for a resigned trustee's trail.
+
+  Nothing about a team changes yet: every team still has Identity and Trust,
+  and `genesis` is now refused for the other three, so they stay unreachable
+  until there is a decision that establishes one.
+
+- **A team decides which trusteeships it has.** `establishment` and
+  `dissolution` join `TRUSTEE_CAUSES`, so Focus, Market and Equity are seats a
+  team adds one at a time on the facilitating trusteeship's authority, and
+  gives up the same way. Both are links in the seat's own chain, so that a
+  trusteeship exists, who has held it and that it stopped existing read as one
+  append-only line — and a seat taken up again continues that line rather than
+  starting a second beside it.
+
+  An establishment leaves the seat **vacant**: giving the team a trusteeship is
+  never a way into one. A dissolution needs a vacant seat, because the way out
+  of an occupied one is the holder's own resignation. **Identity cannot be
+  dissolved at all** — everything deciding who belongs rests on it, and a team
+  without one could not decide to have one again.
+
+  `trustee_projection` gains a fifth state, `dissolved`, and two people who may
+  both establish a seat writing it at the same moment produce a contest rather
+  than a refusal — settling that by arrival order would leave two replicas
+  settling it differently and never converging.
+
+- **Where no trusteeship supervises a seat, the members do.** A team that has
+  dissolved Trust has not put Identity beyond reach: the basis such a record
+  names is the Actor's own `team_membership`, which is not a weaker authority
+  than a trusteeship's but where a trusteeship's comes from. All the members
+  but one — the incumbent is not among those who decide their own seat, which
+  is what keeps a lone Identity holder from settling their own succession.
+
+  `facilitating_basis_for_actor` is the one question the write paths ask now,
+  and it answers with a seat's state or a membership without the caller
+  knowing which case it is in. A membership named where a trusteeship does
+  facilitate is refused rather than deferred — deferring left the record
+  waiting on a question that had already been answered the other way.
+
+  This changes what **Beyond recovery** means in `DESIGN_TYPES.md`: dissolved
+  and vacant are different, and only the second is a dead end.
+
+- **The face shows the seats a team has, not the two it used to.** One card
+  per established trusteeship in vocabulary order, an **Add trusteeship**
+  control offering the ones it could have, and **Dissolve** on a vacant seat
+  that is not Identity. The payload carries `seats`, `establishable_trusts`
+  and each seat's `facilitator_trust`, so the browser stops holding a second
+  copy of the facilitation rule — it read `trust === "identity" ? "trust" :
+  "identity"` in three places.
+
+  `identity_payload`, `trust_payload`, `trust_holder`, `holds_trust` and the
+  payload's `identity` / `trust` / `holds_trust` keys are gone, replaced by
+  the `trust`-taking ones. So is `offer_identity`, which existed only to
+  refuse: nothing offers a handover now, so there is nothing to refuse.
+
 - **`config/team.example.json` started the server again.** It still set
   `"primary_application_id": "agreement"`, the application id from before the
   rename to S-Team. Core's `ApplicationHost` rejects a primary id naming no

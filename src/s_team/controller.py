@@ -141,12 +141,6 @@ def build_routes(logic, runtime) -> list[Route]:
             runtime, logic.take_identity(data["team_uuid"]),
         )
 
-    async def api_offer_identity(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.offer_identity(
-            data["team_uuid"], data.get("actor_uuid", ""),
-        ))
-
     async def api_resign_identity(request: Request):
         data = await request.json()
         return await _json_result(
@@ -156,6 +150,22 @@ def build_routes(logic, runtime) -> list[Route]:
     async def api_resign_trusteeship(request: Request):
         data = await request.json()
         return await _json_result(runtime, logic.resign_trusteeship(
+            data["team_uuid"], data.get("trust", ""),
+            data.get("signals", ""), data.get("consideration", ""),
+            data.get("expectation", ""),
+        ))
+
+    async def api_establish_trusteeship(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.establish_trusteeship(
+            data["team_uuid"], data.get("trust", ""),
+            data.get("signals", ""), data.get("consideration", ""),
+            data.get("expectation", ""),
+        ))
+
+    async def api_dissolve_trusteeship(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.dissolve_trusteeship(
             data["team_uuid"], data.get("trust", ""),
             data.get("signals", ""), data.get("consideration", ""),
             data.get("expectation", ""),
@@ -490,11 +500,6 @@ def build_routes(logic, runtime) -> list[Route]:
             "/api/team/identity/take", api_take_identity, methods=["POST"],
         ),
         Route(
-            "/api/team/identity/offer",
-            api_offer_identity,
-            methods=["POST"],
-        ),
-        Route(
             "/api/team/identity/resign",
             api_resign_identity,
             methods=["POST"],
@@ -502,6 +507,16 @@ def build_routes(logic, runtime) -> list[Route]:
         Route(
             "/api/team/trusteeships/resign",
             api_resign_trusteeship,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/team/trusteeships/establish",
+            api_establish_trusteeship,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/team/trusteeships/dissolve",
+            api_dissolve_trusteeship,
             methods=["POST"],
         ),
         Route(

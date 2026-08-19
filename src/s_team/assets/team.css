@@ -657,6 +657,17 @@ h2.element-label { margin: 0 0 4px; }
 
 .election-start-group { display: inline-flex; gap: 4px; }
 .facilitator-control { max-width: 150px; }
+/* Which trusteeships a team has is its own decision, so adding one sits
+   under the cards rather than on any of them - it is about the set, not
+   about a seat. */
+.trusteeship-add-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 12px;
+}
+.trusteeship-add-control { max-width: 150px; }
+.trusteeship-add { padding: 4px 8px; font-size: 12px; }
 /* Everything done to a trusteeship, on the trusteeship's own card: stand
    for it, elect somebody, settle it, act in it. The election itself is a
    flow, read where the flows are. */

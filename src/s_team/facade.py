@@ -37,23 +37,20 @@ class TeamFacade:
     ) -> list[tuple[str, ProtocolNode]]:
         return self._logic.child_teams(team)
 
+    def trusteeship(self, team: ProtocolNode, trust: str) -> dict:
+        return self._logic.trusteeship_payload(team, trust)
+
+    def trusteeship_holder(self, team: ProtocolNode, trust: str) -> str:
+        return self._logic.trustee_holder(team, trust)
+
+    def established_trusts(self, team: ProtocolNode) -> frozenset[str]:
+        return self._logic.established_trusts(team)
+
     def identity_holder(self, team: ProtocolNode) -> str:
         return self._logic.identity_holder(team)
 
-    def identity(self, team: ProtocolNode) -> dict:
-        return self._logic.identity_payload(team)
-
-    def trust_holder(self, team: ProtocolNode) -> str:
-        return self._logic.trust_holder(team)
-
-    def trust(self, team: ProtocolNode) -> dict:
-        return self._logic.trust_payload(team)
-
     def take_identity(self, team_uuid: str):
         return self._logic.take_identity(team_uuid)
-
-    def offer_identity(self, team_uuid: str, actor_uuid: str):
-        return self._logic.offer_identity(team_uuid, actor_uuid)
 
     def resign_identity(self, team_uuid: str):
         return self._logic.resign_identity(team_uuid)
