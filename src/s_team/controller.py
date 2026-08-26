@@ -337,33 +337,9 @@ def build_routes(logic, runtime) -> list[Route]:
             data["role_uuid"], data.get("team_uuid", ""),
         ))
 
-    async def api_create_item(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.create_team_item(
-            data["team_uuid"],
-            data.get("application_id", ""),
-            data.get("title", ""),
-            data.get("template", ""),
-            data.get("snapshot"),
-        ))
-
-    async def api_offer_item(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.offer_team_item(
-            data["team_uuid"], data.get("topic_uuid", ""),
-        ))
-
-    async def api_connect_item(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.connect_team_item(
-            data["team_uuid"], data.get("topic_uuid", ""),
-        ))
-
-    async def api_remove_item(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.remove_team_item(
-            data["team_uuid"], data.get("topic_uuid", ""),
-        ))
+    # Connecting to what a team runs is Core's own route now,
+    # /api/core/relationships/{topic_uuid} - one mechanism every
+    # application gets for free instead of its own copy.
 
     async def api_unseat_team(request: Request):
         data = await request.json()
@@ -607,10 +583,6 @@ def build_routes(logic, runtime) -> list[Route]:
             api_create_seated_team,
             methods=["POST"],
         ),
-        Route("/api/team/items/create", api_create_item, methods=["POST"]),
-        Route("/api/team/items/offer", api_offer_item, methods=["POST"]),
-        Route("/api/team/items/connect", api_connect_item, methods=["POST"]),
-        Route("/api/team/items/remove", api_remove_item, methods=["POST"]),
         Route("/api/team/parents/move", api_move_parent, methods=["POST"]),
         Route("/api/team/roles/decide", api_decide_role, methods=["POST"]),
         Route("/api/team/roles/resign", api_resign_role, methods=["POST"]),

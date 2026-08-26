@@ -20,6 +20,11 @@ from pathlib import Path
 
 from sovereign import ApplicationRegistration, ProtocolNode, Session, SessionResult
 
+# Core's `sovereign_relationship` (s-core/src/sovereign/relationships.py).
+# Matched by literal name, the way this application already matches every
+# node type it does not own, rather than importing a Core submodule.
+RELATIONSHIP_TYPE = "sovereign_relationship"
+
 
 TEAM_APPLICATION_ID = "team"
 TEAM_APP_NAME = "S-Team"
@@ -350,6 +355,7 @@ class TeamLogic:
             topic_noun="Organization",
             list_templates=self.team_templates,
             create_topic=self.make_team,
+            on_relationship_removed=self._on_relationship_removed,
         )
 
     def team_templates(self) -> list[dict]:
@@ -3774,7 +3780,7 @@ class TeamLogic:
         # a process the others can never fetch is not the team's work, it is
         # this client's.
         if bridged:
-            self.name_my_item(
+            self._name_election_relationship(
                 self._node(team.uuid, "team") or team, process_uuid,
             )
         recorded.effects = [*created.effects, *recorded.effects]
@@ -3922,6 +3928,17 @@ class TeamLogic:
             record["process_uuid"] = named
         return self.append_governance_record(team.uuid, record)
 
+    # ---- what the team runs --------------------------------------------
+    #
+    # An initiative or a flow a team runs is Core's own connected work now
+    # (s-core/DESIGN_NAVIGATION_LINKS.md, `sovereign_relationship`): a
+    # member's own record, shared wherever the team already publishes,
+    # reachable from the header rather than a section here. Only two things
+    # this application alone knows about survive locally: bridging and
+    # naming an election as it is called (creation is Core's own act
+    # everywhere else, but an election is triggered from inside a
+    # trusteeship record, not the header), and remembering a declined one so
+    # the next poll does not silently put it back.
     def _bridge_to_team(self, topic_uuid: str, team: ProtocolNode) -> bool:
         """Publish a topic the team owns wherever the team is published."""
         bridge = getattr(self.collaboration, "bridge_topic_like", None)
@@ -3944,432 +3961,51 @@ class TeamLogic:
         )
         return False
 
-    # ---- what the team runs --------------------------------------------
-    #
-    # An initiative or a flow a team runs is another application's topic,
-    # published on the team's channel. **Nothing about its contents is
-    # recorded here.** What the team keeps is who says they hold it, which
-    # is the only thing the others could not work out for themselves.
-    #
-    # Which kinds a team runs, and the word it uses for each. Nothing else:
-    # this held an api version, a delete call and whether a template was
-    # required, which was a copy of what each of those applications already
-    # knows about its own topics - and one of three such copies, beside the
-    # Cockpit's and S-Initiative's. Making one is Core's to route now, from
-    # what the owning application registered.
-    #
-    # Where an item's page is does not appear here either. The shell composes
-    # that from what the host reports about active applications.
-    ITEM_APPLICATIONS = {
-        INITIATIVE_APPLICATION_ID: "Initiative",
-        FLOW_APPLICATION_ID: "Flow",
-    }
-    ITEM_RELATIONSHIP_TYPE = "team_item_relationship"
-    ITEM_RELATIONSHIP_FIELDS = {
-        ITEM_RELATIONSHIP_TYPE: (
-            frozenset({
-                "type", "topic_uuid", "application_id", "title", "actor_uuid",
-            }),
-            frozenset(),
-        ),
-    }
-
-    def _item_entry(
-        self, topic_uuid: str, node: ProtocolNode | None, active: bool,
-    ) -> dict | None:
-        """One item, or nothing when no application here claims the topic.
-
-        Core answers which application owns a root type, so this never has
-        to know what an initiative or a process is - and a topic belonging to
-        S-Team itself is left out by the same test.
-        """
-        handler = (
-            self.session.shared_topic_handler_for(node) if node else None
-        )
-        application_id = str(getattr(handler, "application_id", "") or "")
-        label = self.ITEM_APPLICATIONS.get(application_id)
-        if not label:
-            return None
-        data = node.data if node else {}
-        return {
-            "topic_uuid": topic_uuid,
-            "application_id": application_id,
-            "label": label,
-            "title": str(
-                data.get("title") or data.get("name") or "Untitled",
-            ),
-            "active": active,
-        }
-
-    def item_links(self, team: ProtocolNode) -> list[ProtocolNode]:
-        """Every reference to the team's work, from every member who wrote one.
-
-        A link per member per item, rather than a list per member. The list
-        used to be one node carrying a list field - the only one in this
-        codebase - safe only because a single author replaced their own
-        wholesale. As separate nodes there is nothing to replace: offering an
-        item *is* creating one and removing it *is* deleting one, so the
-        decision is the record and no exception set is needed beside it.
-        """
-        current = self.session.protocol.index.get(team.uuid) or team
-        return [
-            child for child in current.children
-            if not child.deleted
-            and child.data.get("type") == self.ITEM_RELATIONSHIP_TYPE
-            and str(child.data.get("application_id") or "")
-            in self.ITEM_APPLICATIONS
-        ]
-
-    def item_relationship_schema_error(
-        self, node: ProtocolNode,
-    ) -> str | None:
-        required, optional = self.ITEM_RELATIONSHIP_FIELDS[
-            self.ITEM_RELATIONSHIP_TYPE
-        ]
-        fields = set(node.data)
-        if not required <= fields or fields - required - optional:
-            return "invalid Team work relationship fields"
-        if str(node.data.get("application_id") or "") not in self.ITEM_APPLICATIONS:
-            return "unsupported Team work relationship kind"
-        for field in ("topic_uuid", "actor_uuid"):
-            if not isinstance(node.data.get(field), str) or not node.data[field].strip():
-                return f"Team work relationship {field} is required"
-        if not isinstance(node.data.get("title"), str):
-            return "Team work relationship title must be text"
-        return None
-
-    def _item_link_author(self, team: ProtocolNode, link: ProtocolNode) -> str:
-        """Whose reference this is. Its signature, and nothing else.
-
-        A link carries no actor field, and one would be a second copy of what
-        the revision already proves - free, then, to disagree with it. The
-        same attribution every other unnamed record here gets.
-        """
-        named = str(link.data.get("actor_uuid") or "")
-        signed = self._author_actor_uuid(team, link)
-        return named if named and named == signed else ""
-
-    def team_items(self, team: ProtocolNode) -> list[dict]:
-        """Every initiative and flow this team runs.
-
-        The union of what its members reference. An item is listed while at
-        least one of them still names it and stops being listed when the last
-        one takes their reference off - which is the whole of what "the team
-        runs this" can mean, since a client that holds none of it has nothing
-        else to go on.
-
-        **Only a current Member's reference counts**, and that is derived on
-        every read rather than gated when the record arrives. It used to be
-        the latter, and the difference shows when somebody leaves: a stored
-        answer would go on naming their items until something rewrote it,
-        while a derived one stops the moment their standing does, with
-        nothing to rewrite and nothing to remember.
-
-        It cannot be read off the channel instead. An explicit relay target
-        polls only what this client has assigned to it and what it has
-        already consented to receive, so an item nobody has told you about
-        is not merely unread - it is unreachable. The link is what carries
-        the uuid.
-        """
-        found: dict[str, dict] = {}
-        for link in self.item_links(team):
-            topic_uuid = str(link.data.get("topic_uuid") or "")
-            if not topic_uuid or topic_uuid in found:
-                continue
-            if not self._is_current_member(
-                team, self._item_link_author(team, link),
-            ):
-                continue
-            held = self.session.get_node(topic_uuid)
-            found[topic_uuid] = {
-                "topic_uuid": topic_uuid,
-                "application_id": link.data["application_id"],
-                "label": self.ITEM_APPLICATIONS[
-                    str(link.data["application_id"])
-                ],
-                # The recorded title is what a reference says before the
-                # topic is here; once it is, its own name wins.
-                "title": self._link_title(held, link),
-                # Held here, not merely known about, and read from the tree
-                # so a copy deleted from the Cockpit reads as gone at once.
-                "active": held is not None,
-                # Whether there is a reference of this client's own to take
-                # off. Somebody else's is not this client's to remove.
-                "mine": self._my_item_link(team, topic_uuid) is not None,
-            }
-        return sorted(
-            found.values(),
-            key=lambda item: (item["label"], item["title"].lower()),
-        )
-
-    @staticmethod
-    def _link_title(held: ProtocolNode | None, link: ProtocolNode) -> str:
-        if held is not None:
-            live = str(held.data.get("title") or held.data.get("name") or "")
-            if live:
-                return live
-        return str(link.data.get("title") or "Untitled")
-
-    def _named_by_the_team(self, team: ProtocolNode) -> set[str]:
-        """Every topic anybody's reference names, whoever wrote it.
-
-        Deliberately unfiltered by membership, unlike `team_items`: this
-        answers "is there already a reference to this here", which decides
-        whether one more would be a second copy, and a non-member's reference
-        is still a node in the tree.
-        """
-        named = {
-            str(link.data.get("topic_uuid") or "")
-            for link in self.item_links(team)
-        }
-        named.discard("")
-        return named
-
-    def _my_item_link(
+    def _name_election_relationship(
         self, team: ProtocolNode, topic_uuid: str,
-    ) -> ProtocolNode | None:
-        for link in self.item_links(team):
-            if (
-                link.data.get("topic_uuid") == topic_uuid
-                and self._item_link_author(team, link) == self._identity_uuid
-            ):
-                return link
-        return None
-
-    def name_my_item(
-        self, team: ProtocolNode, topic_uuid: str,
-    ) -> SessionResult:
-        """Say that this team's work includes one topic. This client's own word.
-
-        Nothing recomputes it afterwards. A reference is a decision, and a
-        decision something recomputes is one that undoes itself: the stored
-        set of items withdrawn from a team existed only to stop a derived
-        list from putting back what somebody had taken off, and there is no
-        derived list any more.
-        """
-        normalized = str(topic_uuid or "").strip()
-        if self._my_item_link(team, normalized):
-            return SessionResult("ok", value=False)
-        # Which application owns it, and what it is called. Read from the
-        # topic where this client holds one, and otherwise from a reference
-        # somebody else already wrote - taking up an item is bidirectional
-        # and records the consent before the first local replica has to
-        # exist, so at that moment their reference is the only thing here
-        # that can say what it is. A reference that could not say would
-        # filter itself out of the very list it was written for.
-        node = self.session.get_node(normalized)
-        entry = self._item_entry(normalized, node, True)
-        application_id = str(entry["application_id"]) if entry else ""
-        title = str(entry["title"]) if entry else ""
-        if not application_id:
-            for link in self.item_links(team):
-                if link.data.get("topic_uuid") == normalized:
-                    application_id = str(link.data.get("application_id") or "")
-                    title = title or str(link.data.get("title") or "")
-                    break
-        if not application_id:
-            return SessionResult(
-                "error", reason="nothing here says what that item is",
-            )
+    ) -> None:
+        node = self.session.get_node(topic_uuid)
+        title = str(
+            (node.data.get("title") or node.data.get("name")) if node else ""
+        ) or "Untitled"
         created = self.session.create_child(team.uuid, {
-            "type": self.ITEM_RELATIONSHIP_TYPE,
-            "topic_uuid": normalized,
-            "application_id": application_id,
+            "type": RELATIONSHIP_TYPE,
+            "topic_uuid": topic_uuid,
+            "application_id": FLOW_APPLICATION_ID,
             "title": title,
             "actor_uuid": self._identity_uuid,
         }, {})
-        if created.status != "ok":
-            return created
-        self.session.set_adoption_metadata(
-            created.value.uuid, adopt="auto", additions="never",
-            author="same-origin",
-        )
-        return SessionResult("ok", value=True, effects=created.effects)
-
-    def offerable_items(self, team: ProtocolNode) -> list[dict]:
-        """This client's own items that are not on the team's channel yet.
-
-        What makes the private case work: a team with no channel cannot
-        publish anything, so an item made for it is simply this person's
-        until there is somewhere to put it. Offering it then is one act.
-        """
-        named = self._named_by_the_team(team)
-        out = []
-        for topic_uuid in self.session.shared_topic_uuids():
-            if topic_uuid == team.uuid or topic_uuid in named:
-                continue
-            entry = self._item_entry(
-                topic_uuid, self.session.get_node(topic_uuid), True,
+        if created.status == "ok":
+            self.session.set_adoption_metadata(
+                created.value.uuid, adopt="auto", additions="never",
+                author="same-origin",
             )
-            if entry:
-                out.append(entry)
-        return sorted(out, key=lambda item: (item["label"], item["title"].lower()))
-
-    def item_kinds(self) -> list[dict]:
-        """What can be made here, and what each can be started from.
-
-        Core answers it, from what each application said about its own
-        topics. This only says which kinds a team runs - it does not know
-        what an initiative or a flow starts from, or which call makes one,
-        and it used to carry a table of exactly that beside the Cockpit's
-        and S-Initiative's copies of the same thing.
-        """
+    #
+    # An initiative, flow, or team this team connects to is Core's own
+    # connected work now (s-core/DESIGN_NAVIGATION_LINKS.md,
+    # `sovereign_relationship`), reachable from the header rather than a
+    # section here. Nothing about the target's contents is recorded here
+    # either way. Only what this application alone knows survives locally:
+    # `_on_relationship_removed` remembers a declined election so the next
+    # poll does not silently put it back, and `_resolve_held_node` still
+    # authorizes an incoming peer's own connection the way it always
+    # authorized every other record here.
+    def relationship_links(self, team: ProtocolNode) -> list[ProtocolNode]:
+        current = self.session.protocol.index.get(team.uuid) or team
         return [
-            kind for kind in self.session.topic_kinds()
-            if kind["application_id"] in self.ITEM_APPLICATIONS
+            child for child in current.children
+            if not child.deleted and child.data.get("type") == RELATIONSHIP_TYPE
         ]
 
-    def _item_guard(self, team_uuid: str) -> tuple[ProtocolNode | None, SessionResult]:
-        team = self._node(team_uuid, "team")
-        if not team:
-            return None, SessionResult("error", reason="team not found")
-        if not self._is_current_member(team, self._identity_uuid):
-            return None, SessionResult(
-                "error",
-                reason="only a current Member runs the team's work",
-            )
-        return team, SessionResult("ok")
-
-    def create_team_item(
-        self, team_uuid: str, application_id: str, title: str,
-        template: str = "", snapshot: dict | None = None,
-    ) -> SessionResult:
-        """Make an initiative or a flow, and put it on the team's channel.
-
-        Any member's act. Publishing is attempted and not required: a team
-        nobody shares has nowhere to put it, and the item is that person's
-        until the team has a channel and somebody offers it (see
-        offer_team_item).
-
-        Where it starts from is one of three: nothing, a template, or a
-        snapshot file. The third is the same document the Cockpit imports
-        and the owning application validates it, so a file that makes an
-        initiative there makes one here.
-        """
-        team, allowed = self._item_guard(team_uuid)
-        if allowed.status != "ok":
-            return allowed
-        if str(application_id or "").strip() not in self.ITEM_APPLICATIONS:
-            return SessionResult("error", reason="unknown kind of item")
-        created = self.session.create_application_topic(
-            application_id, title, template, snapshot,
-        )
-        if created.status != "ok":
-            return created
-        # A team with no channel has nowhere to put it, and saying the team
-        # runs something the others can never fetch would be a lie. It stays
-        # this person's until there is somewhere - and offering it then is
-        # one act (see offer_team_item).
-        if self._bridge_to_team(str(created.value or ""), team):
-            self.name_my_item(
-                self._node(team_uuid, "team") or team, str(created.value),
-            )
-        return created
-
-    def offer_team_item(self, team_uuid: str, topic_uuid: str) -> SessionResult:
-        """Put an item this client already holds on the team's channel."""
-        team, allowed = self._item_guard(team_uuid)
-        if allowed.status != "ok":
-            return allowed
-        node = self.session.get_node(str(topic_uuid or "").strip())
-        if self._item_entry(str(topic_uuid), node, True) is None:
-            return SessionResult("error", reason="that is not an item")
-        if not self._bridge_to_team(str(topic_uuid), team):
-            return SessionResult(
-                "error",
-                reason=(
-                    "this team has no channel yet, so there is nowhere to "
-                    "publish it"
-                ),
-            )
-        self.name_my_item(
-            self._node(team_uuid, "team") or team, str(topic_uuid),
-        )
-        return SessionResult("ok", value=str(topic_uuid))
-
-    def connect_team_item(self, team_uuid: str, topic_uuid: str) -> SessionResult:
-        """Take up an item the team runs. This client's own consent.
-
-        The same act as joining an election, and separate for the same
-        reason: Core will not graft a topic into this tree because it
-        happens to share a channel with one already here.
-        """
-        team, allowed = self._item_guard(team_uuid)
-        if allowed.status != "ok":
-            return allowed
-        join = getattr(self.collaboration, "join_bridged_topic", None)
-        if not callable(join):
-            return SessionResult(
-                "error", reason="this client cannot join shared topics",
-            )
-        normalized_topic = str(topic_uuid or "").strip()
-        joined = join(normalized_topic, team.uuid)
-        if not getattr(joined, "ok", False):
-            reason = getattr(joined, "reason", "could not connect to it")
-            self.session.trace_event(
-                "team.item_connect_failed",
-                team_uuid=team.uuid,
-                topic_uuid=normalized_topic,
-                reason=str(reason or ""),
-            )
-            return SessionResult(
-                "error",
-                reason=reason,
-            )
-        for application_id in self.ITEM_APPLICATIONS:
-            self.session.mount_cached_topics(application_id)
-        # Joining records both the receiving consent and this replica's
-        # publication binding before the first local copy has to exist - and
-        # the reference is written either way. A reference to a topic not
-        # here yet is not broken, it is the invitation this join just
-        # accepted, so waiting for the replica would only mean losing the
-        # act if it took a while to arrive.
-        self.name_my_item(
-            self._node(team_uuid, "team") or team, normalized_topic,
-        )
-        return SessionResult("ok", value=normalized_topic)
-
-    def remove_team_item(self, team_uuid: str, topic_uuid: str) -> SessionResult:
-        """Stop offering an item to this team. The item itself is untouched.
-
-        Removing and deleting are different acts and used to be the same
-        one - this called the owning application's delete, so taking a flow
-        off a team destroyed it for everybody who had it, and a member who
-        had not created it could not take it off at all, because deleting
-        was not theirs to do.
-
-        What a team lists is what its members offer it. Withdrawing is
-        therefore a statement about this client and nothing else: the item
-        stays on the team's list while another member still names it, and
-        comes off when the last of them withdraws. Deleting it remains the
-        owning application's own act, where what it destroys is plain.
-
-        It is one reference that goes - this client's own. Somebody else's
-        is not this client's to take off, which is why the guard is that
-        there is one here to remove rather than that the item is on the team
-        at all.
-        """
-        team, allowed = self._item_guard(team_uuid)
-        if allowed.status != "ok":
-            return allowed
-        normalized = str(topic_uuid or "").strip()
-        mine = self._my_item_link(team, normalized)
-        if mine is None:
-            return SessionResult(
-                "error", reason="you are not offering that to this team",
-            )
-        removed = self.session.delete(mine.uuid)
-        if removed.status != "ok":
-            return removed
+    def _on_relationship_removed(
+        self, team: ProtocolNode, topic_uuid: str,
+    ) -> None:
         # An election is the one item this client takes up without being
         # asked, so it is the one whose removal has to be remembered: the
         # reference is gone and nothing else would stop the next poll
         # putting it straight back.
-        if self._names_an_election(team, normalized):
-            self._set_election_declined(team.uuid, normalized)
-        return SessionResult(
-            "ok", value=normalized, effects=list(removed.effects),
-        )
+        if self._names_an_election(team, topic_uuid):
+            self._set_election_declined(team.uuid, topic_uuid)
 
     def _names_an_election(self, team: ProtocolNode, topic_uuid: str) -> bool:
         return any(
@@ -6627,7 +6263,7 @@ class TeamLogic:
         *GOVERNANCE_RECORD_TYPES,
     })
     OWNED_NODE_TYPES = frozenset({
-        *REACTABLE, "agenda_item", ITEM_RELATIONSHIP_TYPE,
+        *REACTABLE, "agenda_item", RELATIONSHIP_TYPE,
     })
 
     def accept_peer_node(self, source_addr: str, node_uuid: str,
@@ -6814,7 +6450,7 @@ class TeamLogic:
         #
         # First arrival is still judged, by the resolver, because whether
         # the author is a Member is not a fact a declaration can carry.
-        for link in self.item_links(team):
+        for link in self.relationship_links(team):
             self.session.set_adoption_metadata(
                 link.uuid, adopt="auto", additions="never",
                 author="same-origin",
@@ -6880,21 +6516,20 @@ class TeamLogic:
         node_type = node.data.get("type")
         if node_type == "team_role_decision":
             authorized = self._role_answer_authorized(team, node, peer_addr)
-        elif node_type == self.ITEM_RELATIONSHIP_TYPE:
-            # A member saying the team's work includes something is a fact
-            # about them, not a proposal to anybody: it settles on arrival
-            # the way their item list used to, rather than waiting in the
-            # divergence list for everyone else to agree they have it.
-            # Assessed here rather than stored for the usual reason - a
-            # verdict recorded when it arrived would go on being true after
-            # they left.
-            author = self._item_link_author(team, node)
+        elif node_type == RELATIONSHIP_TYPE:
+            # A member saying a topic connects to this team is a fact about
+            # them, not a proposal to anybody: it settles on arrival rather
+            # than waiting in the divergence list for everyone else to agree
+            # they have it. Assessed here rather than stored for the usual
+            # reason - a verdict recorded when it arrived would go on being
+            # true after they left.
+            named = str(node.data.get("actor_uuid") or "")
+            signed = self._author_actor_uuid(team, node)
+            author = named if named and named == signed else ""
             authorized = bool(
                 author
-                and not self.item_relationship_schema_error(node)
-                and str(node.data.get("application_id") or "")
-                in self.ITEM_APPLICATIONS
                 and str(node.data.get("topic_uuid") or "").strip()
+                and str(node.data.get("application_id") or "").strip()
                 and self._is_current_member(team, author)
             )
         elif node_type in self.GOVERNANCE_RECORD_TYPES:
@@ -7581,13 +7216,9 @@ class TeamLogic:
             # Template, instantiated or working - a count of actors, not a
             # kind of node (2.8).
             "state": self.team_state(selected) if selected else "",
-            # What the team runs. Derived from the channel on every read,
-            # because that is where the answer lives - see team_items.
-            "items": self.team_items(selected) if selected else [],
-            "offerable_items": (
-                self.offerable_items(selected) if selected else []
-            ),
-            "item_kinds": self.item_kinds() if selected else [],
+            # What the team runs is Core's own connected work now, read
+            # from the header rather than this payload
+            # (s-core/DESIGN_NAVIGATION_LINKS.md).
             # Where this team is drawn, and every other seat it
             # holds - never hidden, or deleting the first parent would
             # take away something load-bearing nobody could see.
@@ -8008,45 +7639,29 @@ class TeamLogic:
     ) -> str:
         """What accepting this role commits you to.
 
-        The document body plus this role's own definition, and nothing else.
-        Hashing the whole team would mean editing the Treasurer's
-        accountabilities re-opens the Secretary's acceptance and every
-        subteam's; scoping it this way keeps the churn proportional to
-        what actually changed for that person.
+        This role's own definition, and nothing else. A role is taken by the
+        actor's own record and nobody else's - it is not a debatable
+        element - so the Agreement's body is deliberately absent: editing a
+        section nobody's role is made of must not put every role back in
+        front of everyone who holds one. Editing the Treasurer's own
+        accountabilities still re-opens the Treasurer's own acceptance,
+        because that is the work changing, not the general document.
         """
         return self._cached(
             ("role_hash", team.uuid, role.uuid),
-            lambda: self._build_role_reference_hash(team, role),
+            lambda: self._content_hash(role, {
+                "team_role", "team_accountability", "team_domain",
+            }),
         )
-
-    def _build_role_reference_hash(
-        self, team: ProtocolNode, role: ProtocolNode,
-    ) -> str:
-        body = self._cached(
-            ("body_hash", team.uuid),
-            lambda: self.team_reference_hash(team),
-        )
-        definition = self._content_hash(role, {
-            "team_role", "team_accountability", "team_domain",
-        })
-        combined = f"{body}|{definition}".encode("utf-8")
-        return f"sha256:{hashlib.sha256(combined).hexdigest()}"
 
     def team_reference_hash(self, team: ProtocolNode) -> str:
         """The hash of the Agreement the Identity holders agree on.
 
-        Role nodes are deliberately absent. An acceptance covers the document
-        body plus the definition of the role being accepted - see
-        role_reference_hash - so that editing one role does not re-open
-        everybody else's acceptance.
-
-        Editing the body still re-opens everyone's, at every level below,
-        and that is not a defect to be worked around: if the document people
-        agreed to has changed, their agreement to it is genuinely stale and
-        being asked again is the honest answer. A grace period was
-        considered and rejected, because it would make whether somebody
-        holds a role depend on the clock and on local settings, and two
-        replicas would disagree.
+        Role nodes are deliberately absent, and for a stronger reason than
+        scoping churn now: a role's standing never depends on this at all.
+        This hash exists for the Agreement's own `team_acceptance` chain and
+        for the membership badge's staleness check - see
+        `role_reference_hash` for why role decisions do not read it.
         """
         projection = self.agreement_projection(team)
         if projection.get("state") not in {"agreed", "absent"}:

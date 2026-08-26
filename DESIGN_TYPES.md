@@ -898,16 +898,24 @@ first holding in order that reaches a root.
 
 ## What an acceptance covers, and the cost of that
 
-`role_reference_hash` is the document body plus that one role's definition.
-Scoped that way, editing the Treasurer's accountabilities does not re-open the
-Secretary's acceptance.
+`role_reference_hash` is that one role's own definition, and nothing else.
+The Agreement's body is deliberately absent: a role is taken by the actor's
+own record and nobody else's, which is why nobody is invited to one — and a
+role standing depending on a document changing somewhere else entirely would
+make role-taking a debatable element again, the thing being avoided. Scoped
+this way, editing the Treasurer's accountabilities re-opens the Treasurer's
+own acceptance and nobody else's — not the Secretary's, and not everyone's
+merely because a section changed.
 
-Editing the **body** still re-opens everyone's, at every level below. That is
-accepted rather than worked around: if the document people agreed to has
-changed, their agreement to it is genuinely stale, and being asked again is the
-honest answer. A grace period was considered and rejected — it would make
-whether somebody holds a role depend on the clock and on local settings, and
-two replicas would disagree.
+That leaves the badge as the one place an Agreement change costs anything.
+`membership_status` reads `team_reference_hash` — the body, at every level —
+and going stale there is a genuine, honest answer: standing on this *team*
+does depend on having read what the team now agrees to. Renewing it is one
+signed `team_acceptance`, the same act the Agreement panel's own re-accept
+button already writes, with no Identity gate and no reapplication. A grace
+period was considered and rejected for the same reason it always is — it
+would make standing depend on the clock and on local settings, and two
+replicas would disagree.
 
 ## Where the blueprint's vocabulary lands
 
@@ -921,80 +929,37 @@ two replicas would disagree.
 
 # What a team runs
 
-An **initiative** or a **flow** a team runs is another application's topic,
-published on the team's channel. The team owns no copy of it and stores
-nothing about its contents — only who says they have it.
+## `sovereign_relationship`
 
-## `team_item_relationship`
+**Core's node type, not this application's** — the fields it carries, what
+holds it live, and what connecting or removing one does are in
+`s-core/DESIGN_NAVIGATION_LINKS.md` and `PUBLIC_API.md`. S-Team owns only
+where they live, as direct children of the team, and how a peer's own
+connection is authorized to arrive here.
 
-**S-Team's node type.** It lives as a direct child of the team and means one
-member says this team's work includes one topic. Core title links are separate
-local navigation metadata and never carry this domain meaning.
+It replaced this application's own node type doing the same job (a per-actor
+reference, live while any member's own copy of it survives, gone only when
+the last is removed — see the RETIRED note in `tests/test_type_registry.py`
+for its name), and before that a chain of per-actor snapshots carrying a
+*list field* of items — the only list field the codebase ever had, safe
+solely because a single author replaced their own wholesale. Neither is
+this application's to keep once Core offers the same mechanism, shared and
+bridged the same way, to every application uniformly.
 
-| Field | Requirement | Meaning |
-| --- | --- | --- |
-| `topic_uuid` | Required | Related initiative or flow |
-| `application_id` | Required | Owning application (`initiative` or `flow`) |
-| `title` | Required | Last known title for clients that do not hold the target |
-| `actor_uuid` | Required | Member making the statement; must match its signature |
+**Arrival is still judged here.** Core's generic adoption default holds a
+team's content back until this application's own resolver decides, so a
+peer's `sovereign_relationship` settles only once `_resolve_held_node`
+confirms: its `actor_uuid` matches who signed it, `topic_uuid` and
+`application_id` are present, and the author is a current Member. A
+stranger's claim is refused rather than merely ignored.
 
-It replaced a chain of per-actor snapshots, each carrying a *list field* of
-items — the only list field in the codebase, safe solely because a single
-author replaced their own wholesale. As separate nodes there is nothing to
-replace: **offering an item is creating one and taking it off is deleting
-one**, so the decision is the record. The stored set of items withdrawn from a
-team went with it, having existed only to stop a derived list from putting
-back what somebody had taken off.
-
-**An item is the team's while at least one member's reference names it.** When
-the last of them takes theirs off, it is gone from the team.
-
-**Only a current Member's reference counts, and that is derived on every
-read.** It used to be gated when the record arrived, and the difference shows
-when somebody leaves: a stored answer would go on naming their items until
-something rewrote it, while a derived one stops the moment their standing
-does. Arrival is judged too — a stranger's reference is refused rather than
-merely ignored — but the two answer different questions and neither stands in
-for the other.
-
-**A reference is not a claim to hold a copy.** It says the team's work
-includes this; whether this client currently has one is read from the tree on
-every read and reported as `active`. So deleting your copy from the Cockpit
-leaves the item on the team shown as not held, rather than quietly taking it
-off — taking it off is somebody's act. *This is a change of meaning from the
-lists, which said "I hold this" and were recomputed when that stopped being
-true.*
-
-**Adoption:** `auto` and `same-origin` once held, so its author's removal
-travels as their offer did and nobody else may write it. Deliberately not
-`never` like a governance record — a record is appended and stands for good,
-while a reference is put up and taken down, and freezing one would need a
-second record saying it had been withdrawn, which is the shape the withdrawal
-set had.
-
-**Why this cannot be read off the channel instead.** An explicit relay target
-polls only the topics this client has assigned to it and the ones it has
-already consented to receive. A topic nobody has told you about is not
-unread, it is unreachable — so the reference is what carries the uuid, and
-publishing an item beside the team tells nobody anything.
-
-**Nothing keeps an item alive but the people who want it.** A member who takes
-their reference off is not deleting the team's work, and a member who keeps
-theirs is the whole of why it still exists. That is the sovereign shape of it:
-you can hold what you care about, and you cannot oblige anybody to hold what
-you care about for you.
-
-**One thing still has to remember a refusal.** An election is the only item a
-member takes up without being asked, so removing one is recorded locally as
-declined — otherwise the next poll puts it straight back. That is not the
-withdrawal set returning: the old one stopped a *derived list* from
-resurrecting a decision, and there is no derived list now; this stops an
-*automatic adopter*, which is still there.
-
-Taking up an offered item is bidirectional. Core records both `desired` and
-the item's home-channel assignment even when its first local replica has not
-arrived yet. Once mounted, that assignment publishes the taker's replica, so
-every existing holder sees the taker as a peer on the item.
+**One thing still has to remember a refusal locally.** An election is the
+only connected topic a member takes up without being asked
+(`adopt_team_elections`), so removing one is recorded locally as declined —
+otherwise the next poll puts it straight back. S-Team registers
+`on_relationship_removed` for exactly this; Core calls it after its own
+removal already succeeded, and nothing else here needs to know a connection
+was withdrawn.
 
 ---
 

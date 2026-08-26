@@ -11,6 +11,7 @@ from sovereign import (
     ApplicationRegistration, ProtocolNode, Session, SessionResult,
 )
 from sovereign import app_server
+from sovereign.relationships import RELATIONSHIP_TYPE
 from sovereign.relay_logic import RelayLogic
 
 try:
@@ -1942,21 +1943,25 @@ class TeamLogicTests(unittest.TestCase):
             ),
         )
 
-    def test_content_change_makes_acceptance_outdated_until_renewed(self):
+    def test_role_content_change_makes_that_roles_acceptance_outdated(self):
+        """A role is taken by its own record and reads none of the
+        Agreement's body: renaming it, bumping its version, and adding
+        sections and clauses never touch a role decision. Editing the
+        role's own accountabilities does, because that is the work
+        changing, not the general document. Role-taking is not a
+        debatable element."""
         runtime = self.runtime(9464)
         team_uuid = runtime.logic.create_team("Charter").value
-        self.a_role(runtime, team_uuid)
+        role_uuid = self.a_role(runtime, team_uuid)
         runtime.logic.rename_agreement(team_uuid, "Team Agreement")
         runtime.logic.set_agreement_version(team_uuid, "1")
         section_uuid = runtime.logic.create_section(
             team_uuid, "Purpose",
         ).value
+        runtime.logic.create_clause(section_uuid, "Serve the members.")
 
-        self.assertEqual(
-            self.own_standing(runtime, team_uuid), "outdated",
-        )
-
-        self.accept_roles(runtime, team_uuid)
+        # Taken before the Agreement even existed, and still stands: none of
+        # the above is part of what this role's own acceptance covers.
         self.assertEqual(
             self.own_standing(runtime, team_uuid), "accepted",
         )
@@ -1967,9 +1972,14 @@ class TeamLogicTests(unittest.TestCase):
             own.data["reference_hash"],
             runtime.logic.role_reference_hash(team, role),
         )
-        runtime.logic.create_clause(section_uuid, "Serve the members.")
+
+        runtime.logic.create_role_item(role_uuid, "accountability", "Keep the books.")
         self.assertEqual(
             self.own_standing(runtime, team_uuid), "outdated",
+        )
+        runtime.logic.decide_role(role_uuid, "accepted")
+        self.assertEqual(
+            self.own_standing(runtime, team_uuid), "accepted",
         )
 
     def test_every_ancestor_requires_a_current_acceptance(self):
@@ -3202,7 +3212,7 @@ class TeamLogicTests(unittest.TestCase):
             right.logic.decide_role(role_uuid, "accepted").status, "ok",
         )
 
-    def test_a_role_acceptance_covers_the_document_and_that_role_only(self):
+    def test_a_role_acceptance_covers_that_role_only_never_the_document(self):
         runtime = self.runtime(9506)
         team_uuid = runtime.logic.create_team("Charter").value
         treasurer_uuid = runtime.logic.create_role(
@@ -3232,9 +3242,10 @@ class TeamLogicTests(unittest.TestCase):
         self.assertEqual(status(), "outdated")
         runtime.logic.decide_role(treasurer_uuid, "accepted")
         self.assertEqual(status(), "accepted")
-        # So is the document everybody is agreeing to.
+        # The document everybody is agreeing to is not: role-taking is not a
+        # debatable element, so it reads none of the Agreement's body.
         runtime.logic.create_section(team_uuid, "Terms")
-        self.assertEqual(status(), "outdated")
+        self.assertEqual(status(), "accepted")
 
     def test_a_holder_is_only_accepted_once_seen_from_their_own_replica(self):
         left, right = self.runtime(9507), self.runtime(9508)
@@ -3498,9 +3509,7 @@ class TeamLogicTests(unittest.TestCase):
             return {role["name"]: role["status"] for role in me["roles"]}
 
         self.assertEqual(own_roles()["Treasurer"], "accepted")
-        runtime.logic.rename_agreement(team_uuid, "Team Agreement")
-        runtime.logic.set_agreement_version(team_uuid, "1")
-        runtime.logic.create_section(team_uuid, "Purpose")
+        runtime.logic.create_role_item(role_uuid, "accountability", "Keep the books.")
         self.assertEqual(own_roles()["Treasurer"], "outdated")
         runtime.logic.decide_role(role_uuid, "accepted")
         self.assertEqual(own_roles()["Treasurer"], "accepted")
@@ -3987,175 +3996,89 @@ class TeamLogicTests(unittest.TestCase):
         # the seat does not take it, and one that took it gives it up.
         self.assertFalse(hasattr(runtime.logic, "decline_seat"))
 
-    # ---- what the team runs -------------------------------------------
-    #
-    # Nothing about an item is recorded on the team, so every one of these
-    # asserts a derivation rather than a stored row. The fake application is
-    # registered with Core the way a real one is, because what answers
-    # "which application owns this topic" is Core's registry and not a
-    # string S-Team keeps.
+    # ---- what the team runs (Core's sovereign_relationship) -------------
 
-    @staticmethod
-    def register_items_application(
-        runtime, application_id="initiative", noun="", made=None,
-    ):
-        """A second application on this session, owning one root type.
-
-        It says how one of its topics is made when asked to - which is how
-        a real one says it, and the only way S-Team can make one: what
-        starts from nothing, from a template or from a file is that
-        application's own answer, and this side knows none of it.
-        """
-        topics = []
-
-        def list_topics():
-            return list(topics)
-
-        def accept_topic(subtree):
-            accepted = runtime.session.accept_topic_invitation(subtree)
-            if accepted.status == "ok":
-                mounted = runtime.session.get_node(str(accepted.value))
-                if mounted is not None and all(
-                    item.uuid != mounted.uuid for item in topics
-                ):
-                    topics.append(mounted)
-            return accepted
-
-        def create_topic(title, template, snapshot):
-            if made is not None:
-                made.update(title=title, template=template, snapshot=snapshot)
-            created = runtime.session.create_child(
-                runtime.session.protocol.root.uuid,
-                {"type": f"{application_id}_topic", "name": title},
-                {},
-            )
-            topics.append(created.value)
-            runtime.session.start_discussion(created.value.uuid)
-            return created
-
-        runtime.session.register_application(ApplicationRegistration(
-            application_id,
-            frozenset({f"{application_id}_topic"}),
-            list_topics,
-            accept_topic,
-            assignment_scoped=True,
-            mount_invitation=True,
-            topic_noun=noun,
-            list_templates=(
-                lambda: [{"value": item.uuid, "name": item.data.get("name", "")}
-                         for item in topics]
-            ),
-            create_topic=create_topic if noun else None,
-        ))
-        return topics
-
-    def an_item(self, runtime, topics, name="Roadmap",
-                application_id="initiative"):
-        created = runtime.session.create_child(
-            runtime.session.protocol.root.uuid,
-            {"type": f"{application_id}_topic", "name": name},
-            {},
-        )
-        topics.append(created.value)
-        runtime.session.start_discussion(created.value.uuid)
-        return created.value.uuid
-
-    def test_an_item_is_the_teams_when_it_is_on_the_teams_channel(self):
-        runtime = self.runtime(9801)
-        topics = self.register_items_application(runtime)
-        team_uuid = runtime.logic.create_team("Cooperative").value
-        runtime.session.start_discussion(team_uuid)
-        runtime.mailbox_channel.attach_topics(
-            [team_uuid], {"target_id": runtime.relay_target},
-        )
-        item_uuid = self.an_item(runtime, topics)
-        team = runtime.session.protocol.index[team_uuid]
-
-        # Held here, and not published beside the team: this person's own.
-        self.assertEqual(runtime.logic.team_items(team), [])
-        self.assertEqual(
-            [item["topic_uuid"] for item in runtime.logic.offerable_items(team)],
-            [item_uuid],
-        )
-
-        offered = runtime.logic.offer_team_item(team_uuid, item_uuid)
-
-        self.assertEqual(offered.status, "ok")
-        team = runtime.session.protocol.index[team_uuid]
-        items = runtime.logic.team_items(team)
-        self.assertEqual(len(items), 1)
-        self.assertEqual(items[0]["topic_uuid"], item_uuid)
-        self.assertEqual(items[0]["title"], "Roadmap")
-        self.assertEqual(items[0]["application_id"], "initiative")
-        self.assertTrue(items[0]["active"])
-        # And it is no longer one of this client's unoffered own.
-        self.assertEqual(runtime.logic.offerable_items(team), [])
-
-    def test_a_private_team_has_nowhere_to_publish_an_item(self):
-        # The team never got a channel, so there is nothing to put the work
-        # on - and the item stays this person's until there is.
-        runtime = self.runtime(9802)
-        topics = self.register_items_application(runtime)
-        team_uuid = runtime.logic.create_team("Private").value
-        item_uuid = self.an_item(runtime, topics)
-
-        refused = runtime.logic.offer_team_item(team_uuid, item_uuid)
-
-        self.assertEqual(refused.status, "error")
-        self.assertIn("no channel", refused.reason)
-        team = runtime.session.protocol.index[team_uuid]
-        self.assertEqual(
-            [item["topic_uuid"] for item in runtime.logic.offerable_items(team)],
-            [item_uuid],
-        )
-
-    def test_the_list_carries_the_item_where_the_channel_cannot(self):
-        # The constraint the whole design turns on, asserted so it cannot be
-        # assumed away again. An explicit relay target polls only what this
-        # client has assigned to it plus what it has already consented to
-        # receive (relay_logic.poll_and_apply) - deliberately, so a shared
-        # SFTP root never enumerates unrelated discussions. Publishing an
-        # item beside the team therefore does not make it visible to
-        # anybody: what carries its uuid is the holder saying they have it.
-        left, right = self.runtime(9803), self.runtime(9804)
-        topics = self.register_items_application(left)
-        self.register_items_application(right)
+    def test_a_members_own_connection_settles_on_arrival(self):
+        left, right = self.runtime(9805), self.runtime(9806)
         team_uuid = left.logic.create_team("Cooperative").value
         connect(left, right, team_uuid)
         self.admit(left, right, team_uuid)
-        item_uuid = self.an_item(left, topics)
-        left.logic.offer_team_item(team_uuid, item_uuid)
-        sync(left, right)
-
         team = right.session.protocol.index[team_uuid]
-        items = right.logic.team_items(team)
+        # Simulates what Core's RelationshipService would write - this
+        # application's own authorization is what is under test, not
+        # Core's mechanics, which s-core/tests/test_relationships.py
+        # already covers.
+        created = right.session.create_child(team.uuid, {
+            "type": RELATIONSHIP_TYPE,
+            "topic_uuid": "elsewhere",
+            "application_id": "flow",
+            "title": "Onboarding",
+            "actor_uuid": right.session.identity.uuid,
+        }, {})
+        self.assertEqual(created.status, "ok")
+        sync(right, left)
 
-        # Published, and on the same target as the team - and still not
-        # something the other client's relay would ever look at.
-        self.assertIn(item_uuid, left.relay.relay_topic_uuids())
-        self.assertIn(item_uuid, left.relay.storage.list_topics())
-        self.assertNotIn(
-            item_uuid,
-            right.session.peer_topic_uuids(f"relay:{left.relay.identity}"),
+        held = left.session.get_cached_peer_subtree(
+            right.peer_addr, created.value.uuid,
         )
-        # The list reached them, so the item is offered: a name, and nothing
-        # else, until they take it up.
-        self.assertEqual(len(items), 1)
-        self.assertEqual(items[0]["topic_uuid"], item_uuid)
-        self.assertEqual(items[0]["title"], "Roadmap")
-        self.assertFalse(items[0]["active"])
-        self.assertIsNone(right.session.get_node(item_uuid))
-        # And consent is their own act.
-        connected = right.logic.connect_team_item(team_uuid, item_uuid)
-        self.assertEqual(connected.status, "ok", connected.reason)
+        self.assertIsNotNone(held)
         self.assertEqual(
-            right.relay_manager.target_for_topic(item_uuid),
-            right.relay_manager.target_for_topic(team_uuid),
+            left.logic._resolve_held_node(team_uuid, held, right.peer_addr),
+            "adopt",
         )
-        sync(left, right)
+
+    def test_a_non_members_connection_is_refused(self):
+        left, outsider = self.runtime(9807), self.runtime(9808)
+        team_uuid = left.logic.create_team("Cooperative").value
+        connect(left, outsider, team_uuid)
+        outsider.logic.accept_team_invitation(
+            outsider.session.protocol.index[team_uuid],
+        )
+        sync(left, outsider)
+        team = outsider.session.protocol.index[team_uuid]
+        forged = outsider.session.create_child(team.uuid, {
+            "type": RELATIONSHIP_TYPE,
+            "topic_uuid": "elsewhere",
+            "application_id": "flow",
+            "title": "Onboarding",
+            "actor_uuid": outsider.session.identity.uuid,
+        }, {})
+        self.assertEqual(forged.status, "ok")
+        sync(outsider, left)
+
+        held = left.session.get_cached_peer_subtree(
+            outsider.peer_addr, forged.value.uuid,
+        )
+        self.assertIsNotNone(held)
+        self.assertEqual(
+            left.logic._resolve_held_node(
+                team_uuid, held, outsider.peer_addr,
+            ),
+            "refuse",
+        )
+
+    def test_removing_a_connected_election_is_remembered_as_declined(self):
+        runtime = self.runtime(9809)
+        team_uuid = runtime.logic.create_team("Cooperative").value
+        team = runtime.session.protocol.index[team_uuid]
+        runtime.logic.append_governance_record(team_uuid, {
+            "type": "team_trustee_election",
+            "trust": "identity",
+            "process_uuid": "election-1",
+            "triggered_by": runtime.session.identity.uuid,
+            "triggered_at": runtime.logic._now(),
+        })
+
+        runtime.logic._on_relationship_removed(team, "election-1")
+
         self.assertIn(
-            item_uuid, left.session.peer_topic_sets[right.peer_addr],
+            "election-1", runtime.logic._declined_elections(team_uuid),
         )
+        # An ordinary connection, unrelated to any election, leaves nothing
+        # to remember - there is no automatic adopter to guard against.
+        before = runtime.logic._declined_elections(team_uuid)
+        runtime.logic._on_relationship_removed(team, "not-an-election")
+        self.assertEqual(runtime.logic._declined_elections(team_uuid), before)
 
     def test_membership_acceptance_requires_requirement_answer_and_conditional_consent(self):
         runtime = self.runtime(9815)
@@ -4395,267 +4318,6 @@ class TeamLogicTests(unittest.TestCase):
         )
         self.assertEqual(opened.status, "error")
         self.assertIn("align", opened.reason)
-
-    def test_removing_my_reference_leaves_the_other_members_standing(self):
-        # The reason each member writes their own rather than everyone
-        # sharing one: a team's list is the union of them, so taking mine
-        # off the table is not taking theirs.
-        left, right = self.runtime(9811), self.runtime(9812)
-        topics = self.register_items_application(left)
-        self.register_items_application(right)
-        team_uuid = left.logic.create_team("Cooperative").value
-        connect(left, right, team_uuid)
-        self.admit(left, right, team_uuid)
-        item_uuid = self.an_item(left, topics)
-        left.logic.offer_team_item(team_uuid, item_uuid)
-        sync(left, right)
-        self.assertEqual(
-            right.logic.connect_team_item(team_uuid, item_uuid).status, "ok",
-        )
-        # Twice: right's own reference has to be published and then read
-        # back here before this side holds both.
-        sync(left, right)
-        sync(left, right)
-
-        team_l = left.session.protocol.index[team_uuid]
-        team_r = right.session.protocol.index[team_uuid]
-        self.assertEqual(len(right.logic.item_links(team_r)), 2)
-        self.assertEqual(len(left.logic.item_links(team_l)), 2)
-
-        self.assertEqual(
-            left.logic.remove_team_item(team_uuid, item_uuid).status, "ok",
-        )
-        sync(left, right)
-
-        # One reference gone, the other still saying the team runs it.
-        self.assertEqual(
-            [item["title"] for item in left.logic.team_items(team_l)],
-            ["Roadmap"],
-        )
-        self.assertEqual(
-            [item["title"] for item in right.logic.team_items(team_r)],
-            ["Roadmap"],
-        )
-        # And it is not left's to take off on right's behalf.
-        self.assertEqual(
-            left.logic.remove_team_item(team_uuid, item_uuid).status, "error",
-        )
-
-        self.assertEqual(
-            right.logic.remove_team_item(team_uuid, item_uuid).status, "ok",
-        )
-        sync(left, right)
-        self.assertEqual(left.logic.team_items(team_l), [])
-
-    def test_a_reference_from_somebody_who_has_left_stops_counting(self):
-        # Derived on every read rather than judged once on arrival. A stored
-        # verdict would go on naming their items after their standing ended,
-        # with nothing to rewrite it.
-        left, right = self.runtime(9813), self.runtime(9814)
-        self.register_items_application(left)
-        right_topics = self.register_items_application(right)
-        team_uuid = left.logic.create_team("Cooperative").value
-        connect(left, right, team_uuid)
-        self.admit(left, right, team_uuid)
-        item_uuid = self.an_item(right, right_topics)
-        right.logic.offer_team_item(team_uuid, item_uuid)
-        sync(left, right)
-        team_l = left.session.protocol.index[team_uuid]
-        right_actor = right.logic._identity_uuid
-        self.assertEqual(
-            [item["title"] for item in left.logic.team_items(team_l)],
-            ["Roadmap"],
-        )
-
-        self.assertEqual(right.logic.leave_team(team_uuid).status, "ok")
-        # Twice: the standing has to arrive and then be adopted here before
-        # a read of it can answer differently.
-        sync(left, right)
-        sync(left, right)
-
-        team_l = left.session.protocol.index[team_uuid]
-        self.assertEqual(left.logic.member_standing(team_l, right_actor), "former")
-        self.assertEqual(left.logic.team_items(team_l), [])
-
-    def test_deleting_a_copy_is_not_taking_the_item_off_the_team(self):
-        # A deliberate change of meaning when item lists became references,
-        # so it is asserted rather than left to be discovered.
-        #
-        # A list said "I hold this", so deleting the copy made it false and
-        # something had to recompute it away - and because the list was
-        # derived, "I no longer offer this" then needed a stored exception to
-        # stop the next recomputation putting it back. A reference says "the
-        # team's work includes this, and I say so". Deleting a copy does not
-        # make that false; it makes `active` false, which is read from the
-        # tree on every read. So nothing recomputes, nothing is stored, and
-        # taking an item off the team stays somebody's act.
-        left, right = self.runtime(9809), self.runtime(9810)
-        topics = self.register_items_application(left)
-        self.register_items_application(right)
-        team_uuid = left.logic.create_team("Cooperative").value
-        connect(left, right, team_uuid)
-        self.admit(left, right, team_uuid)
-        item_uuid = self.an_item(left, topics)
-        left.logic.offer_team_item(team_uuid, item_uuid)
-        sync(left, right)
-
-        self.assertEqual(
-            len(right.logic.team_items(
-                right.session.protocol.index[team_uuid],
-            )),
-            1,
-        )
-
-        left.session.delete(item_uuid)
-        topics.clear()
-        left.logic.reconcile_governance_updates()
-        sync(left, right)
-
-        still_named = left.logic.team_items(
-            left.session.protocol.index[team_uuid],
-        )
-        self.assertEqual([item["title"] for item in still_named], ["Roadmap"])
-        self.assertFalse(still_named[0]["active"])
-
-        # And it comes off when its holder says so, which is the act that
-        # was missing above.
-        removed = left.logic.remove_team_item(team_uuid, item_uuid)
-        self.assertEqual(removed.status, "ok")
-        sync(left, right)
-        self.assertEqual(
-            right.logic.team_items(
-                right.session.protocol.index[team_uuid],
-            ),
-            [],
-        )
-
-    def test_only_a_member_runs_the_teams_work(self):
-        left, right = self.runtime(9805), self.runtime(9806)
-        topics = self.register_items_application(left)
-        self.register_items_application(right)
-        team_uuid = left.logic.create_team("Cooperative").value
-        connect(left, right, team_uuid)
-        right.logic.accept_team_invitation(
-            right.session.protocol.index[team_uuid],
-        )
-        item_uuid = self.an_item(left, topics)
-        left.logic.offer_team_item(team_uuid, item_uuid)
-        sync(left, right)
-
-        # On the topic, not on the team. They read what it runs, because
-        # the lists are on the topic and being able to read it is what
-        # being on it means - and they take nothing up and add nothing.
-        team = right.session.protocol.index[team_uuid]
-        self.assertEqual(
-            [item["title"] for item in right.logic.team_items(team)],
-            ["Roadmap"],
-        )
-        for refused in (
-            right.logic.connect_team_item(team_uuid, item_uuid),
-            right.logic.offer_team_item(team_uuid, item_uuid),
-            right.logic.create_team_item(team_uuid, "initiative", "Mine"),
-        ):
-            self.assertEqual(refused.status, "error")
-            self.assertIn("Member", refused.reason)
-
-    def test_making_an_item_asks_its_own_application_and_publishes_it(self):
-        # S-Team knows which kinds it runs and what to call them, and
-        # nothing else about them - not what one starts from, and not the
-        # call that makes one. Core routes that to whoever registered it.
-        runtime = self.runtime(9807)
-        made = {}
-        self.register_items_application(runtime, noun="Initiative", made=made)
-        team_uuid = runtime.logic.create_team("Cooperative").value
-        runtime.session.start_discussion(team_uuid)
-        runtime.mailbox_channel.attach_topics(
-            [team_uuid], {"target_id": runtime.relay_target},
-        )
-
-        created = runtime.logic.create_team_item(
-            team_uuid, "initiative", "Roadmap",
-        )
-
-        self.assertEqual(created.status, "ok")
-        self.assertEqual(made["title"], "Roadmap")
-        team = runtime.session.protocol.index[team_uuid]
-        items = runtime.logic.team_items(team)
-        self.assertEqual([item["title"] for item in items], ["Roadmap"])
-        # Which application owns it, and not where its page is: the shell
-        # composes that from what the host reports is running.
-        self.assertEqual(items[0]["application_id"], "initiative")
-        self.assertNotIn("href", items[0])
-        # This client wrote the reference, so this client can take it off.
-        self.assertTrue(items[0]["mine"])
-        # Only the kinds actually loaded here can be made.
-        self.assertEqual(
-            [kind["application_id"] for kind in runtime.logic.item_kinds()],
-            ["initiative"],
-        )
-        # Removing takes it off this team and leaves the item alone. Deleting
-        # it is the owning application's own act, asked for where what it
-        # destroys is plain - taking a flow off a team used to destroy it for
-        # everybody who had it.
-        removed = runtime.logic.remove_team_item(team_uuid, created.value)
-        self.assertEqual(removed.status, "ok")
-        team = runtime.session.protocol.index[team_uuid]
-        self.assertEqual(runtime.logic.team_items(team), [])
-        # And the item is still there to be offered again.
-        self.assertIsNotNone(runtime.session.get_node(created.value))
-        runtime.logic.offer_team_item(team_uuid, created.value)
-        team = runtime.session.protocol.index[team_uuid]
-        self.assertEqual(
-            [item["title"] for item in runtime.logic.team_items(team)],
-            ["Roadmap"],
-        )
-
-    def test_an_item_can_start_from_a_snapshot_file(self):
-        """The same document the Cockpit imports, offered where the work is.
-
-        The file goes through untouched to the application that owns the
-        kind. S-Team had templates but no snapshots for no reason anybody
-        chose - the dialog was a copy of the Cockpit's, and the copy had
-        lost half the ways of starting.
-        """
-        runtime = self.runtime(9807)
-        made = {}
-        self.register_items_application(runtime, noun="Initiative", made=made)
-        team_uuid = runtime.logic.create_team("Cooperative").value
-        runtime.session.start_discussion(team_uuid)
-        runtime.mailbox_channel.attach_topics(
-            [team_uuid], {"target_id": runtime.relay_target},
-        )
-        document = {
-            "format": "s-protocol.item-snapshot",
-            "format_version": 1,
-            "item_type": "initiative",
-            "content": {"objective": "", "columns": []},
-        }
-
-        created = runtime.logic.create_team_item(
-            team_uuid, "initiative", "Roadmap", "", document,
-        )
-
-        self.assertEqual(created.status, "ok")
-        self.assertEqual(made["snapshot"], document)
-        # A file is one of the three starts, not an extra one taken as well.
-        self.assertEqual(made["template"], "")
-        team = runtime.session.protocol.index[team_uuid]
-        self.assertEqual(
-            [item["title"] for item in runtime.logic.team_items(team)],
-            ["Roadmap"],
-        )
-
-    def test_an_application_this_client_does_not_run_cannot_be_asked(self):
-        runtime = self.runtime(9808)
-        team_uuid = runtime.logic.create_team("Cooperative").value
-
-        refused = runtime.logic.create_team_item(
-            team_uuid, "initiative", "Roadmap",
-        )
-
-        self.assertEqual(refused.status, "error")
-        self.assertIn("not available here", refused.reason)
-        self.assertEqual(runtime.logic.item_kinds(), [])
 
     def test_a_team_that_could_take_a_seat_is_offered_it_on_its_own_page(self):
         """A team that qualifies gets no row on the other team's page. The

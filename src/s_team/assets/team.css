@@ -840,37 +840,3 @@ h2.element-label { margin: 0 0 4px; }
   justify-self: start;
 }
 
-/* Application-owned relationships to the initiatives and flows this Team
-   runs. Local navigation remains in the shared header. */
-.team-work-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: 8px;
-}
-.team-work-row {
-  align-items: center;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  display: flex;
-  gap: 10px;
-  min-height: 38px;
-  padding: 6px 8px 6px 10px;
-}
-.team-work-kind {
-  color: var(--text-muted);
-  flex: 0 0 58px;
-  font-size: 11px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-.team-work-title {
-  flex: 1;
-  min-width: 0;
-}
-.team-work-actions {
-  align-items: center;
-  display: flex;
-  gap: 4px;
-}

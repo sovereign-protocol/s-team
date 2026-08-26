@@ -214,7 +214,6 @@
         membershipInfo,
         acceptanceRequirement,
         agreementState,
-        renewal = false,
       ) =>
         new Promise((resolve) => {
           const dialog = document.querySelector("#membershipAcceptanceModal");
@@ -226,10 +225,9 @@
           const confirm = document.querySelector("#membershipAcceptanceConfirm");
           const agreementExists = agreementState?.state === "agreed";
           form.reset();
-          document.querySelector("#membershipAcceptanceTitle").textContent = renewal
-            ? `Renew application for ${name}?`
-            : `Apply for ${name}?`;
-          confirm.textContent = renewal ? "Renew" : "Apply";
+          document.querySelector("#membershipAcceptanceTitle").textContent =
+            `Apply for ${name}?`;
+          confirm.textContent = "Apply";
           document.querySelector("#membershipAcceptanceInfo").textContent =
             membershipInfo || "No Membership Info was provided.";
           document.querySelector("#membershipAcceptanceRequirement").textContent =
@@ -778,39 +776,6 @@
         }
       };
 
-      // A dialog rather than an inline composer, for the same reason the new
-      // team is one: it is built once and lives outside the rebuild the poll
-      // does every three seconds, so a half-typed name survives.
-      const openNewItemModal = (kind) => {
-        SovereignShell.openNewTopicDialog({
-          noun: kind.noun,
-          templates: (kind.templates || []).map(
-            (option) => [option.value, option.name],
-          ),
-          // An initiative may start from nothing, which is what "start empty"
-          // is; a flow may not - a process with no workflow is not a process.
-          templateRequired: kind.template_required,
-          // The team makes the item through the same application the Cockpit
-          // does, so a file that one accepts this one accepts too.
-          snapshotType: kind.application_id,
-          onCreate: async ({name, template, snapshot}) => {
-            try {
-              await api("/api/team/items/create", {
-                team_uuid: current.uuid,
-                application_id: kind.application_id,
-                title: name,
-                template,
-                snapshot,
-              });
-              await load();
-              showToast(`${name} is on this team`);
-            } catch (error) {
-              showToast(error.message, true);
-            }
-          },
-        });
-      };
-
       const renderOrganization = (organization) => {
         const tree = document.querySelector("#organizationTree");
         tree.replaceChildren();
@@ -1249,6 +1214,30 @@
             return chip;
           }
           chip.title = details;
+          // An outdated badge has exactly two answers: step out, or
+          // re-accept the Agreement as it now reads. Re-accepting is the
+          // same act as the Agreement panel's own button - one signed
+          // team_acceptance, no Identity gate, no reapplication - shown
+          // here too because this is where the badge said something was
+          // wrong. Renewing never touches any role: a role is taken by its
+          // own record and does not read the Agreement's body at all.
+          if (status === "outdated") {
+            const reaccept = document.createElement("span");
+            reaccept.className = "chip-action ui-entity-action";
+            reaccept.textContent = "✓";
+            reaccept.title = "Re-accept the Agreement as it now reads";
+            reaccept.onclick = async (event) => {
+              event.stopPropagation();
+              try {
+                await api("/api/team/agreement/accept", { team_uuid: current.uuid });
+                await load();
+                showToast("Agreement re-accepted");
+              } catch (error) {
+                showToast(error.message, true);
+              }
+            };
+            chip.append(reaccept);
+          }
           // Resigning is the other thing you can do about your own membership,
           // and it is opposite enough that one click cannot mean both. Its own
           // mark on the badge, the way a seat carries its own.
@@ -1589,24 +1578,23 @@
         }
 
         // An Actor submits an application. Membership only begins when
-        // Identity issues the resulting badge.
+        // Identity issues the resulting badge. An outdated badge on the
+        // Actor's *current* type is not this: it is answered by the
+        // Agreement's own re-accept act on the badge itself, never by a
+        // second application.
         if (interactive && state.can_apply && invitation) {
           const take = document.createElement("button");
           take.type = "button";
           take.className = "membership-accept";
-          const renewal = state.is_mine && membership.status === "outdated";
-          take.textContent = renewal
-            ? "Renew outdated membership"
-            : membership.is_member
-              ? "Apply to move here"
-              : "Apply";
+          take.textContent = membership.is_member
+            ? "Apply to move here"
+            : "Apply";
           take.onclick = async () => {
             const acceptance = await requestMembershipAcceptance(
               name,
               node.data.requirements || "",
               node.data.acceptance || "",
               membership.agreement,
-              renewal,
             );
             if (!acceptance) return;
             try {
@@ -1732,115 +1720,6 @@
         return Number.isNaN(parsed.valueOf()) ? String(value) : parsed.toLocaleDateString();
       };
 
-      // A member-authored relationship says the Team runs one topic. It is
-      // rendered here as domain content; holding the target remains a
-      // separate, local choice.
-      const renderItems = (payload, interactive) => {
-        const items = payload.items || [];
-        const mine = interactive && payload.membership?.is_member;
-        const panel = document.createElement("div");
-        panel.className = "team-work";
-        const list = document.createElement("div");
-        list.className = "team-work-list";
-        if (!items.length) {
-          const empty = document.createElement("p");
-          empty.className = "muted";
-          empty.textContent = "No initiatives or flows are run here yet.";
-          list.append(empty);
-        }
-        for (const item of items) {
-          const row = document.createElement("div");
-          row.className = "team-work-row";
-          const kind = document.createElement("span");
-          kind.className = "team-work-kind";
-          kind.textContent = item.label || "Topic";
-          const href = item.active
-            ? SovereignShell.topicHref(item.application_id, item.topic_uuid)
-            : "";
-          const title = document.createElement(href ? "a" : "span");
-          title.className = "team-work-title";
-          title.textContent = item.title || "Untitled";
-          if (href) title.href = href;
-          else title.title = "This topic is not held on this client.";
-          const actions = document.createElement("span");
-          actions.className = "team-work-actions";
-          if (mine && !item.active) {
-            const connect = document.createElement("button");
-            connect.type = "button";
-            connect.className = "ui-button";
-            connect.textContent = "Connect";
-            connect.onclick = async () => {
-              await api("/api/team/items/connect", {
-                team_uuid: current.uuid, topic_uuid: item.topic_uuid,
-              });
-              await load();
-              showToast("It will arrive on the next sync");
-            };
-            actions.append(connect);
-          }
-          if (mine && item.mine) {
-            const remove = document.createElement("button");
-            remove.type = "button";
-            remove.className = "ui-button";
-            remove.innerHTML =
-              `<svg viewBox="0 0 24 24" aria-hidden="true" class="icon-svg">${ICON_REMOVE}</svg>`;
-            remove.title = "Stop offering; keep the item";
-            remove.setAttribute("aria-label", remove.title);
-            remove.onclick = async () => {
-              await api("/api/team/items/remove", {
-                team_uuid: current.uuid, topic_uuid: item.topic_uuid,
-              });
-              await load();
-            };
-            actions.append(remove);
-          }
-          row.append(kind, title, actions);
-          list.append(row);
-        }
-        panel.append(list);
-        if (mine) {
-          const offerable = payload.offerable_items || [];
-          const kinds = payload.item_kinds || [];
-          const add = document.createElement("button");
-          add.type = "button";
-          add.className = "ui-button";
-          add.textContent = "+ Add work";
-          SovereignUI.actionMenu({
-            button: add,
-            items: () => {
-              const choices = [];
-              if (offerable.length) {
-                choices.push({heading: "Your topics"});
-                for (const item of offerable) {
-                  choices.push({
-                    label: `${item.label}: ${item.title}`,
-                    onSelect: async () => {
-                      await api("/api/team/items/offer", {
-                        team_uuid: current.uuid, topic_uuid: item.topic_uuid,
-                      });
-                      await load();
-                      showToast("The team can see it now");
-                    },
-                  });
-                }
-              }
-              if (kinds.length) {
-                if (choices.length) choices.push({separator: true});
-                choices.push({heading: "New topic"});
-                for (const kind of kinds) {
-                  choices.push({
-                    label: `New ${kind.noun.toLowerCase()}`,
-                    onSelect: () => openNewItemModal(kind),
-                  });
-                }
-              }
-              return choices;
-            },
-          });
-          if (offerable.length || kinds.length) panel.append(add);
-        }
-        return panel;
-      };
 
       // What has already happened, under the text it happened against. It
       // carries no form: recording a trustee action is an act on one
@@ -3066,11 +2945,6 @@
         });
         documentPart.content.append(content);
 
-        const workPart = disclosure("Work", "work");
-        workPart.content.append(
-          renderItems(payload, currentInteractionAllowed),
-        );
-
         // Who is here, and nothing else. Where a trusteeship stands, and what
         // is being decided about it, is on that trusteeship's own card under
         // Roles - it used to be stated again here, as a warning line and a
@@ -3108,10 +2982,10 @@
         // Who is here, then what is expected of them, then the text they hold
         // to, then what being on it means. The agreement used to come first;
         // it is the longest section and the least often changed, and leading
-        // with it buried the team. What the team runs led until it moved to
-        // the bar, so Members opens the page now.
+        // with it buried the team. What the team runs is connected work now,
+        // reached from the header (s-core/DESIGN_NAVIGATION_LINKS.md) rather
+        // than a section here, so Members opens the page.
         article.append(
-          workPart.section,
           membersPart.section,
           rolesPart.section,
           documentPart.section,

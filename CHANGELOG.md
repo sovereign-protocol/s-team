@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+- **The Work section is gone; what the team runs is reached from the
+  header now.** `team_item_relationship` — this application's own
+  per-actor, bridge-sharing connection to the initiatives and flows a
+  team runs — is retired in favor of Core's `sovereign_relationship`, the
+  same mechanism every application now shares
+  (s-core/DESIGN_NAVIGATION_LINKS.md). `create_team_item`,
+  `offer_team_item`, `connect_team_item`, `remove_team_item`,
+  `offerable_items`, `item_kinds` and the `/api/team/items/*` routes are
+  gone with it; `TeamFacade` no longer forwards them either
+  (`TEAM_FACADE_API_VERSION` is 4). Two things this application alone
+  ever knew survive as hooks Core calls: `_resolve_held_node` still
+  authorizes an incoming peer's own connection the way it always
+  authorized every other record here, and `on_relationship_removed`
+  still remembers a declined election so the next poll does not
+  silently put it back.
+
+- **An Agreement change never asks anyone to re-take a role.** A role's
+  `reference_hash` covered the whole document body plus that role's own
+  definition; editing any section anywhere made every member's every role
+  read "outdated" alongside the membership badge. It now covers only that
+  role's own accountabilities and domains — editing the Treasurer's still
+  re-opens the Treasurer's own acceptance, but a section nobody's role is
+  made of no longer touches any of them. Nobody is invited to a role, and
+  now nothing but that role's own work can make holding one debatable
+  again.
+
+- **An outdated membership badge answers with the Agreement's own re-accept
+  act, not a second application.** The badge offered "Renew outdated
+  membership" through `/api/team/membership/apply`, the same path — and the
+  same Identity-issuance step — a stranger uses to apply for the first time,
+  and it only worked while the membership type's invitation happened to
+  still be open. The badge now carries its own "re-accept" action beside the
+  existing "leave" one, calling the same `/api/team/agreement/accept` the
+  Agreement panel's button already does: one signed `team_acceptance`, no
+  Identity gate, sufficient on its own because `membership_status` already
+  read it that way.
+
 - **The Team's work is now explicit Team domain content.** One member's
   statement is a signed `team_item_relationship`, rendered in the Work
   section. Core title links remain local navigation and carry no Team meaning.

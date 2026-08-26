@@ -399,9 +399,12 @@ class AssetTests(unittest.TestCase):
         )
         self.assertIn("This team has no Agreement yet.", self.team)
         self.assertNotIn("Membership cannot be accepted.", self.team)
-        self.assertIn("Renew outdated membership", self.team)
-        self.assertIn("Renew application for ${name}?", self.team)
-        self.assertCodeContains("state.is_mine && membership.status === 'outdated'")
+        # An outdated badge is answered on the badge itself - the same
+        # signed act as the Agreement panel's own button, never a second
+        # application - so a role is never in the loop.
+        self.assertIn("Re-accept the Agreement as it now reads", self.team)
+        self.assertCodeContains('await api("/api/team/agreement/accept"')
+        self.assertNotIn("Renew outdated membership", self.team)
         # Every member is an actor and is already on the actor list, so the
         # two acts that change membership live on the actor's own line. A
         # roster beside it named the same people a second time.
@@ -491,11 +494,11 @@ class AssetTests(unittest.TestCase):
         self.assertIn("max-height", trail)
         self.assertIn("overflow-y: auto", trail)
 
-    def test_the_work_a_team_runs_is_listed_and_taken_up(self):
-        # An item is the team's because it is on the team's channel and
-        # yours because you hold it. Nothing about it is recorded on the
-        # team, so the page reads both facts from the payload and nothing
-        # in it names a stored record.
+    def test_the_work_a_team_runs_has_no_page_section_of_its_own(self):
+        # What the team runs is Core's own connected work now, reached from
+        # the shared header - one mechanism every application gets for
+        # free instead of a page section duplicating it.
+        # (s-core/DESIGN_NAVIGATION_LINKS.md)
         for marker in (
             "/api/team/items/create",
             "/api/team/items/connect",
@@ -503,17 +506,10 @@ class AssetTests(unittest.TestCase):
             "/api/team/items/remove",
             'disclosure("Work", "work")',
             "team-work-row",
-            "SovereignShell.openNewTopicDialog",
-            "snapshotType: kind.application_id",
+            "renderItems",
+            "openNewItemModal",
         ):
-            self.assertIn(marker, self.team)
-        # An item somebody offers and you have not taken up is a link like
-        # any other, drawn dimmed - not a second control beside the list.
-        self.assertIn('connect.textContent = "Connect"', self.team)
-        self.assertNotIn("Connect to…", self.team)
-        # Only your own reference is yours to take off, and only while you
-        # are a member.
-        self.assertIn("mine && item.mine", self.team)
+            self.assertNotIn(marker, self.team)
 
     def test_the_onboarding_pool_is_derived_rather_than_a_second_topic(self):
         # The pool is whoever publishes on the channel without being on the

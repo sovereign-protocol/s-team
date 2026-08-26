@@ -38,12 +38,20 @@ RETIRED = frozenset({
     # said somebody had been asked is gone and nothing writes one.
     "team_role_offer",
     # One member's whole list of what they hold of the team's work, as a
-    # list field inside a single record. Each reference is its own
-    # `team_item_relationship` now, so offering an item is creating a node and taking it
-    # off is deleting one - which is also why the set of items withdrawn
-    # from a team is gone: it existed to stop a derived list from putting
-    # back what somebody had removed.
+    # list field inside a single record. Each reference became its own
+    # node - first `team_item_relationship`, this application's own type,
+    # then Core's `sovereign_relationship`, one mechanism shared by every
+    # application instead - so offering an item is creating a node and
+    # taking it off is deleting one, which is also why the set of items
+    # withdrawn from a team is gone: it existed to stop a derived list from
+    # putting back what somebody had removed.
     "team_item_list",
+    # S-Team's own copy of Core's connected-work mechanism. Same shape,
+    # same union-by-actor semantics, one application's worth of code that
+    # every other application would have had to duplicate to get the same
+    # thing - see `sovereign_relationship` in DESIGN_TYPES.md's "What a
+    # team runs".
+    "team_item_relationship",
     # The waiting room, and the round of applications it fed. The pool is
     # derived now - whoever publishes on the channel without being on the
     # team - so there is no topic to be let into, nothing to apply for and
@@ -60,7 +68,7 @@ RETIRED = frozenset({
 # TeamLogic for them to agree with. A literal list for the same reason
 # RETIRED is one: the alternative is a rule that silently stops checking a
 # type the day somebody forgets to declare it.
-BORROWED = frozenset()
+BORROWED = frozenset({"sovereign_relationship"})
 
 # Every governance record carries it; the registry says so once instead of
 # repeating a row in each table.
@@ -126,7 +134,6 @@ class RegistryTests(unittest.TestCase):
             **TeamLogic.GOVERNANCE_FIELDS,
             **TeamLogic.ROLE_RECORD_FIELDS,
             **TeamLogic.CONTENT_FIELDS,
-            **TeamLogic.ITEM_RELATIONSHIP_FIELDS,
         }
 
     def test_the_registry_documents_every_reviewed_area(self):
