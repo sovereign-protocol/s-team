@@ -439,15 +439,10 @@ def build_routes(logic, runtime) -> list[Route]:
 
     async def api_react(request: Request):
         data = await request.json()
-        reaction = data.get("reaction", "adopt")
-        node_uuid = data["node_uuid"]
-        source_addr = data["source_addr"]
-        absent = bool(data.get("absent"))
-        if reaction == "rollback":
-            result = logic.rollback_peer_node(source_addr, node_uuid, absent)
-        else:
-            result = logic.accept_peer_node(source_addr, node_uuid, absent)
-        return await _json_result(runtime, result)
+        return await _json_result(runtime, logic.react_to_node(
+            data["source_addr"], data["node_uuid"],
+            data.get("reaction", ""), bool(data.get("absent")),
+        ))
 
     async def api_adopt(request: Request):
         data = await request.json()

@@ -28,7 +28,7 @@ SNAPSHOT_FORMAT_VERSION = 1
 FLOW_APPLICATION_ID = "flow"
 # Elections are the one thing this application asks S-Flow to do for it.
 # Making a process is Core's to route now, from S-Flow's own registration.
-FLOW_FACADE_API_VERSION = 1
+FLOW_FACADE_API_VERSION = 2
 INITIATIVE_APPLICATION_ID = "initiative"
 class TeamLogic:
     GOVERNANCE_RECORD_TYPES = frozenset({
@@ -744,14 +744,20 @@ class TeamLogic:
         if not team:
             return SessionResult("error", reason="team not found")
         agreement = self.agreement(team, create=False)
-        if agreement is None or not self.agreement_exists(team):
+        projection = self.agreement_projection(team)
+        if agreement is None or projection.get("state") != "agreed":
             return SessionResult(
                 "error", reason="there is no agreed Agreement to accept",
             )
-        reference_hash = self.team_reference_hash(team)
-        if not reference_hash:
+        local_snapshot, local_error = self._agreement_snapshot(team)
+        reference_hash = (
+            self._agreement_snapshot_hash(local_snapshot)
+            if not local_error else ""
+        )
+        if local_error or reference_hash != projection.get("reference_hash"):
             return SessionResult(
-                "error", reason="there is no agreed Agreement to accept",
+                "error",
+                reason="align your Agreement copy with Identity before accepting",
             )
         current = self._acceptance_head(team, self._identity_uuid)
         return self.append_governance_record(team.uuid, {
@@ -3958,6 +3964,15 @@ class TeamLogic:
         INITIATIVE_APPLICATION_ID: "Initiative",
         FLOW_APPLICATION_ID: "Flow",
     }
+    ITEM_RELATIONSHIP_TYPE = "team_item_relationship"
+    ITEM_RELATIONSHIP_FIELDS = {
+        ITEM_RELATIONSHIP_TYPE: (
+            frozenset({
+                "type", "topic_uuid", "application_id", "title", "actor_uuid",
+            }),
+            frozenset(),
+        ),
+    }
 
     def _item_entry(
         self, topic_uuid: str, node: ProtocolNode | None, active: bool,
@@ -3996,11 +4011,32 @@ class TeamLogic:
         item *is* creating one and removing it *is* deleting one, so the
         decision is the record and no exception set is needed beside it.
         """
+        current = self.session.protocol.index.get(team.uuid) or team
         return [
-            link for link in self.session.topic_links(team.uuid)
-            if str(link.data.get("application_id") or "")
+            child for child in current.children
+            if not child.deleted
+            and child.data.get("type") == self.ITEM_RELATIONSHIP_TYPE
+            and str(child.data.get("application_id") or "")
             in self.ITEM_APPLICATIONS
         ]
+
+    def item_relationship_schema_error(
+        self, node: ProtocolNode,
+    ) -> str | None:
+        required, optional = self.ITEM_RELATIONSHIP_FIELDS[
+            self.ITEM_RELATIONSHIP_TYPE
+        ]
+        fields = set(node.data)
+        if not required <= fields or fields - required - optional:
+            return "invalid Team work relationship fields"
+        if str(node.data.get("application_id") or "") not in self.ITEM_APPLICATIONS:
+            return "unsupported Team work relationship kind"
+        for field in ("topic_uuid", "actor_uuid"):
+            if not isinstance(node.data.get(field), str) or not node.data[field].strip():
+                return f"Team work relationship {field} is required"
+        if not isinstance(node.data.get("title"), str):
+            return "Team work relationship title must be text"
+        return None
 
     def _item_link_author(self, team: ProtocolNode, link: ProtocolNode) -> str:
         """Whose reference this is. Its signature, and nothing else.
@@ -4009,7 +4045,9 @@ class TeamLogic:
         the revision already proves - free, then, to disagree with it. The
         same attribution every other unnamed record here gets.
         """
-        return self._author_actor_uuid(team, link)
+        named = str(link.data.get("actor_uuid") or "")
+        signed = self._author_actor_uuid(team, link)
+        return named if named and named == signed else ""
 
     def team_items(self, team: ProtocolNode) -> list[dict]:
         """Every initiative and flow this team runs.
@@ -4090,8 +4128,11 @@ class TeamLogic:
     def _my_item_link(
         self, team: ProtocolNode, topic_uuid: str,
     ) -> ProtocolNode | None:
-        for link in self.session.topic_links(team.uuid, authored_here=True):
-            if link.data.get("topic_uuid") == topic_uuid:
+        for link in self.item_links(team):
+            if (
+                link.data.get("topic_uuid") == topic_uuid
+                and self._item_link_author(team, link) == self._identity_uuid
+            ):
                 return link
         return None
 
@@ -4130,11 +4171,19 @@ class TeamLogic:
             return SessionResult(
                 "error", reason="nothing here says what that item is",
             )
-        created = self.session.create_topic_link(
-            team.uuid, normalized, application_id, title,
-        )
+        created = self.session.create_child(team.uuid, {
+            "type": self.ITEM_RELATIONSHIP_TYPE,
+            "topic_uuid": normalized,
+            "application_id": application_id,
+            "title": title,
+            "actor_uuid": self._identity_uuid,
+        }, {})
         if created.status != "ok":
             return created
+        self.session.set_adoption_metadata(
+            created.value.uuid, adopt="auto", additions="never",
+            author="same-origin",
+        )
         return SessionResult("ok", value=True, effects=created.effects)
 
     def offerable_items(self, team: ProtocolNode) -> list[dict]:
@@ -4309,7 +4358,7 @@ class TeamLogic:
             return SessionResult(
                 "error", reason="you are not offering that to this team",
             )
-        removed = self.session.remove_topic_link(mine.uuid)
+        removed = self.session.delete(mine.uuid)
         if removed.status != "ok":
             return removed
         # An election is the one item this client takes up without being
@@ -6578,7 +6627,7 @@ class TeamLogic:
         *GOVERNANCE_RECORD_TYPES,
     })
     OWNED_NODE_TYPES = frozenset({
-        *REACTABLE, "agenda_item",
+        *REACTABLE, "agenda_item", ITEM_RELATIONSHIP_TYPE,
     })
 
     def accept_peer_node(self, source_addr: str, node_uuid: str,
@@ -6649,6 +6698,16 @@ class TeamLogic:
         return self.session.rollback_peer_node(
             source_addr, node_uuid, rollback_absence,
         )
+
+    def react_to_node(
+        self, source_addr: str, node_uuid: str, reaction: str,
+        absent: bool = False,
+    ) -> SessionResult:
+        if reaction == "adopt":
+            return self.accept_peer_node(source_addr, node_uuid, absent)
+        if reaction == "rollback":
+            return self.rollback_peer_node(source_addr, node_uuid, absent)
+        return SessionResult("error", reason="unknown reaction")
 
     def adopt_peer_changes(self, source_addr: str,
                            team_uuid: str) -> SessionResult:
@@ -6821,7 +6880,7 @@ class TeamLogic:
         node_type = node.data.get("type")
         if node_type == "team_role_decision":
             authorized = self._role_answer_authorized(team, node, peer_addr)
-        elif node_type == self.session.TOPIC_LINK_TYPE:
+        elif node_type == self.ITEM_RELATIONSHIP_TYPE:
             # A member saying the team's work includes something is a fact
             # about them, not a proposal to anybody: it settles on arrival
             # the way their item list used to, rather than waiting in the
@@ -6829,8 +6888,14 @@ class TeamLogic:
             # Assessed here rather than stored for the usual reason - a
             # verdict recorded when it arrived would go on being true after
             # they left.
-            authorized = self._is_current_member(
-                team, self._author_actor_uuid(team, node),
+            author = self._item_link_author(team, node)
+            authorized = bool(
+                author
+                and not self.item_relationship_schema_error(node)
+                and str(node.data.get("application_id") or "")
+                in self.ITEM_APPLICATIONS
+                and str(node.data.get("topic_uuid") or "").strip()
+                and self._is_current_member(team, author)
             )
         elif node_type in self.GOVERNANCE_RECORD_TYPES:
             assessment = self.assess_governance_record(team, node)
@@ -6926,9 +6991,20 @@ class TeamLogic:
     def _reconcile_identity_membership_definitions(
         self, team: ProtocolNode,
     ) -> bool:
-        """Align membership definitions only to recognized Identity copies."""
+        """Align Identity's definitions without accepting terms for a holder.
+
+        A membership definition is authoritative content for observers and
+        applicants, but a revision to the membership somebody already holds is
+        also a revision to their terms. Their replica must therefore leave the
+        difference open until they adopt it or leave the team.
+        """
         changed = False
         holders = set(self.identity_holder_uuids(team))
+        held_type_uuid = (
+            self._held_membership_type_uuid(team, self._identity_uuid)
+            if self._is_current_member(team, self._identity_uuid)
+            else ""
+        )
         for address in self.session.peer_addresses(team.uuid):
             actor_uuid = self._peer_actor_uuid(team, address)
             for event in self.session.analyze_peer_transitions(
@@ -6965,6 +7041,28 @@ class TeamLogic:
                         team_uuid=team.uuid,
                         node_uuid=node_uuid,
                         reason="Identity holders expose different definitions",
+                    )
+                    continue
+                # Deleting a supported membership remains Identity's act and
+                # ends its standing as before. A live revision, however, asks
+                # the holder to accept different terms; matching Identity
+                # copies establish the offer, not the holder's answer.
+                if (
+                    node_uuid == held_type_uuid
+                    and local is not None
+                    and peer is not None
+                ):
+                    self.session.trace_event(
+                        "team.membership_terms_held_for_member",
+                        team_uuid=team.uuid,
+                        peer_addr=address,
+                        actor_uuid=self._identity_uuid,
+                        node_uuid=node_uuid,
+                        event_type=event.get("type"),
+                        reason=(
+                            "current membership terms require the holder's "
+                            "decision"
+                        ),
                     )
                     continue
                 if event.get("type") == "peer_missing_node":
@@ -7391,7 +7489,7 @@ class TeamLogic:
                 self._document_node_dict(node) for node in teams
             ],
             "transition_events": events,
-            "transition_by_node": self.transition_by_node(events),
+            "transition_by_node": self.session.group_transition_events(events),
             # Team changes are proposals until explicitly accepted.
             # Expose only the peer-only team nodes needed to present
             # those proposals; the application does not receive or manage
@@ -7546,42 +7644,27 @@ class TeamLogic:
     def document_snapshot(self, team_uuid: str | None = None) -> dict:
         """Build team state under Session without consulting transport."""
         payload = self.document_payload(team_uuid, {})
-        decorated = []
-        for event in payload.get("transition_events", []):
-            node_uuid = event.get("node_uuid")
-            view = self.transition_by_node([event]).get(node_uuid)
-            if view:
-                decorated.append((event, view))
         topic = payload.get("team") or {}
         return {
             "payload": payload,
             "topic_uuid": topic.get("uuid"),
-            "transition_views": decorated,
+            "transition_events": list(payload.get("transition_events", [])),
         }
 
-    @classmethod
     def merge_document_observation(
-        cls, snapshot: dict, network: dict,
+        self, snapshot: dict, network: dict,
     ) -> dict:
         """Decorate a detached team snapshot with channel liveness."""
         payload = snapshot["payload"]
-        visible_events = []
-        grouped = {}
-        for event, view in snapshot.get("transition_views", []):
-            if not cls._transition_visible(event, network):
-                continue
-            visible_events.append(event)
-            node_uuid = event.get("node_uuid")
-            current = grouped.get(node_uuid)
-            if (
-                current is None
-                or Session.transition_rank(event)
-                > Session.transition_rank(current)
-            ):
-                grouped[node_uuid] = view
+        visible_events = [
+            event for event in snapshot.get("transition_events", [])
+            if self._transition_visible(event, network)
+        ]
         payload["network"] = network
         payload["transition_events"] = visible_events
-        payload["transition_by_node"] = grouped
+        payload["transition_by_node"] = self.session.group_transition_events(
+            visible_events,
+        )
         return payload
 
     @staticmethod
@@ -7659,23 +7742,6 @@ class TeamLogic:
             return teams[0]
         return None
 
-    def transition_by_node(self, events: list[dict]) -> dict:
-        grouped: dict[str, dict] = {}
-        for event in events:
-            node_uuid = event.get("node_uuid")
-            if not node_uuid:
-                continue
-            current = grouped.get(node_uuid)
-            if not current or (Session.transition_rank(event)
-                               > Session.transition_rank(current)):
-                # The reaction rides with the transition so the view never has
-                # to work out whether this side or the peer holds the stale
-                # revision.
-                grouped[node_uuid] = dict(
-                    event, reaction=self.session.reaction_for_event(event),
-                )
-        return grouped
-
     def collaboration_context(
         self, topic_uuid: str, network: dict | None = None,
     ) -> dict:
@@ -7688,7 +7754,7 @@ class TeamLogic:
                 item.to_dict() for item in self._agenda_items(topic_uuid)
             ],
             "transition_events": events,
-            "transition_by_node": self.transition_by_node(events),
+            "transition_by_node": self.session.group_transition_events(events),
             "identity_uuid": self._identity_uuid,
             "known_identities": self.session.known_identities(),
         }

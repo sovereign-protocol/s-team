@@ -436,6 +436,25 @@
         }
       };
 
+      const confirmLeaveTeam = () => {
+        document.querySelector("#confirmModalConfirmBtn").textContent = "Leave";
+        confirmAction(
+          "Leave this team?",
+          "You go back to the onboarding pool. Your roles here stop " +
+            "counting, and your own records are yours and stay. Coming back " +
+            "means answering an invitation, which is Identity’s to open.",
+          async () => {
+            try {
+              await api("/api/team/membership/leave", { team_uuid: current.uuid });
+              await load();
+              showToast("You have left this team");
+            } catch (error) {
+              showToast(error.message, true);
+            }
+          },
+        );
+      };
+
       // One row shape for every level of the document:
       //   left   [status] name/text
       //   right  [add subelement]  and, on hover, [react] [delete]
@@ -466,10 +485,11 @@
         reactable = true,
         placeholder,
         glyph,
+        decorate = true,
+        markerStages,
       }) => {
         const row = document.createElement("div");
         row.className = "element-row";
-        row.classList.toggle("is-proposed", proposed);
         row.dataset.reorderId = node.uuid || "";
         row.dataset.reorderKind = node.data.type || "";
         // Keyed on the *stage* - whose move it is - which is what the header
@@ -477,14 +497,20 @@
         // type instead had "the peer changed it" reading blue here and amber
         // there, for one fact about one node.
         const transition = payloadState.transition_by_node?.[node.uuid];
-        const status = transition?.stage || "settled";
-        row.dataset.status = status;
+        if (decorate) {
+          SovereignUI.decorateTransition(row, transition, {
+            marker: false,
+            perspective: proposed ? "one-sided" : "",
+          });
+        }
 
-        const lamp = document.createElement("span");
-        lamp.className = "status-lamp";
-        lamp.dataset.status = status;
-        lamp.title = transition ? transitionLabel(transition) : "No open changes";
-        lamp.setAttribute("aria-label", lamp.title);
+        const marker = SovereignUI.transitionMarker(transition, {
+          className: "status-lamp",
+          stages: markerStages,
+        });
+        const lamp = marker || document.createElement("span");
+        lamp.classList.add("status-lamp");
+        if (!marker) lamp.setAttribute("aria-hidden", "true");
 
         const label = document.createElement(tag);
         label.className = "element-label";
@@ -503,13 +529,6 @@
 
         const actions = document.createElement("span");
         actions.className = "element-actions";
-        if (proposed) {
-          const badge = document.createElement("span");
-          badge.className = "proposal-badge";
-          badge.textContent = "Proposed";
-          actions.append(badge);
-        }
-
         if (interactive && reorderable) {
           row.classList.add("has-reorder");
           row.append(SovereignUI.reorderHandle());
@@ -524,6 +543,7 @@
         const reaction = reactable
           ? SovereignUI.reactionControl({
               info: transition,
+              density: "inline",
               className: "element-react",
               onReact: (choice) => applyReaction(node.uuid, choice),
             })
@@ -636,13 +656,17 @@
         return value === (node.data?.[field] ?? "") ? "" : value;
       };
 
-      const proposedNote = (node, field, label) => {
+      const peerAlternativeNote = (node, field, label) => {
         const value = proposedValue(node, field);
         if (!value) return null;
         const note = document.createElement("span");
-        note.className = "agreement-proposed";
+        note.className = "agreement-alternative";
         note.textContent = `${label}: ${value}`;
-        note.title = "Proposed by a peer. Adopt it to take it.";
+        SovereignUI.decorateTransition(
+          note,
+          payloadState.transition_by_node?.[node.uuid],
+          {marker: false, perspective: "alternative"},
+        );
         return note;
       };
 
@@ -1234,22 +1258,7 @@
           resign.title = "Leave this team";
           resign.onclick = (event) => {
             event.stopPropagation();
-            document.querySelector("#confirmModalConfirmBtn").textContent = "Leave";
-            confirmAction(
-              "Leave this team?",
-              "You go back to the onboarding pool. Your roles here stop " +
-                "counting, and your own records are yours and stay. Coming back " +
-                "means answering an invitation, which is Identity’s to open.",
-              async () => {
-                try {
-                  await api("/api/team/membership/leave", { team_uuid: current.uuid });
-                  await load();
-                  showToast("You have left this team");
-                } catch (error) {
-                  showToast(error.message, true);
-                }
-              },
-            );
+            confirmLeaveTeam();
           };
           chip.append(resign);
           return chip;
@@ -1427,7 +1436,12 @@
         const row = document.createElement("article");
         row.className = "membership-row";
         row.classList.toggle("is-mine", Boolean(state.is_mine));
-        row.classList.toggle("is-proposed", proposed);
+        const transition = payloadState.transition_by_node?.[node.uuid];
+        SovereignUI.decorateTransition(
+          row,
+          transition,
+          {perspective: proposed ? "one-sided" : ""},
+        );
         const invitation = state.invitation;
         const members = state.members || [];
         const name = node.data.name || "Untitled membership";
@@ -1450,18 +1464,7 @@
         }
         head.append(title);
 
-        if (proposed) {
-          // Not ours to change until we accept it, and until we do, an
-          // invitation naming it cannot be read either. The shell's own
-          // reaction takes it; this says why the row is here.
-          const badge = document.createElement("span");
-          badge.className = "proposal-badge";
-          badge.textContent = "Proposed";
-          badge.title =
-            "Somebody has declared this membership. Accept the " +
-            "change to read it, and any invitation to it.";
-          head.append(badge);
-        } else {
+        if (!proposed) {
           const openState = document.createElement("span");
           openState.className = "membership-state";
           openState.classList.toggle("is-open", Boolean(invitation));
@@ -1504,6 +1507,36 @@
 
         const actions = document.createElement("div");
         actions.className = "membership-row-actions";
+
+        // A revised definition is information to observers, but changed terms
+        // cannot silently become the terms of somebody already on it. Core
+        // renders the adoption choice; leaving is the domain alternative.
+        if (interactive && state.is_mine) {
+          const reaction = SovereignUI.reactionControl({
+            info: transition,
+            density: "inline",
+            className: "membership-terms-react",
+            onReact: (choice) => applyReaction(node.uuid, choice),
+          });
+          if (reaction) {
+            actions.append(reaction);
+            const choices = [transition, ...(transition?.events || [])];
+            if (choices.some((choice) => choice?.reaction === "adopt")) {
+              const notice = document.createElement("p");
+              notice.className = "membership-terms-notice";
+              notice.textContent =
+                "Your membership terms changed. Adopt them to remain on this membership, " +
+                "or relinquish it.";
+              row.append(notice);
+              const relinquish = document.createElement("button");
+              relinquish.type = "button";
+              relinquish.className = "membership-relinquish";
+              relinquish.textContent = "Relinquish membership";
+              relinquish.onclick = confirmLeaveTeam;
+              actions.append(relinquish);
+            }
+          }
+        }
 
         const applications = (membership.applications || []).filter(
           (application) => application.membership_type_uuid === node.uuid,
@@ -1699,68 +1732,114 @@
         return Number.isNaN(parsed.valueOf()) ? String(value) : parsed.toLocaleDateString();
       };
 
-      // What the team runs, beside its name in the shell's bar. Nothing here
-      // is stored on the team: an item is the team's because it is published
-      // on the team's channel, and it is yours because you hold it. Both are
-      // read afresh on every payload, so the last person to delete their copy
-      // takes it off the list for everybody - there is no offer left over to
-      // point at nothing.
-      //
-      // An item somebody else offers and you have not taken up is a link like
-      // any other, drawn dimmed; clicking it connects. It used to be a
-      // separate pulldown, on the reasoning that a row is something you can
-      // open and an offer is not - true of a row, and not of a chip that says
-      // so itself.
+      // A member-authored relationship says the Team runs one topic. It is
+      // rendered here as domain content; holding the target remains a
+      // separate, local choice.
       const renderItems = (payload, interactive) => {
         const items = payload.items || [];
         const mine = interactive && payload.membership?.is_member;
-        SovereignShell.setTopicLinks({
-          links: items.map((item) => ({
-            topic_uuid: item.topic_uuid,
-            application_id: item.application_id,
-            label: item.label,
-            title: item.title,
-            held: item.active,
-            // Only your own reference, and only while you are a member.
-            mine: mine && item.mine,
-          })),
-          make: !mine ? [] : (payload.item_kinds || []).map((kind) => ({
-            label: `New ${kind.noun.toLowerCase()}`,
-            onSelect: () => openNewItemModal(kind),
-          })),
-          // Your own, not on this team's channel. This is how a team that was
-          // private when the work started gets it: the item was yours until
-          // there was somewhere to publish it.
-          link: !mine ? [] : (payload.offerable_items || []).map((item) => ({
-            label: `${item.title} · ${item.label}`,
-            onSelect: async () => {
-              await api("/api/team/items/offer", {
-                team_uuid: current.uuid,
-                topic_uuid: item.topic_uuid,
+        const panel = document.createElement("div");
+        panel.className = "team-work";
+        const list = document.createElement("div");
+        list.className = "team-work-list";
+        if (!items.length) {
+          const empty = document.createElement("p");
+          empty.className = "muted";
+          empty.textContent = "No initiatives or flows are run here yet.";
+          list.append(empty);
+        }
+        for (const item of items) {
+          const row = document.createElement("div");
+          row.className = "team-work-row";
+          const kind = document.createElement("span");
+          kind.className = "team-work-kind";
+          kind.textContent = item.label || "Topic";
+          const href = item.active
+            ? SovereignShell.topicHref(item.application_id, item.topic_uuid)
+            : "";
+          const title = document.createElement(href ? "a" : "span");
+          title.className = "team-work-title";
+          title.textContent = item.title || "Untitled";
+          if (href) title.href = href;
+          else title.title = "This topic is not held on this client.";
+          const actions = document.createElement("span");
+          actions.className = "team-work-actions";
+          if (mine && !item.active) {
+            const connect = document.createElement("button");
+            connect.type = "button";
+            connect.className = "ui-button";
+            connect.textContent = "Connect";
+            connect.onclick = async () => {
+              await api("/api/team/items/connect", {
+                team_uuid: current.uuid, topic_uuid: item.topic_uuid,
               });
               await load();
-              showToast("The team can see it now");
+              showToast("It will arrive on the next sync");
+            };
+            actions.append(connect);
+          }
+          if (mine && item.mine) {
+            const remove = document.createElement("button");
+            remove.type = "button";
+            remove.className = "ui-button";
+            remove.innerHTML =
+              `<svg viewBox="0 0 24 24" aria-hidden="true" class="icon-svg">${ICON_REMOVE}</svg>`;
+            remove.title = "Stop offering; keep the item";
+            remove.setAttribute("aria-label", remove.title);
+            remove.onclick = async () => {
+              await api("/api/team/items/remove", {
+                team_uuid: current.uuid, topic_uuid: item.topic_uuid,
+              });
+              await load();
+            };
+            actions.append(remove);
+          }
+          row.append(kind, title, actions);
+          list.append(row);
+        }
+        panel.append(list);
+        if (mine) {
+          const offerable = payload.offerable_items || [];
+          const kinds = payload.item_kinds || [];
+          const add = document.createElement("button");
+          add.type = "button";
+          add.className = "ui-button";
+          add.textContent = "+ Add work";
+          SovereignUI.actionMenu({
+            button: add,
+            items: () => {
+              const choices = [];
+              if (offerable.length) {
+                choices.push({heading: "Your topics"});
+                for (const item of offerable) {
+                  choices.push({
+                    label: `${item.label}: ${item.title}`,
+                    onSelect: async () => {
+                      await api("/api/team/items/offer", {
+                        team_uuid: current.uuid, topic_uuid: item.topic_uuid,
+                      });
+                      await load();
+                      showToast("The team can see it now");
+                    },
+                  });
+                }
+              }
+              if (kinds.length) {
+                if (choices.length) choices.push({separator: true});
+                choices.push({heading: "New topic"});
+                for (const kind of kinds) {
+                  choices.push({
+                    label: `New ${kind.noun.toLowerCase()}`,
+                    onSelect: () => openNewItemModal(kind),
+                  });
+                }
+              }
+              return choices;
             },
-          })),
-          onFollow: async (link) => {
-            await api("/api/team/items/connect", {
-              team_uuid: current.uuid,
-              topic_uuid: link.topic_uuid,
-            });
-            await load();
-            showToast("It will arrive on the next sync");
-          },
-          // It stops being offered here and is not deleted: you keep it, and
-          // so does everybody else. It stays on this list while another
-          // member still offers it.
-          onRemove: async (link) => {
-            await api("/api/team/items/remove", {
-              team_uuid: current.uuid,
-              topic_uuid: link.topic_uuid,
-            });
-            await load();
-          },
-        });
+          });
+          if (offerable.length || kinds.length) panel.append(add);
+        }
+        return panel;
       };
 
       // What has already happened, under the text it happened against. It
@@ -1992,8 +2071,12 @@
       const renderRoleCard = ({ role, proposed, interactive, reactable, movable }) => {
         const card = document.createElement("article");
         card.className = "role-card";
-        card.classList.toggle("is-proposed", proposed);
         card.dataset.reorderId = role.uuid;
+        SovereignUI.decorateTransition(
+          card,
+          payloadState.transition_by_node?.[role.uuid],
+          {marker: false, perspective: proposed ? "one-sided" : ""},
+        );
 
         card.append(
           elementRow({
@@ -2001,6 +2084,7 @@
             tag: "h4",
             field: "name",
             glyph: "role",
+            decorate: false,
             rename: (value) => api("/api/team/roles/rename", { role_uuid: role.uuid, name: value }),
             proposed,
             interactive,
@@ -2674,6 +2758,7 @@
           // often changed, and the team is people and roles before it is text.
           ephemeral.disclosures = {
             agreementUuid: current.uuid,
+            work: true,
             actors: true,
             roles: false,
             document: false,
@@ -2727,9 +2812,10 @@
         // would carry is already on the team name above. An unnamed agreement
         // stays genuinely empty - the prompt is a pseudo-element, so it can
         // never be committed as the name.
-        // The agreement is a node, so it gets a row like every other element:
-        // a dot on the left saying whose move it is, and a reaction on the
-        // right to answer with. Its name and version are two fields on that
+        // The agreement is a node, so it gets a row like every other element.
+        // Its border carries steady change states; the dot is reserved for a
+        // change still travelling, where its pulse adds information. Its name
+        // and version are two fields on that
         // one node, so one row carries both and one reaction settles both -
         // which is also why the transition list shows one item for them, not
         // two. Loose text with no way to answer it is what this replaces.
@@ -2791,26 +2877,28 @@
               }),
             interactive: currentInteractionAllowed,
             reactable: currentInteractionAllowed,
+            markerStages: ["in_flight"],
           });
           agreementRow.classList.add("agreement-head-row");
           agreementRow.querySelector(".element-label")
             ?.classList.add("agreement-title");
           const extras = [versionField];
           for (const [field, label] of [
-            ["name", "Proposed name"], ["version", "Proposed version"],
+            ["name", "Peer name"], ["version", "Peer version"],
           ]) {
-            const note = proposedNote(agreementNode, field, label);
+            const note = peerAlternativeNote(agreementNode, field, label);
             if (note) extras.push(note);
           }
           if (stateWorthSaying) extras.push(agreementState);
           // The one act that answers an out-of-date acceptance. Offered only
-          // when there is an Agreement to accept and this Actor's own
-          // acceptance is not current - accepting what you already accepted
-          // is not an act, and a button for it is a button that does nothing.
+          // when Identity has settled the Agreement, this copy is aligned to
+          // it, and this Actor's own acceptance is not current. Accepting an
+          // older local copy would record consent to the wrong text.
           const mine = payload.membership?.my_acceptance || {};
           if (
             currentInteractionAllowed
             && agreementTruth.state === "agreed"
+            && payload.membership?.my_agreement_current === true
             && mine.state !== "current"
           ) {
             const accept = document.createElement("button");
@@ -2895,6 +2983,7 @@
               proposed,
               interactive: currentInteractionAllowed,
               reactable: currentInteractionAllowed,
+              markerStages: ["in_flight"],
               rename: proposed
                 ? null
                 : (value) =>
@@ -2928,6 +3017,7 @@
                   proposed: clauseProposed,
                   interactive: currentInteractionAllowed,
                   reactable: currentInteractionAllowed && !clauseInherited,
+                  markerStages: ["in_flight"],
                   rename: clauseProposed
                     ? null
                     : (value) =>
@@ -2976,10 +3066,10 @@
         });
         documentPart.content.append(content);
 
-        // What the team runs has no section any more: it is in the bar,
-        // beside the team's name, where every application says what its
-        // topic is attached to.
-        renderItems(payload, currentInteractionAllowed);
+        const workPart = disclosure("Work", "work");
+        workPart.content.append(
+          renderItems(payload, currentInteractionAllowed),
+        );
 
         // Who is here, and nothing else. Where a trusteeship stands, and what
         // is being decided about it, is on that trusteeship's own card under
@@ -3021,6 +3111,7 @@
         // with it buried the team. What the team runs led until it moved to
         // the bar, so Members opens the page now.
         article.append(
+          workPart.section,
           membersPart.section,
           rolesPart.section,
           documentPart.section,

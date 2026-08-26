@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **The Team's work is now explicit Team domain content.** One member's
+  statement is a signed `team_item_relationship`, rendered in the Work
+  section. Core title links remain local navigation and carry no Team meaning.
+
 - **Which trusteeship facilitates another is a rule now, not an arithmetic
   accident.** `TRUSTS` carries all five — Identity, Trust, Focus, Market and
   Equity — and which of them a team has is read from its own records by

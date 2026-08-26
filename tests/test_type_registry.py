@@ -39,7 +39,7 @@ RETIRED = frozenset({
     "team_role_offer",
     # One member's whole list of what they hold of the team's work, as a
     # list field inside a single record. Each reference is its own
-    # `topic_link` now, so offering an item is creating a node and taking it
+    # `team_item_relationship` now, so offering an item is creating a node and taking it
     # off is deleting one - which is also why the set of items withdrawn
     # from a team is gone: it existed to stop a derived list from putting
     # back what somebody had removed.
@@ -60,7 +60,7 @@ RETIRED = frozenset({
 # TeamLogic for them to agree with. A literal list for the same reason
 # RETIRED is one: the alternative is a rule that silently stops checking a
 # type the day somebody forgets to declare it.
-BORROWED = frozenset({"topic_link"})
+BORROWED = frozenset()
 
 # Every governance record carries it; the registry says so once instead of
 # repeating a row in each table.
@@ -126,6 +126,7 @@ class RegistryTests(unittest.TestCase):
             **TeamLogic.GOVERNANCE_FIELDS,
             **TeamLogic.ROLE_RECORD_FIELDS,
             **TeamLogic.CONTENT_FIELDS,
+            **TeamLogic.ITEM_RELATIONSHIP_FIELDS,
         }
 
     def test_the_registry_documents_every_reviewed_area(self):

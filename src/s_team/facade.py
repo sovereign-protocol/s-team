@@ -11,7 +11,7 @@ from sovereign import ProtocolNode
 from .logic import TeamLogic
 
 
-TEAM_FACADE_API_VERSION = 2
+TEAM_FACADE_API_VERSION = 3
 
 
 class TeamFacade:
@@ -265,8 +265,13 @@ class TeamFacade:
     ) -> list[dict]:
         return self._logic.transition_events(team_uuid, network)
 
-    def transition_by_node(self, events: list[dict]) -> dict:
-        return self._logic.transition_by_node(events)
+    def react_to_node(
+        self, source_addr: str, node_uuid: str, reaction: str,
+        absent: bool = False,
+    ):
+        return self._logic.react_to_node(
+            source_addr, node_uuid, reaction, absent,
+        )
 
     def collaboration_context(
         self, topic_uuid: str, network: dict | None = None,

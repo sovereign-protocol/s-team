@@ -436,6 +436,13 @@ deleting one is how a team stops supporting a membership. Identity creates and
 deletes it; that is the one way it differs from a role, which anybody on the
 team may define.
 
+Identity's aligned definition is adopted automatically by observers and
+applicants. A live revision to the type somebody currently holds is different:
+their replica keeps it open until they explicitly adopt the new terms or
+relinquish their membership. Identity agreement establishes which revision is
+offered; it does not answer on the holder's behalf. Deleting the type remains
+Identity's act of no longer supporting that membership.
+
 It carries no enforced field table for the same reason `team_role` carries
 none — the enforcement dicts cover records with authority contracts, and this
 is document content.
@@ -918,13 +925,18 @@ An **initiative** or a **flow** a team runs is another application's topic,
 published on the team's channel. The team owns no copy of it and stores
 nothing about its contents — only who says they have it.
 
-## `topic_link`
+## `team_item_relationship`
 
-**Core's node type, not this application's** — the fields it carries, and what
-following one does, are in `s-core/DESIGN_TOPIC_LINKS.md` and `PUBLIC_API.md`.
-S-Team owns only where they live, which is as direct children of the team, and
-what they mean here: one member's word that this team's work includes one
-topic.
+**S-Team's node type.** It lives as a direct child of the team and means one
+member says this team's work includes one topic. Core title links are separate
+local navigation metadata and never carry this domain meaning.
+
+| Field | Requirement | Meaning |
+| --- | --- | --- |
+| `topic_uuid` | Required | Related initiative or flow |
+| `application_id` | Required | Owning application (`initiative` or `flow`) |
+| `title` | Required | Last known title for clients that do not hold the target |
+| `actor_uuid` | Required | Member making the statement; must match its signature |
 
 It replaced a chain of per-actor snapshots, each carrying a *list field* of
 items — the only list field in the codebase, safe solely because a single

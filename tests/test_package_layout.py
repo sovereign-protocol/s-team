@@ -364,6 +364,9 @@ class AssetTests(unittest.TestCase):
             "/api/team/membership/leave",
             "/api/team/membership/apply",
             "/api/team/membership/issue",
+            "Your membership terms changed.",
+            "Relinquish membership",
+            "membership-terms-react",
             "on this team, holding no role yet",
         ):
             self.assertIn(marker, self.team)
@@ -498,21 +501,19 @@ class AssetTests(unittest.TestCase):
             "/api/team/items/connect",
             "/api/team/items/offer",
             "/api/team/items/remove",
-            # The chips are the shell's, beside the team's name, and so is
-            # the dialog that makes one - naming the snapshot it accepts is
-            # what keeps a file as good a start here as anywhere.
-            "SovereignShell.setTopicLinks",
+            'disclosure("Work", "work")',
+            "team-work-row",
             "SovereignShell.openNewTopicDialog",
             "snapshotType: kind.application_id",
         ):
             self.assertIn(marker, self.team)
         # An item somebody offers and you have not taken up is a link like
         # any other, drawn dimmed - not a second control beside the list.
-        self.assertIn("held: item.active", self.team)
+        self.assertIn('connect.textContent = "Connect"', self.team)
         self.assertNotIn("Connect to…", self.team)
         # Only your own reference is yours to take off, and only while you
         # are a member.
-        self.assertIn("mine: mine && item.mine", self.team)
+        self.assertIn("mine && item.mine", self.team)
 
     def test_the_onboarding_pool_is_derived_rather_than_a_second_topic(self):
         # The pool is whoever publishes on the channel without being on the
@@ -731,9 +732,13 @@ class AssetTests(unittest.TestCase):
         self.assertIn("agreementData(current).version", self.team)
         self.assertCodeContains("placeholder: 'Name this agreement'")
         # The agreement is a node, so its name rides an element row like every
-        # other element - a dot saying whose move it is, a reaction to answer
-        # with - instead of loose text nobody could act on.
+        # other element. The border carries steady states; only a change still
+        # travelling gets the pulsing dot.
         self.assertCodeContains("agreementRow.classList.add('agreement-head-row')")
+        self.assertCodeContains("markerStages: ['in_flight']")
+        self.assertCodeContains(
+            "payload.membership?.my_agreement_current === true",
+        )
         self.assertNotIn(".agreement-title:empty::before", css)
         # The team's name heads the page, outside every disclosure, and the
         # sections follow in the order the page now reads.

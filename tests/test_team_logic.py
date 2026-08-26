@@ -178,7 +178,7 @@ class TeamLogicTests(unittest.TestCase):
                 self.flow = flow
 
             def find(self, application_id, facade_api_version):
-                if (application_id, facade_api_version) == ("flow", 1):
+                if (application_id, facade_api_version) == ("flow", 2):
                     return self.flow
                 return None
 
@@ -1569,7 +1569,7 @@ class TeamLogicTests(unittest.TestCase):
 
         class Facades:
             def find(self, application_id, facade_api_version):
-                if (application_id, facade_api_version) == ("flow", 1):
+                if (application_id, facade_api_version) == ("flow", 2):
                     return flow_facade
                 return None
 
@@ -1640,7 +1640,7 @@ class TeamLogicTests(unittest.TestCase):
 
         class Facades:
             def find(self, application_id, facade_api_version):
-                if (application_id, facade_api_version) == ("flow", 1):
+                if (application_id, facade_api_version) == ("flow", 2):
                     return flow_facade
                 return None
 
@@ -2349,11 +2349,10 @@ class TeamLogicTests(unittest.TestCase):
             "error",
         )
 
-    def test_transition_priority_comes_from_session_not_per_application(self):
+    def test_transition_grouping_comes_from_session_not_per_application(self):
         # Applications grouping transition events per node had each copied
-        # Session's ranking, and the copies drifted, so the same conflict
-        # could surface as divergence in one application and something milder
-        # in another.
+        # Session's ranking, and the copies drifted. Core now owns the whole
+        # grouping operation, including ranking and multi-peer choice merging.
         #
         # Only this application is checked here. Core ships these tests, and a
         # Core test that imports S-Initiative cannot run for anyone who installed
@@ -2364,9 +2363,8 @@ class TeamLogicTests(unittest.TestCase):
         from s_team import logic as team_logic
 
         source = Path(team_logic.__file__).read_text(encoding="utf-8")
-        self.assertRegex(
-            source, r"Session\.(TRANSITION_PRIORITY|STAGE_PRIORITY|transition_rank)",
-        )
+        self.assertIn("self.session.group_transition_events(", source)
+        self.assertNotIn("def transition_by_node", source)
         self.assertNotIn('"divergence": 5', source)
         self.assertNotIn('"divergence": 6', source)
 
@@ -2546,6 +2544,41 @@ class TeamLogicTests(unittest.TestCase):
         runtime.logic.create_section(team_uuid, "Scope two")
         team = runtime.session.protocol.index[team_uuid]
         self.assertEqual(runtime.logic.membership_status(team, mine), "outdated")
+
+    def test_acceptance_waits_until_the_agreed_copy_is_aligned_locally(self):
+        left, right = self.runtime(9447), self.runtime(9448)
+        team_uuid = left.logic.create_team("Aligned consent").value
+        left.logic.rename_agreement(team_uuid, "Terms")
+        left.logic.set_agreement_version(team_uuid, "1")
+        self.assertEqual(connect(left, right, team_uuid)["status"], "ok")
+        right.logic.accept_team_invitation(
+            right.session.protocol.index[team_uuid],
+        )
+        sync(left, right)
+        agreement_uuid = left.logic.agreement(
+            left.session.protocol.index[team_uuid], create=False,
+        ).uuid
+        self.adopt(right, left, agreement_uuid)
+
+        left.logic.rename_agreement(team_uuid, "Revised terms")
+        sync(left, right)
+
+        payload = right.logic.document_payload(team_uuid)
+        self.assertEqual(payload["membership"]["agreement"]["state"], "agreed")
+        self.assertFalse(payload["membership"]["my_agreement_current"])
+        blocked = right.logic.accept_agreement(team_uuid, "Too soon.")
+        self.assertEqual(blocked.status, "error")
+        self.assertIn("align", blocked.reason)
+
+        self.adopt(right, left, agreement_uuid)
+        self.assertTrue(
+            right.logic.document_payload(team_uuid)["membership"]
+            ["my_agreement_current"],
+        )
+        self.assertEqual(
+            right.logic.accept_agreement(team_uuid, "Now accepted.").status,
+            "ok",
+        )
 
     def test_an_acceptance_names_the_text_it_accepted(self):
         """A badge that named only a version label would not be falsifiable."""
@@ -4278,6 +4311,53 @@ class TeamLogicTests(unittest.TestCase):
         self.assertEqual(
             observer.session.protocol.index[type_uuid].data["requirements"],
             "Identity's Membership Info",
+        )
+
+    def test_changed_membership_terms_wait_for_the_current_holder(self):
+        identity, member = self.runtime(9836), self.runtime(9837)
+        team_uuid = identity.logic.create_team("Membership consent").value
+        connect(identity, member, team_uuid)
+        self.admit(identity, member, team_uuid)
+        identity_team = identity.session.protocol.index[team_uuid]
+        type_uuid = identity.logic.membership_types(identity_team)[0].uuid
+        before = member.session.protocol.index[type_uuid].data["requirements"]
+
+        identity.logic.set_membership_requirements(
+            type_uuid, "Terms chosen by Identity",
+        )
+        sync(identity, member)
+
+        self.assertEqual(
+            member.session.protocol.index[type_uuid].data["requirements"],
+            before,
+        )
+        transition = member.session.group_transition_events(
+            member.logic.transition_events(team_uuid),
+        )[type_uuid]
+        self.assertEqual(transition["stage"], "awaiting_me")
+        self.assertEqual(transition["reaction"], "adopt")
+
+        adopted = member.logic.accept_peer_node(
+            identity.peer_addr, type_uuid,
+        )
+        self.assertEqual(adopted.status, "ok", adopted.reason)
+        self.assertEqual(
+            member.session.protocol.index[type_uuid].data["requirements"],
+            "Terms chosen by Identity",
+        )
+
+        identity.logic.set_membership_requirements(
+            type_uuid, "Terms changed again",
+        )
+        sync(identity, member)
+        relinquished = member.logic.leave_team(team_uuid)
+        self.assertEqual(relinquished.status, "ok", relinquished.reason)
+        self.assertEqual(
+            member.logic.membership_projection(
+                member.session.protocol.index[team_uuid],
+                member.session.identity.uuid,
+            )["state"],
+            "former",
         )
 
     def test_identity_agreement_disagreement_blocks_membership_opening(self):
