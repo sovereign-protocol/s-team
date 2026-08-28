@@ -300,6 +300,25 @@ class AssetTests(unittest.TestCase):
         self.assertNotIn("Click to take it", self.team)
         self.assertIn("+ Add role", self.team)
 
+    def test_a_role_badge_opens_the_role_rather_than_leaving_it(self):
+        # A click on your own role or trusteeship badge in Actors used to
+        # step out of it on the spot - one stray click on a crowded line was
+        # all it took. It opens the role's own card in Roles now; stepping
+        # out moved there, onto a button beside the badge that already
+        # carried it for a trusteeship.
+        self.assertIn("openRoleCard({ trust: role.trustee })", self.team)
+        self.assertIn("openRoleCard({ roleUuid: role.uuid })", self.team)
+        self.assertIn("Click to open this role.", self.team)
+        # The card itself carries a stable marker to scroll to and flash,
+        # for a role and for a trusteeship alike.
+        self.assertIn("card.dataset.uuid = role.uuid;", self.team)
+        self.assertIn("card.dataset.uuid = trust;", self.team)
+        self.assertIn("highlight-flash", self.team)
+        # Stepping out is a button on the holder's own badge, on both kinds
+        # of card - a trusteeship already had it; an ordinary role gets one
+        # too, rather than only the trustee case.
+        self.assertIn('Step out of ${role.data.name', self.team)
+
     def test_every_holder_status_is_something_the_holder_said(self):
         # Nobody is invited to a role, so there is no state between being
         # asked and answering. "Invited, not yet taken up", "not on this
@@ -555,9 +574,11 @@ class AssetTests(unittest.TestCase):
         ):
             self.assertNotIn(gone, self.team)
         # A holding is its holder's own record, so nothing on somebody
-        # else's badge takes it back. Stepping out is theirs, and the one
-        # mark left of that shape is the trustee's own.
+        # else's badge takes it back. Stepping out is theirs, marked on
+        # their own badge under the role's own card - the trustee card's
+        # copy of that mark, and the ordinary role card's copy beside it.
         self.assertIn("Step out of ${label}", self.team)
+        self.assertIn('Step out of ${role.data.name', self.team)
 
     def test_a_team_takes_a_seat_from_its_own_page(self):
         # A team that could take a seat gets no row on the parent's page: a

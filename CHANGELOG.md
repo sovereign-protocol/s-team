@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **A role badge opens the role now; it no longer steps out of it on the
+  spot.** Clicking your own role or trusteeship badge in Actors used to
+  resign it immediately — a plain role with no confirmation at all, a
+  trusteeship behind one. One stray click on a crowded line was all it
+  took. It opens that role's own card in Roles instead, scrolled to and
+  briefly highlighted; stepping out is a button there now, on your own
+  badge under "Held by" — the same place a trusteeship's already was, and
+  an ordinary role gets one too rather than staying a read-only record of
+  who holds it. Taking a role is unaffected: still `+ Add role`, on your
+  own line, unchanged.
+
 - **The Work section is gone; what the team runs is reached from the
   header now.** `team_item_relationship` — this application's own
   per-actor, bridge-sharing connection to the initiatives and flows a

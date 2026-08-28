@@ -400,6 +400,15 @@ h2.element-label { margin: 0 0 4px; }
   border-radius: 8px;
   background: var(--hover);
 }
+/* Where a click on your own role badge lands, so it reads as arriving
+   somewhere rather than as the section merely being open already. */
+.highlight-flash {
+  animation: highlight-flash-anim 1.5s ease;
+}
+@keyframes highlight-flash-anim {
+  0%, 100% { outline: 2px solid transparent; }
+  20% { outline: 2px solid var(--teal); }
+}
 /* Identity is a role and reads as one. The key is the only thing marking it
    apart, because the difference is cardinality, not privilege. */
 .role-card.is-identity .element-label::before {

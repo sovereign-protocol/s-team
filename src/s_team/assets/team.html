@@ -209,6 +209,29 @@
       const ephemeral = { disclosures: null };
       const nodeStatus = (payload, uuid) => payload.transition_by_node[uuid]?.type;
 
+      // Set once per render, when the Roles section builds its own
+      // disclosure - read from wherever a role badge needs to open it,
+      // regardless of which runs first in a given pass.
+      let rolesDisclosureControl = null;
+
+      // A click on your own role, wherever it is drawn, opens the role's
+      // card instead of stepping out on the spot: what a role is and
+      // whether you still hold it are two different questions, and only the
+      // card answers the first one. Stepping out is a button on the card
+      // itself now, beside the badge that already carried it for a
+      // trusteeship.
+      const openRoleCard = ({ roleUuid, trust } = {}) => {
+        ephemeral.disclosures.roles = true;
+        if (rolesDisclosureControl) rolesDisclosureControl.setExpanded(true, true);
+        const target = document.querySelector(
+          `.role-card[data-uuid="${trust || roleUuid}"]`,
+        );
+        if (!target) return;
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        target.classList.add("highlight-flash");
+        setTimeout(() => target.classList.remove("highlight-flash"), 1500);
+      };
+
       const requestMembershipAcceptance = (
         name,
         membershipInfo,
@@ -1106,46 +1129,18 @@
             chip.title = `${role.name} — ${label}`;
             return chip;
           }
-          // Identity is stepped out of the way every other role is - from
-          // your own badge. Leaving it inert made whoever speaks for a team
-          // the one person who could not leave.
+          // A click here opens the role, in the Roles section, rather than
+          // stepping out on the spot - one stray click on a crowded line
+          // used to be all it took to leave a role. Stepping out is a
+          // button on the card itself now, the same place a trusteeship's
+          // already was.
           if (role.trustee) {
-            chip.title = `${role.name} — ${label}. Click to step out.`;
-            chip.onclick = () => {
-              document.querySelector("#confirmModalConfirmBtn").textContent = "Step out";
-              confirmAction(
-                `Step out of ${role.name}?`,
-                "The trusteeship stays vacant until a valid decision is implemented.",
-                async () => {
-                  try {
-                    const context = await requestDecisionContext(`Step out of ${role.name}`);
-                    if (!context) return;
-                    await api("/api/team/trusteeships/resign", {
-                      team_uuid: current.uuid,
-                      trust: role.trustee,
-                      ...context,
-                    });
-                    await load();
-                    showToast(`You no longer hold ${role.name}`);
-                  } catch (error) {
-                    showToast(error.message, true);
-                  }
-                },
-              );
-            };
+            chip.title = `${role.name} — ${label}. Click to open this role.`;
+            chip.onclick = () => openRoleCard({ trust: role.trustee });
             return chip;
           }
-          chip.title = `${role.name} — ${label}. Click to step out.`;
-          chip.onclick = async () => {
-            chip.disabled = true;
-            try {
-              await api("/api/team/roles/resign", { role_uuid: role.uuid });
-              await load();
-            } catch (error) {
-              chip.disabled = false;
-              showToast(error.message, true);
-            }
-          };
+          chip.title = `${role.name} — ${label}. Click to open this role.`;
+          chip.onclick = () => openRoleCard({ roleUuid: role.uuid });
           return chip;
         };
 
@@ -1951,6 +1946,7 @@
         const card = document.createElement("article");
         card.className = "role-card";
         card.dataset.reorderId = role.uuid;
+        card.dataset.uuid = role.uuid;
         SovereignUI.decorateTransition(
           card,
           payloadState.transition_by_node?.[role.uuid],
@@ -2070,11 +2066,14 @@
         }
         card.append(columns);
 
-        // Who holds it, and where each of them stands. Taking a role or
-        // stepping out of one happens on the actor's own line in Actors -
-        // this is the definition, not the doing. Invitations are no longer
-        // made; the badges an old one produced are still answered and
-        // withdrawn here, because those records exist.
+        // Who holds it, and where each of them stands. Taking a role still
+        // happens on the actor's own line in Actors, from "+ Add role" -
+        // this is the definition, not the taking. Stepping out used to be
+        // there too, on a single click of your own badge with nothing
+        // between it and the act; that badge now opens this card, and
+        // stepping out is the button on your own line below. Invitations
+        // are no longer made; the badges an old one produced are still
+        // answered and withdrawn here, because those records exist.
         const holders = (payloadState.role_holders || {})[role.uuid] || [];
         const held = document.createElement("div");
         held.className = "role-holders";
@@ -2145,9 +2144,29 @@
             badge.title += `. Click to open ${holder.name}`;
           }
 
-          // Nothing else on the badge. A holding is the holder's own record,
-          // so there is nothing here for anybody else to take back - stepping
-          // out of a role is theirs, and it is done from their own line.
+          // Stepping out is the holder's own act, so the mark is on their
+          // own badge - the same place, and the same ×, a trusteeship
+          // already put it. A click on your own badge elsewhere in the page
+          // opens this card rather than acting on the spot; this button is
+          // where the act actually happens.
+          if (interactive && holder.is_self) {
+            const leave = document.createElement("button");
+            leave.type = "button";
+            leave.className = "holder-action ui-entity-action";
+            leave.textContent = "×";
+            leave.title = `Step out of ${role.data.name || "this role"}`;
+            leave.onclick = async (event) => {
+              event.stopPropagation();
+              try {
+                await api("/api/team/roles/resign", { role_uuid: role.uuid });
+                await load();
+                showToast(`You no longer hold ${role.data.name || "that role"}`);
+              } catch (error) {
+                showToast(error.message, true);
+              }
+            };
+            badge.append(leave);
+          }
           badges.append(badge);
         }
         if (holders.length) held.append(badges);
@@ -2173,6 +2192,7 @@
         const label = trustLabel(trust);
         const card = document.createElement("article");
         card.className = "role-card is-identity";
+        card.dataset.uuid = trust;
         card.append(
           elementRow({
             node: { uuid: trusteeship.node_uuid || "", data: { name: label } },
@@ -2955,6 +2975,7 @@
         );
 
         const rolesPart = disclosure("Roles", "roles", "role");
+        rolesDisclosureControl = rolesPart;
         rolesPart.content.append(renderRoles(current, currentInteractionAllowed));
 
         // A section of its own, below the Agreement. A membership is part of

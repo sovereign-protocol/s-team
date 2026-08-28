@@ -249,9 +249,14 @@ pool shows no badges at all — not even the ones they answered for before they
 left or were removed. Their answers are untouched and come back with them; the
 line just stops claiming they hold something.
 
-**Two places act.** _Your member line_ comes first: a held badge is a control, click to
-step out. **Refuse is not an action here** — the choice is holding or not
-holding. Identity is one of those badges, and steps out the same way (§2.2).
+**Two places act, and stepping out is a third.** _Your member line_ comes
+first: a held badge is a control, click to open that role's own card in
+Roles — not to step out on the spot, which one stray click on a crowded line
+used to be all it took to do. Stepping out is a button on the card itself,
+beside your own badge under "Held by", the same place a trusteeship's
+already was. **Refuse is not an action here** — the choice is holding or not
+holding. Identity is one of those badges, and opens and steps out the same
+way (§2.2).
 
 _The team-name heading_ carries the other controls, because a Team is an Actor
 and the roles it holds in other teams are roles. Same badges, answered by
