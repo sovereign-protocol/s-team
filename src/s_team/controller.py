@@ -103,6 +103,12 @@ def build_routes(logic, runtime) -> list[Route]:
             data["team_uuid"], data.get("version", ""),
         ))
 
+    async def api_accept_agreement(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.accept_agreement(
+            data["team_uuid"], data.get("text", ""),
+        ))
+
     async def api_rename_section(request: Request):
         data = await request.json()
         return await _json_result(runtime, logic.rename_section(
@@ -135,12 +141,6 @@ def build_routes(logic, runtime) -> list[Route]:
             runtime, logic.take_identity(data["team_uuid"]),
         )
 
-    async def api_offer_identity(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.offer_identity(
-            data["team_uuid"], data.get("actor_uuid", ""),
-        ))
-
     async def api_resign_identity(request: Request):
         data = await request.json()
         return await _json_result(
@@ -150,6 +150,22 @@ def build_routes(logic, runtime) -> list[Route]:
     async def api_resign_trusteeship(request: Request):
         data = await request.json()
         return await _json_result(runtime, logic.resign_trusteeship(
+            data["team_uuid"], data.get("trust", ""),
+            data.get("signals", ""), data.get("consideration", ""),
+            data.get("expectation", ""),
+        ))
+
+    async def api_establish_trusteeship(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.establish_trusteeship(
+            data["team_uuid"], data.get("trust", ""),
+            data.get("signals", ""), data.get("consideration", ""),
+            data.get("expectation", ""),
+        ))
+
+    async def api_dissolve_trusteeship(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.dissolve_trusteeship(
             data["team_uuid"], data.get("trust", ""),
             data.get("signals", ""), data.get("consideration", ""),
             data.get("expectation", ""),
@@ -321,32 +337,9 @@ def build_routes(logic, runtime) -> list[Route]:
             data["role_uuid"], data.get("team_uuid", ""),
         ))
 
-    async def api_create_item(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.create_team_item(
-            data["team_uuid"],
-            data.get("application_id", ""),
-            data.get("title", ""),
-            data.get("template", ""),
-        ))
-
-    async def api_offer_item(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.offer_team_item(
-            data["team_uuid"], data.get("topic_uuid", ""),
-        ))
-
-    async def api_connect_item(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.connect_team_item(
-            data["team_uuid"], data.get("topic_uuid", ""),
-        ))
-
-    async def api_remove_item(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.remove_team_item(
-            data["team_uuid"], data.get("topic_uuid", ""),
-        ))
+    # Connecting to what a team runs is Core's own route now,
+    # /api/core/relationships/{topic_uuid} - one mechanism every
+    # application gets for free instead of its own copy.
 
     async def api_unseat_team(request: Request):
         data = await request.json()
@@ -422,15 +415,10 @@ def build_routes(logic, runtime) -> list[Route]:
 
     async def api_react(request: Request):
         data = await request.json()
-        reaction = data.get("reaction", "adopt")
-        node_uuid = data["node_uuid"]
-        source_addr = data["source_addr"]
-        absent = bool(data.get("absent"))
-        if reaction == "rollback":
-            result = logic.rollback_peer_node(source_addr, node_uuid, absent)
-        else:
-            result = logic.accept_peer_node(source_addr, node_uuid, absent)
-        return await _json_result(runtime, result)
+        return await _json_result(runtime, logic.react_to_node(
+            data["source_addr"], data["node_uuid"],
+            data.get("reaction", ""), bool(data.get("absent")),
+        ))
 
     async def api_adopt(request: Request):
         data = await request.json()
@@ -466,6 +454,11 @@ def build_routes(logic, runtime) -> list[Route]:
             api_set_agreement_version,
             methods=["POST"],
         ),
+        Route(
+            "/api/team/agreement/accept",
+            api_accept_agreement,
+            methods=["POST"],
+        ),
         Route("/api/team/sections/create", api_create_section, methods=["POST"]),
         Route("/api/team/sections/rename", api_rename_section, methods=["POST"]),
         Route("/api/team/sections/delete", api_delete_section, methods=["POST"]),
@@ -478,11 +471,6 @@ def build_routes(logic, runtime) -> list[Route]:
             "/api/team/identity/take", api_take_identity, methods=["POST"],
         ),
         Route(
-            "/api/team/identity/offer",
-            api_offer_identity,
-            methods=["POST"],
-        ),
-        Route(
             "/api/team/identity/resign",
             api_resign_identity,
             methods=["POST"],
@@ -490,6 +478,16 @@ def build_routes(logic, runtime) -> list[Route]:
         Route(
             "/api/team/trusteeships/resign",
             api_resign_trusteeship,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/team/trusteeships/establish",
+            api_establish_trusteeship,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/team/trusteeships/dissolve",
+            api_dissolve_trusteeship,
             methods=["POST"],
         ),
         Route(
@@ -585,10 +583,6 @@ def build_routes(logic, runtime) -> list[Route]:
             api_create_seated_team,
             methods=["POST"],
         ),
-        Route("/api/team/items/create", api_create_item, methods=["POST"]),
-        Route("/api/team/items/offer", api_offer_item, methods=["POST"]),
-        Route("/api/team/items/connect", api_connect_item, methods=["POST"]),
-        Route("/api/team/items/remove", api_remove_item, methods=["POST"]),
         Route("/api/team/parents/move", api_move_parent, methods=["POST"]),
         Route("/api/team/roles/decide", api_decide_role, methods=["POST"]),
         Route("/api/team/roles/resign", api_resign_role, methods=["POST"]),

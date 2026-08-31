@@ -2,6 +2,279 @@
 
 ## Unreleased
 
+- **A role badge opens the role now; it no longer steps out of it on the
+  spot.** Clicking your own role or trusteeship badge in Actors used to
+  resign it immediately — a plain role with no confirmation at all, a
+  trusteeship behind one. One stray click on a crowded line was all it
+  took. It opens that role's own card in Roles instead, scrolled to and
+  briefly highlighted; stepping out is a button there now, on your own
+  badge under "Held by" — the same place a trusteeship's already was, and
+  an ordinary role gets one too rather than staying a read-only record of
+  who holds it. Taking a role is unaffected: still `+ Add role`, on your
+  own line, unchanged.
+
+- **The Work section is gone; what the team runs is reached from the
+  header now.** `team_item_relationship` — this application's own
+  per-actor, bridge-sharing connection to the initiatives and flows a
+  team runs — is retired in favor of Core's `sovereign_relationship`, the
+  same mechanism every application now shares
+  (s-core/DESIGN_NAVIGATION_LINKS.md). `create_team_item`,
+  `offer_team_item`, `connect_team_item`, `remove_team_item`,
+  `offerable_items`, `item_kinds` and the `/api/team/items/*` routes are
+  gone with it; `TeamFacade` no longer forwards them either
+  (`TEAM_FACADE_API_VERSION` is 4). Two things this application alone
+  ever knew survive as hooks Core calls: `_resolve_held_node` still
+  authorizes an incoming peer's own connection the way it always
+  authorized every other record here, and `on_relationship_removed`
+  still remembers a declined election so the next poll does not
+  silently put it back.
+
+- **An Agreement change never asks anyone to re-take a role.** A role's
+  `reference_hash` covered the whole document body plus that role's own
+  definition; editing any section anywhere made every member's every role
+  read "outdated" alongside the membership badge. It now covers only that
+  role's own accountabilities and domains — editing the Treasurer's still
+  re-opens the Treasurer's own acceptance, but a section nobody's role is
+  made of no longer touches any of them. Nobody is invited to a role, and
+  now nothing but that role's own work can make holding one debatable
+  again.
+
+- **An outdated membership badge answers with the Agreement's own re-accept
+  act, not a second application.** The badge offered "Renew outdated
+  membership" through `/api/team/membership/apply`, the same path — and the
+  same Identity-issuance step — a stranger uses to apply for the first time,
+  and it only worked while the membership type's invitation happened to
+  still be open. The badge now carries its own "re-accept" action beside the
+  existing "leave" one, calling the same `/api/team/agreement/accept` the
+  Agreement panel's button already does: one signed `team_acceptance`, no
+  Identity gate, sufficient on its own because `membership_status` already
+  read it that way.
+
+- **The Team's work is now explicit Team domain content.** One member's
+  statement is a signed `team_item_relationship`, rendered in the Work
+  section. Core title links remain local navigation and carry no Team meaning.
+
+- **Which trusteeship facilitates another is a rule now, not an arithmetic
+  accident.** `TRUSTS` carries all five — Identity, Trust, Focus, Market and
+  Equity — and which of them a team has is read from its own records by
+  `established_trusts`. Facilitation follows from that: the first of Trust and
+  Identity that a seat is not, and that the team has. Supervision is those two
+  seats' alone, so a record's authority cannot move under it when the team
+  establishes a fourth. `_sole_facilitating_trust`, which answered "the other
+  one" and had nothing to say beyond two, is gone.
+
+  The two places that assess somebody else's record — a settlement and an
+  observation — read the seat off the basis the record names instead of
+  deriving it again, so an adopted record is not re-decided every time the
+  team's set of seats changes. That is the same reasoning `_trust_authority`
+  already carried for a resigned trustee's trail.
+
+  Nothing about a team changes yet: every team still has Identity and Trust,
+  and `genesis` is now refused for the other three, so they stay unreachable
+  until there is a decision that establishes one.
+
+- **A team decides which trusteeships it has.** `establishment` and
+  `dissolution` join `TRUSTEE_CAUSES`, so Focus, Market and Equity are seats a
+  team adds one at a time on the facilitating trusteeship's authority, and
+  gives up the same way. Both are links in the seat's own chain, so that a
+  trusteeship exists, who has held it and that it stopped existing read as one
+  append-only line — and a seat taken up again continues that line rather than
+  starting a second beside it.
+
+  An establishment leaves the seat **vacant**: giving the team a trusteeship is
+  never a way into one. A dissolution needs a vacant seat, because the way out
+  of an occupied one is the holder's own resignation. **Identity cannot be
+  dissolved at all** — everything deciding who belongs rests on it, and a team
+  without one could not decide to have one again.
+
+  `trustee_projection` gains a fifth state, `dissolved`, and two people who may
+  both establish a seat writing it at the same moment produce a contest rather
+  than a refusal — settling that by arrival order would leave two replicas
+  settling it differently and never converging.
+
+- **Where no trusteeship supervises a seat, the members do.** A team that has
+  dissolved Trust has not put Identity beyond reach: the basis such a record
+  names is the Actor's own `team_membership`, which is not a weaker authority
+  than a trusteeship's but where a trusteeship's comes from. All the members
+  but one — the incumbent is not among those who decide their own seat, which
+  is what keeps a lone Identity holder from settling their own succession.
+
+  `facilitating_basis_for_actor` is the one question the write paths ask now,
+  and it answers with a seat's state or a membership without the caller
+  knowing which case it is in. A membership named where a trusteeship does
+  facilitate is refused rather than deferred — deferring left the record
+  waiting on a question that had already been answered the other way.
+
+  This changes what **Beyond recovery** means in `DESIGN_TYPES.md`: dissolved
+  and vacant are different, and only the second is a dead end.
+
+- **The face shows the seats a team has, not the two it used to.** One card
+  per established trusteeship in vocabulary order, an **Add trusteeship**
+  control offering the ones it could have, and **Dissolve** on a vacant seat
+  that is not Identity. The payload carries `seats`, `establishable_trusts`
+  and each seat's `facilitator_trust`, so the browser stops holding a second
+  copy of the facilitation rule — it read `trust === "identity" ? "trust" :
+  "identity"` in three places.
+
+  `identity_payload`, `trust_payload`, `trust_holder`, `holds_trust` and the
+  payload's `identity` / `trust` / `holds_trust` keys are gone, replaced by
+  the `trust`-taking ones. So is `offer_identity`, which existed only to
+  refuse: nothing offers a handover now, so there is nothing to refuse.
+
+- **`config/team.example.json` started the server again.** It still set
+  `"primary_application_id": "agreement"`, the application id from before the
+  rename to S-Team. Core's `ApplicationHost` rejects a primary id naming no
+  active application, so the shipped example config failed at startup with
+  `primary application 'agreement' is not active`. It now says `"team"`.
+
+- **A role, that role held, and a trusteeship are three different things.**
+  They were one `kind` with three characters passed beside it. Now the badge
+  names the object — `role`, `seat`, `trustee`, `membership` — and Core draws
+  it: a shield for an office, a shield with somebody in it for one that is
+  held, a key for a trusteeship, two people for a membership. Role cards and
+  the Identity and Trust cards carry their mark beside the name, and the
+  Roles and Members sections carry it on the heading, from the same table the
+  badges use. The mark shares the label's grid cell for the reason the
+  disclosure caret already did: a fourth child would move every other row's
+  actions into a different column.
+
+- **The shell's vocabulary, and one node label with it.** `NODE_LABELS` calls
+  an agenda item an agenda item rather than a "discussion topic", which was
+  Core's word for a shared root used here for something else entirely. The
+  application mark is an org chart: it was a document, and paper is what the
+  Agreement is — the application cannot claim its own object's glyph. See
+  Core's `DESIGN_VOCABULARY.md` and `DESIGN_UI_CONSISTENCY.md` U8.
+
+- **S-Team says how a team is made, and stops saying how anything else is.**
+  Its registration carries the noun ("Organization" — a team made from
+  outside is a root team), what one starts from, and the call that makes one,
+  so the Cockpit and S-Initiative can offer a new team without knowing any of
+  it. In the other direction `ITEM_APPLICATIONS` is down to which kinds a
+  team runs and what to call them: the facade api versions, the per-kind
+  template lookup and the two create paths are Core's routing now.
+
+- **What a team runs moved into the bar, and Members opens the page.** The
+  "Initiatives and Flows" section is gone: its items are on the shell's
+  navigation row beneath the team's name, drawn like every other
+  application's links — the "Connect to…" pulldown it used to need is gone
+  with it, and so is the confirmation on removing one. An item somebody
+  offers that you have not taken up is not on that row: going somewhere and
+  taking a reference up are different acts, and the second one lives in the
+  "Related" dialog. Taking your reference off is one act with one meaning.
+  `team_items` reports `mine` and no longer composes an item's URL.
+
+- **An initiative or a flow can start from a snapshot file here too.**
+  `create_team_item` takes the same exported document the Cockpit imports and
+  hands it to the application that owns the kind, reading none of it. Making
+  one now uses the shell's dialog (`SovereignShell.openNewTopicDialog`) rather
+  than this page's copy of it — and the copy was the only place a snapshot
+  could not be loaded, which nobody had decided about teams.
+
+- **What a team runs is references now, not lists.** `team_item_list` was a
+  chain of per-actor snapshots, each carrying a *list field* of items — the
+  only list field in the codebase, safe solely because a single author
+  replaced their own wholesale. Each member's reference is its own
+  `topic_link` under the team: the team's list is the union of them, removing
+  yours leaves everybody else's standing, and one member's reference is not
+  another's to take off. Offering an item is creating a node and taking it off
+  is deleting one, so the decision is the record — which is why the stored set
+  of items withdrawn from a team is gone with it, having existed only to stop
+  a derived list from putting back what somebody had removed.
+
+- **Only a current Member's reference counts, and that is asked on every
+  read.** It used to be settled when the record arrived. A stored verdict goes
+  on being true after it stops being true, so somebody who left went on naming
+  the team's items until something rewrote the answer; a derived one stops the
+  moment their standing does. Arrival is still judged — a stranger's reference
+  is refused rather than merely ignored — but the two answer different
+  questions.
+
+- **Deleting your copy of an item no longer takes it off the team.** A list
+  said "I hold this", so deleting the copy made it false and something had to
+  recompute it away. A reference says the team's work includes this; whether a
+  copy is held here is read from the tree on every read and shown as `active`.
+  So an item deleted from the Cockpit is shown as not held rather than
+  vanishing from the team, and taking it off stays somebody's act. **This is a
+  change of meaning**, and it is what lets the exception set go.
+
+- Removing an election from a team is remembered locally as declined. It is
+  the one item a member takes up without being asked, so without that the next
+  poll would put it straight back — the references carry no history to read it
+  from, as the list chain did.
+
+- **Row status follows the stage, so one fact is one colour everywhere.** The
+  dots keyed on the event type while the header band and the transition list
+  keyed on the stage, so "the peer changed it" was blue on the document and
+  amber in the panel. They take the shared stage tokens now. Aligned draws
+  nothing; the box stays, or every label shifts sideways as things settle.
+  A change still travelling pulses, which is what separates it from one the
+  peer has seen and not answered now that both are grey.
+- **The Agreement is a row like every other element.** A dot saying whose move
+  it is, its name editable in place, version and the projection badge beside
+  it, and a reaction to answer with. It was loose text with no way to act on
+  it — a peer's rename showed as "Proposed name" that the receiving side could
+  neither take nor refuse. Name and version are two fields on one node, so one
+  row carries both and one reaction settles both, which is also why the
+  transition list shows one item for them rather than two.
+- **The two Agreement states now say whose state each is.** `consolidated`
+  became `agreed` — the Identity holders publish the same Agreement, which
+  pairs with `disputed` — and `agreement_aligned` became
+  `my_agreement_current`, this client's own copy matching what they publish.
+  One word was doing for both, and they are different questions: you can be
+  current with an absent Agreement, and out of date against a perfectly
+  agreed one.
+- **A peer's change to something you hold is now offered where you read it.**
+  The payload carries `proposed_changes`, the peer's version of a node this
+  client already holds. A *new* node has always shown on the document as a
+  proposal; a *changed* one appeared only in the divergence list, so a
+  renamed Agreement was invisible at the place its name is read. The
+  Agreement head shows the proposed name and version beside the current ones
+  until they are adopted.
+
+- **A team's nodes now sit in containers, one per kind.** Roles, membership
+  types, members, applications, invitations, trusteeship, elections,
+  candidacies, actions, lists, seats — each has a place of its own, and so do
+  a role's accountabilities, domains, answers and holdings. Core is handed a
+  container's uuid instead of a type name, so nine `node_type` declarations
+  became one statement per container, ordering no longer names a type, and a
+  hash scope is a place. A container sits between a parent and its children
+  only where the parent holds more than one kind: an agreement holds sections
+  and a section holds clauses, so there the parent is already the predicate —
+  and a container there could not exist before a peer's section had been
+  adopted, which would cost the one-pass adoption of a new subtree.
+  Containers are transparent to the content hashes, so adding one never
+  re-opens an acceptance of unchanged text, and the page reads straight
+  through them, so a role or a membership renders the same whether it sits
+  under its parent or in a container of its own kind.
+- **The agreement is a node.** `agreement_title` and `agreement_version` were
+  two fields on the team; a team is a body of people and its agreement is the
+  text they hold to, which an acceptance has to be able to name. Its uuid is
+  derived from the team's, so every client reaches the same agreement without
+  adopting a shell, and only what is written in it is negotiated.
+- **Added `team_acceptance`.** An Actor's acceptance of one agreement, at the
+  text it had when they accepted, appended rather than rewritten. Distinct
+  from the acceptance fields on `team_membership`, which snapshot what was
+  asked and answered at *admission* — evidence of an event, which stays with
+  the event. This is the standing fact, renewed when the agreement changes
+  without anybody being admitted again. It names a `reference_hash` rather
+  than a version label, because a label is a sentence somebody typed and the
+  hash is the agreement as it actually read.
+- **Added `actors(team)`**, derived from the membership, application,
+  acceptance and answer chains. A stored Actor list would be a third copy of
+  what those already say, going stale against Core's identities. A seated team
+  appears beside people, its kind read from what its uuid turns out to name.
+- **An observation now sits under the decision it observes.** `team_trustee_
+  reality` lost `action_uuid`: which decision it is about is a fact about
+  where it is, not a uuid it carries and could carry wrongly. `team_trustee_
+  action` gained `value`, the decision in words — `subject_uuid` said what was
+  decided about, and nothing said what was decided.
+- **Fixed: a well-formed record from an unentitled author would have been
+  adopted.** Declaring record containers `additions: auto` took an arriving
+  record on the strength of its position, which skips the resolver and so
+  never runs `assess_governance_record`. Position says where a record belongs;
+  it cannot say whether its author was entitled to write it. They declare
+  `hold`, which sends every arrival to the authority check.
+
 - Team topics now publish declared adoption handling to Core, and both
   eligibility callbacks are gone. A team topic holds by default, since
   agreement content is what members negotiate; the manual adopt button

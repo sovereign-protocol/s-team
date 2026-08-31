@@ -127,7 +127,7 @@ class BoundaryTests(unittest.TestCase):
             self.assertFalse(used & forbidden, str(path))
 
     def test_reads_the_transition_ranking_rather_than_copying_it(self):
-        # Kanban and Team had each copied Session's ranking and the
+        # S-Initiative and S-Team had each copied Session's ranking and the
         # copies drifted: one ranked divergence 6, the other 5, so the same
         # conflict surfaced differently in each. Session owns the ranking.
         for path in SOURCES:
@@ -192,7 +192,7 @@ class AssetTests(unittest.TestCase):
         self.assertIn("SovereignUI.reactionControl", self.team)
         self.assertNotIn("Accept proposal", self.team)
         self.assertNotIn("Withdraw proposal", self.team)
-        # "Keep mine" is the Kanban reaction, offered after a merge. An
+        # "Keep mine" is the S-Initiative reaction, offered after a merge. A
         # team never merges a peer's node first, so it must not appear.
         self.assertNotIn("Keep mine", self.team)
 
@@ -232,7 +232,11 @@ class AssetTests(unittest.TestCase):
 
     def test_topic_header_delegates_navigation_and_creation_to_the_shell(self):
         self.assertNotIn("onCreateTopic", self.team)
-        self.assertIn("SovereignShell.setTopicSelector", self.team)
+        self.assertIn("SovereignShell.setTopicName", self.team)
+        # Which team you are on is chosen in the Organizations tree beside
+        # the page. A second list of the same teams in the bar was the
+        # shell's before Core owned one, and two of them is one too many.
+        self.assertNotIn("payload.teams.map", self.team)
 
     def test_root_teams_are_worded_as_organizations(self):
         self.assertIn("<h2>New Organization</h2>", self.team)
@@ -245,7 +249,10 @@ class AssetTests(unittest.TestCase):
     def test_agenda_exposes_the_shared_move_and_update_routes(self):
         self.assertIn("/api/team/agenda/move", self.team)
         self.assertIn("/api/team/agenda/update", self.team)
-        self.assertCodeContains("displayedChildren(current, 'team_section')")
+        # Sections hang off the agreement node, and the page reads through
+        # the container it sits in rather than naming a type twice.
+        self.assertCodeContains("displayedChildren(current, 'team_agreement')")
+        self.assertCodeContains("displayedChildren(")
 
     def test_polling_preserves_focused_form_fields(self):
         self.assertCodeContains(
@@ -292,6 +299,25 @@ class AssetTests(unittest.TestCase):
         # per role, so there is no "click to take it" on anybody's badge.
         self.assertNotIn("Click to take it", self.team)
         self.assertIn("+ Add role", self.team)
+
+    def test_a_role_badge_opens_the_role_rather_than_leaving_it(self):
+        # A click on your own role or trusteeship badge in Actors used to
+        # step out of it on the spot - one stray click on a crowded line was
+        # all it took. It opens the role's own card in Roles now; stepping
+        # out moved there, onto a button beside the badge that already
+        # carried it for a trusteeship.
+        self.assertIn("openRoleCard({ trust: role.trustee })", self.team)
+        self.assertIn("openRoleCard({ roleUuid: role.uuid })", self.team)
+        self.assertIn("Click to open this role.", self.team)
+        # The card itself carries a stable marker to scroll to and flash,
+        # for a role and for a trusteeship alike.
+        self.assertIn("card.dataset.uuid = role.uuid;", self.team)
+        self.assertIn("card.dataset.uuid = trust;", self.team)
+        self.assertIn("highlight-flash", self.team)
+        # Stepping out is a button on the holder's own badge, on both kinds
+        # of card - a trusteeship already had it; an ordinary role gets one
+        # too, rather than only the trustee case.
+        self.assertIn('Step out of ${role.data.name', self.team)
 
     def test_every_holder_status_is_something_the_holder_said(self):
         # Nobody is invited to a role, so there is no state between being
@@ -357,6 +383,9 @@ class AssetTests(unittest.TestCase):
             "/api/team/membership/leave",
             "/api/team/membership/apply",
             "/api/team/membership/issue",
+            "Your membership terms changed.",
+            "Relinquish membership",
+            "membership-terms-react",
             "on this team, holding no role yet",
         ):
             self.assertIn(marker, self.team)
@@ -389,9 +418,12 @@ class AssetTests(unittest.TestCase):
         )
         self.assertIn("This team has no Agreement yet.", self.team)
         self.assertNotIn("Membership cannot be accepted.", self.team)
-        self.assertIn("Renew outdated membership", self.team)
-        self.assertIn("Renew application for ${name}?", self.team)
-        self.assertCodeContains("state.is_mine && membership.status === 'outdated'")
+        # An outdated badge is answered on the badge itself - the same
+        # signed act as the Agreement panel's own button, never a second
+        # application - so a role is never in the loop.
+        self.assertIn("Re-accept the Agreement as it now reads", self.team)
+        self.assertCodeContains('await api("/api/team/agreement/accept"')
+        self.assertNotIn("Renew outdated membership", self.team)
         # Every member is an actor and is already on the actor list, so the
         # two acts that change membership live on the actor's own line. A
         # roster beside it named the same people a second time.
@@ -481,35 +513,22 @@ class AssetTests(unittest.TestCase):
         self.assertIn("max-height", trail)
         self.assertIn("overflow-y: auto", trail)
 
-    def test_the_work_a_team_runs_is_listed_and_taken_up(self):
-        # An item is the team's because it is on the team's channel and
-        # yours because you hold it. Nothing about it is recorded on the
-        # team, so the page reads both facts from the payload and nothing
-        # in it names a stored record.
+    def test_the_work_a_team_runs_has_no_page_section_of_its_own(self):
+        # What the team runs is Core's own connected work now, reached from
+        # the shared header - one mechanism every application gets for
+        # free instead of a page section duplicating it.
+        # (s-core/DESIGN_NAVIGATION_LINKS.md)
         for marker in (
             "/api/team/items/create",
             "/api/team/items/connect",
             "/api/team/items/offer",
             "/api/team/items/remove",
-            "Connect to…",
-            "Offer one of mine…",
-            'id="newItemModal"',
+            'disclosure("Work", "work")',
+            "team-work-row",
+            "renderItems",
+            "openNewItemModal",
         ):
-            self.assertIn(marker, self.team)
-        # Only what you hold is a row: an offer is a name until you take it
-        # up. Parentheses around a single arrow-function argument are a
-        # formatter choice, not part of this contract.
-        self.assertRegex(
-            self.team,
-            r"items\.filter\(\(?item\)?\s*=>\s*item\.active\)",
-        )
-        self.assertRegex(
-            self.team,
-            r"items\.filter\(\(?item\)?\s*=>\s*!item\.active\)",
-        )
-        # Removing says what it does not do, because the word is the same
-        # one the Cockpit uses for deleting.
-        self.assertIn("Everybody else keeps ", self.team)
+            self.assertNotIn(marker, self.team)
 
     def test_the_onboarding_pool_is_derived_rather_than_a_second_topic(self):
         # The pool is whoever publishes on the channel without being on the
@@ -555,9 +574,11 @@ class AssetTests(unittest.TestCase):
         ):
             self.assertNotIn(gone, self.team)
         # A holding is its holder's own record, so nothing on somebody
-        # else's badge takes it back. Stepping out is theirs, and the one
-        # mark left of that shape is the trustee's own.
+        # else's badge takes it back. Stepping out is theirs, marked on
+        # their own badge under the role's own card - the trustee card's
+        # copy of that mark, and the ordinary role card's copy beside it.
         self.assertIn("Step out of ${label}", self.team)
+        self.assertIn('Step out of ${role.data.name', self.team)
 
     def test_a_team_takes_a_seat_from_its_own_page(self):
         # A team that could take a seat gets no row on the parent's page: a
@@ -597,27 +618,57 @@ class AssetTests(unittest.TestCase):
         ):
             self.assertNotIn(gone, self.team)
 
+    def test_roles_members_and_trusteeships_name_their_kind(self):
+        """An office, that office filled, and a trusteeship are three things.
+
+        Every badge used to be `kind: "role"` with a different character
+        passed alongside it - a key for a trusteeship, an open diamond for a
+        role, a filled one for a membership. The kind is the distinction, so
+        the kind is what is passed; Core draws it (U8).
+        """
+        for kind in (
+            'kind: "seat"',
+            'kind: role.trustee ? "trustee" : "seat"',
+            'kind: "membership"',
+        ):
+            self.assertCodeContains(kind)
+        # No drawing is chosen here any more.
+        self.assertNotIn("icon:", self.team)
+        # A role card is the office, so it carries the shield; the
+        # trusteeship cards carry the key instead.
+        self.assertIn('glyph: "role"', self.team)
+        self.assertIn('glyph: "trustee"', self.team)
+        # The mark shares the label's cell. A fourth grid child would put
+        # every other row's actions in a different column - the same reason
+        # the disclosure caret shares it.
+        self.assertIn("heading.prepend(mark)", self.team)
+        self.assertIn("row.append(lamp, heading, actions)", self.team)
+
     def test_the_team_parts_use_shared_disclosures(self):
-        for title, key in (
+        # The third argument is the kind the section holds, and Core draws
+        # its mark from the same table the badges inside it use (U8) - which
+        # is what stops a heading and its contents drawing one object two
+        # ways. Sections that hold document structure ask for no mark.
+        for title, key, glyph in (
             # "Agreement" and not "Team document": this section *is* the
             # agreement - the text the members consent to - and it is the
             # one place the word survives the move to Team.
-            ("Agreement", "document"),
-            ("Members", "actors"),
-            ("Roles", "roles"),
-            # What the team is doing, which is what somebody opening it
-            # came for.
-            ("Initiatives and Flows", "work"),
+            ("Agreement", "document", None),
+            ("Members", "actors", "membership"),
+            ("Roles", "roles", "role"),
             # What has already happened, named for the general case rather
             # than for the decision trail that is currently all of it.
-            ("History", "history"),
+            ("History", "history", None),
         ):
-            self.assertCodeContains(f"disclosure('{title}', '{key}')")
-        # The work is open and everything else arrives closed. The agreement
-        # is the longest section and the least often changed, and who is on
-        # the team changes rarely enough not to greet you.
-        self.assertIn("work: true", self.team)
-        self.assertIn("actors: false", self.team)
+            call = f"disclosure('{title}', '{key}'"
+            self.assertCodeContains(f"{call}, '{glyph}')" if glyph else f"{call})")
+        # What the team runs has no section: it is in the bar, where every
+        # application says what its topic is attached to.
+        self.assertNotIn('"Initiatives and Flows"', self.team)
+        # Members opens the page and everything else arrives closed. The
+        # agreement is the longest section and the least often changed.
+        self.assertIn("actors: true", self.team)
+        self.assertIn("document: false", self.team)
         self.assertIn("roles: false", self.team)
         self.assertIn("document: false", self.team)
         self.assertIn("history: false", self.team)
@@ -695,8 +746,16 @@ class AssetTests(unittest.TestCase):
         # One field used to serve both, so renaming the body silently
         # retitled the document its members had accepted.
         self.assertIn("/api/team/agreement/rename", self.team)
-        self.assertIn("current.data.agreement_title", self.team)
+        self.assertIn("agreementData(current).version", self.team)
         self.assertCodeContains("placeholder: 'Name this agreement'")
+        # The agreement is a node, so its name rides an element row like every
+        # other element. The border carries steady states; only a change still
+        # travelling gets the pulsing dot.
+        self.assertCodeContains("agreementRow.classList.add('agreement-head-row')")
+        self.assertCodeContains("markerStages: ['in_flight']")
+        self.assertCodeContains(
+            "payload.membership?.my_agreement_current === true",
+        )
         self.assertNotIn(".agreement-title:empty::before", css)
         # The team's name heads the page, outside every disclosure, and the
         # sections follow in the order the page now reads.
@@ -706,7 +765,7 @@ class AssetTests(unittest.TestCase):
         positions = [
             appended.index(part)
             for part in (
-                "workPart.section", "membersPart.section", "rolesPart.section",
+                "membersPart.section", "rolesPart.section",
                 "documentPart.section", "membershipPart.section", "historyPart.section",
             )
         ]

@@ -11,7 +11,7 @@ from sovereign import ProtocolNode
 from .logic import TeamLogic
 
 
-TEAM_FACADE_API_VERSION = 2
+TEAM_FACADE_API_VERSION = 4
 
 
 class TeamFacade:
@@ -37,23 +37,20 @@ class TeamFacade:
     ) -> list[tuple[str, ProtocolNode]]:
         return self._logic.child_teams(team)
 
+    def trusteeship(self, team: ProtocolNode, trust: str) -> dict:
+        return self._logic.trusteeship_payload(team, trust)
+
+    def trusteeship_holder(self, team: ProtocolNode, trust: str) -> str:
+        return self._logic.trustee_holder(team, trust)
+
+    def established_trusts(self, team: ProtocolNode) -> frozenset[str]:
+        return self._logic.established_trusts(team)
+
     def identity_holder(self, team: ProtocolNode) -> str:
         return self._logic.identity_holder(team)
 
-    def identity(self, team: ProtocolNode) -> dict:
-        return self._logic.identity_payload(team)
-
-    def trust_holder(self, team: ProtocolNode) -> str:
-        return self._logic.trust_holder(team)
-
-    def trust(self, team: ProtocolNode) -> dict:
-        return self._logic.trust_payload(team)
-
     def take_identity(self, team_uuid: str):
         return self._logic.take_identity(team_uuid)
-
-    def offer_identity(self, team_uuid: str, actor_uuid: str):
-        return self._logic.offer_identity(team_uuid, actor_uuid)
 
     def resign_identity(self, team_uuid: str):
         return self._logic.resign_identity(team_uuid)
@@ -225,28 +222,9 @@ class TeamFacade:
     def create_seated_team(self, role_uuid: str, title: str):
         return self._logic.create_seated_team(role_uuid, title)
 
-    # What the team runs. Another application asking is asking what is on
-    # this team's channel, which is where the answer lives - there is no
-    # list of items to hand over, only the derivation.
-    def items(self, team: ProtocolNode) -> list[dict]:
-        return self._logic.team_items(team)
-
-    def create_item(
-        self, team_uuid: str, application_id: str, title: str,
-        template: str = "",
-    ):
-        return self._logic.create_team_item(
-            team_uuid, application_id, title, template,
-        )
-
-    def offer_item(self, team_uuid: str, topic_uuid: str):
-        return self._logic.offer_team_item(team_uuid, topic_uuid)
-
-    def connect_item(self, team_uuid: str, topic_uuid: str):
-        return self._logic.connect_team_item(team_uuid, topic_uuid)
-
-    def remove_item(self, team_uuid: str, topic_uuid: str):
-        return self._logic.remove_team_item(team_uuid, topic_uuid)
+    # What the team runs is Core's own connected work now
+    # (s-core/DESIGN_NAVIGATION_LINKS.md) - reachable from the header,
+    # uniformly, for every application. Nothing here to forward any more.
 
     def parents(self, team: ProtocolNode) -> list[dict]:
         return self._logic.parent_payload(team)
@@ -268,8 +246,13 @@ class TeamFacade:
     ) -> list[dict]:
         return self._logic.transition_events(team_uuid, network)
 
-    def transition_by_node(self, events: list[dict]) -> dict:
-        return self._logic.transition_by_node(events)
+    def react_to_node(
+        self, source_addr: str, node_uuid: str, reaction: str,
+        absent: bool = False,
+    ):
+        return self._logic.react_to_node(
+            source_addr, node_uuid, reaction, absent,
+        )
 
     def collaboration_context(
         self, topic_uuid: str, network: dict | None = None,

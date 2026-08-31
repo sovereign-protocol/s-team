@@ -11,6 +11,7 @@ from sovereign import (
     ApplicationRegistration, ProtocolNode, Session, SessionResult,
 )
 from sovereign import app_server
+from sovereign.relationships import RELATIONSHIP_TYPE
 from sovereign.relay_logic import RelayLogic
 
 try:
@@ -178,7 +179,7 @@ class TeamLogicTests(unittest.TestCase):
                 self.flow = flow
 
             def find(self, application_id, facade_api_version):
-                if (application_id, facade_api_version) == ("flow", 1):
+                if (application_id, facade_api_version) == ("flow", 2):
                     return self.flow
                 return None
 
@@ -305,7 +306,7 @@ class TeamLogicTests(unittest.TestCase):
             )["state"],
             "withdrawn",
         )
-        self.assertFalse(runtime.logic.identity_payload(team)["can_act"])
+        self.assertFalse(runtime.logic.trusteeship_payload(team, "identity")["can_act"])
 
     def test_acting_identity_candidate_can_operate_membership(self):
         runtime = self.runtime(9644)
@@ -327,7 +328,7 @@ class TeamLogicTests(unittest.TestCase):
         self.assertTrue(runtime.logic.membership_payload(team)["can_resolve"])
         self.assertEqual(
             invitation.value.data["authority_basis_uuid"],
-            runtime.logic.identity_payload(team)["candidates"][0]["uuid"],
+            runtime.logic.trusteeship_payload(team, "identity")["candidates"][0]["uuid"],
         )
 
     def test_acting_candidate_can_facilitate_election(self):
@@ -487,8 +488,8 @@ class TeamLogicTests(unittest.TestCase):
 
         self.assertEqual(filled.status, "ok")
         self.assertEqual(rejected.status, "error")
-        self.assertFalse(runtime.logic.identity_payload(
-            runtime.session.protocol.index[team_uuid],
+        self.assertFalse(runtime.logic.trusteeship_payload(
+            runtime.session.protocol.index[team_uuid], "identity",
         )["can_act"])
 
     def test_a_trustees_decisions_survive_their_resignation(self):
@@ -548,10 +549,7 @@ class TeamLogicTests(unittest.TestCase):
 
         runtime.logic.unseat_team(role_uuid, child_uuid)
         child = runtime.session.protocol.index[child_uuid]
-        records = [
-            node for node in child.live_children()
-            if node.data.get("type") == "team_role_holding"
-        ]
+        records = runtime.logic._held(child, "seats")
 
         self.assertEqual(runtime.logic.parent_holdings(child), [])
         self.assertEqual(len(records), 2)
@@ -563,9 +561,8 @@ class TeamLogicTests(unittest.TestCase):
         child = runtime.session.protocol.index[child_uuid]
         live = runtime.logic.parent_holdings(child)
         roots = [
-            node for node in child.live_children()
-            if node.data.get("type") == "team_role_holding"
-            and not node.data.get("previous_holding_uuid")
+            node for node in runtime.logic._held(child, "seats")
+            if not node.data.get("previous_holding_uuid")
         ]
 
         self.assertEqual(len(live), 1)
@@ -797,7 +794,9 @@ class TeamLogicTests(unittest.TestCase):
         runtime = self.runtime(9670)
         team_uuid = runtime.logic.create_team("Two claims").value
         mine = runtime.session.identity.uuid
-        runtime.session.create_child(team_uuid, {
+        runtime.session.create_child(runtime.logic._container(
+            runtime.session.protocol.index[team_uuid], "members",
+        ).uuid, {
             "type": "team_membership", "actor_uuid": mine, "state": "member",
             "previous_membership_uuid": "", "cause": "genesis",
             "acted_by": mine, "acted_at": "2026-08-07T14:00:00Z",
@@ -1004,6 +1003,486 @@ class TeamLogicTests(unittest.TestCase):
             runtime.session.protocol.index[team_uuid], "identity",
         )["state"], "vacant")
 
+    def test_a_team_is_made_of_the_seats_its_records_establish(self):
+        """`TRUSTS` says what a seat may be called; the records say which
+        ones this team has. A vocabulary of five and a team of two is the
+        whole point of the split."""
+        session = Session("local")
+        logic = TeamLogic(session)
+        team_uuid = logic.create_team("Established").value
+        team = session.protocol.index[team_uuid]
+
+        self.assertEqual(
+            logic.TRUSTS,
+            frozenset({"identity", "trust", "focus", "market", "equity"}),
+        )
+        self.assertEqual(
+            logic.established_trusts(team), frozenset({"identity", "trust"}),
+        )
+        # Resigning empties a seat. It does not un-establish it.
+        logic.resign_identity(team_uuid)
+        self.assertIn(
+            "identity",
+            logic.established_trusts(session.protocol.index[team_uuid]),
+        )
+
+    def test_the_facilitation_rule_is_read_from_the_teams_own_seats(self):
+        """Identity by Trust and Trust by Identity, which is what "the
+        counterpart" used to mean - now derived from what the team has
+        rather than from there being only two of them."""
+        session = Session("local")
+        logic = TeamLogic(session)
+        team_uuid = logic.create_team("Facilitated").value
+        team = session.protocol.index[team_uuid]
+
+        self.assertEqual(logic.facilitating_trust(team, "identity"), "trust")
+        self.assertEqual(logic.facilitating_trust(team, "trust"), "identity")
+        # Asked about a seat the team has not established yet, the rule
+        # still answers - which is who would authorise establishing it.
+        self.assertEqual(logic.facilitating_trust(team, "focus"), "trust")
+        self.assertEqual(
+            logic.eligible_facilitating_trusts(team, "identity"),
+            frozenset({"trust"}),
+        )
+        self.assertEqual(
+            logic.eligible_facilitating_trusts(team, "trust"),
+            frozenset({"identity"}),
+        )
+
+    def test_supervision_is_identitys_and_trusts_alone(self):
+        """The property that lets a record be judged after the team's set of
+        seats has changed: the eligible set is drawn from two seats, so
+        establishing a third cannot move a record's authority under it."""
+        session = Session("local")
+        logic = TeamLogic(session)
+        team_uuid = logic.create_team("Supervised").value
+        team = session.protocol.index[team_uuid]
+
+        for trust in sorted(logic.TRUSTS):
+            with self.subTest(trust=trust):
+                self.assertLessEqual(
+                    logic.eligible_facilitating_trusts(team, trust),
+                    {logic.MEMBERSHIP_TRUST, logic.SUPERVISORY_TRUST},
+                )
+                self.assertNotIn(
+                    trust, logic.eligible_facilitating_trusts(team, trust),
+                )
+
+    def test_a_settlement_is_judged_by_the_seat_its_basis_names(self):
+        """The authority is read off the record rather than derived while
+        assessing it. A seat cannot settle itself, and saying so is the
+        basis check rather than a rule applied over the top of it."""
+        runtime = self.runtime(9665)
+        team_uuid = runtime.logic.create_team("Self facilitating").value
+        team = runtime.session.protocol.index[team_uuid]
+        identity_basis = runtime.logic.trustee_projection(
+            team, "identity",
+        )["current_state_uuid"]
+        runtime.logic.resign_identity(team_uuid)
+        vacancy = runtime.logic.trustee_projection(
+            runtime.session.protocol.index[team_uuid], "identity",
+        )["current_state_uuid"]
+
+        refused = runtime.logic.append_governance_record(team_uuid, {
+            "type": "team_trustee_state",
+            "trust": "identity",
+            "holder_actor_uuid": runtime.session.identity.uuid,
+            "previous_state_uuid": vacancy,
+            "cause": "resolution",
+            "acted_by": runtime.session.identity.uuid,
+            "acted_at": "2026-08-19T10:00:00Z",
+            "authority_basis_uuid": identity_basis,
+            "signals": "",
+            "consideration": "",
+            "expectation": "",
+        })
+
+        self.assertEqual(refused.status, "error")
+        self.assertIn("does not facilitate", refused.reason)
+
+    def test_genesis_founds_identity_and_trust_and_nothing_else(self):
+        """Genesis answers to no facilitator - the holder writes it for
+        themself - so it is the founding pair's cause and not a way into
+        the three seats a team adds by decision."""
+        runtime = self.runtime(9666)
+        team_uuid = runtime.logic.create_team("Founded").value
+
+        refused = runtime.logic.append_governance_record(team_uuid, {
+            "type": "team_trustee_state",
+            "trust": "focus",
+            "holder_actor_uuid": runtime.session.identity.uuid,
+            "previous_state_uuid": "",
+            "cause": "genesis",
+            "acted_by": runtime.session.identity.uuid,
+            "acted_at": "2026-08-19T10:00:00Z",
+            "authority_basis_uuid": "",
+            "signals": "",
+            "consideration": "",
+            "expectation": "",
+        })
+
+        self.assertEqual(refused.status, "error")
+        self.assertIn("genesis", refused.reason)
+        self.assertEqual(runtime.logic.established_trusts(
+            runtime.session.protocol.index[team_uuid],
+        ), frozenset({"identity", "trust"}))
+
+    def test_a_team_adds_a_trusteeship_on_the_facilitating_authority(self):
+        """Establishing Focus is Trust's decision, and it leaves the seat
+        empty: giving the team a trusteeship is never a way into one."""
+        runtime = self.runtime(9667)
+        team_uuid = runtime.logic.create_team("Focused").value
+
+        established = runtime.logic.establish_trusteeship(
+            team_uuid, "focus", signals="Three products to hold apart",
+        )
+
+        team = runtime.session.protocol.index[team_uuid]
+        self.assertEqual(established.status, "ok", established.reason)
+        self.assertEqual(runtime.logic.established_trusts(team), frozenset(
+            {"identity", "trust", "focus"},
+        ))
+        projection = runtime.logic.trustee_projection(team, "focus")
+        self.assertEqual(projection["state"], "vacant")
+        self.assertEqual(projection["holder_actor_uuid"], "")
+        # Established once. The second attempt is not a second root.
+        again = runtime.logic.establish_trusteeship(team_uuid, "focus")
+        self.assertEqual(again.status, "error")
+        self.assertIn("already established", again.reason)
+
+    def test_the_facilitator_of_a_new_seat_follows_the_team(self):
+        """Trust supervises where a team has it, Identity where it does
+        not - and a team that has dropped Trust can still add seats."""
+        runtime = self.runtime(9668)
+        team_uuid = runtime.logic.create_team("Trustless").value
+        team = runtime.session.protocol.index[team_uuid]
+
+        self.assertEqual(runtime.logic.facilitating_trust(team, "focus"), "trust")
+        runtime.logic.resign_trusteeship(team_uuid, "trust")
+        dissolved = runtime.logic.dissolve_trusteeship(team_uuid, "trust")
+        team = runtime.session.protocol.index[team_uuid]
+        established = runtime.logic.establish_trusteeship(team_uuid, "market")
+
+        self.assertEqual(dissolved.status, "ok", dissolved.reason)
+        self.assertEqual(runtime.logic.trustee_projection(
+            team, "trust",
+        )["state"], "dissolved")
+        self.assertEqual(runtime.logic.facilitating_trust(team, "focus"), "identity")
+        self.assertEqual(established.status, "ok", established.reason)
+        self.assertEqual(runtime.logic.established_trusts(
+            runtime.session.protocol.index[team_uuid],
+        ), frozenset({"identity", "market"}))
+
+    def test_a_held_seat_is_resigned_before_it_is_dissolved(self):
+        """The way out of an occupied seat is the holder's own act. A
+        dissolution over somebody sitting in one would take their authority
+        away without them having given it up."""
+        runtime = self.runtime(9669)
+        team_uuid = runtime.logic.create_team("Occupied").value
+
+        held = runtime.logic.dissolve_trusteeship(team_uuid, "trust")
+        runtime.logic.resign_trusteeship(team_uuid, "trust")
+        vacant = runtime.logic.dissolve_trusteeship(team_uuid, "trust")
+
+        self.assertEqual(held.status, "error")
+        self.assertIn("vacant", held.reason)
+        self.assertEqual(vacant.status, "ok", vacant.reason)
+
+    def test_identity_is_the_one_seat_that_cannot_be_dissolved(self):
+        """A team without Identity could not say who was on it, and could
+        not decide to have one again. Resigning it is different: the seat
+        stands empty and the team can fill it."""
+        runtime = self.runtime(9670)
+        team_uuid = runtime.logic.create_team("Minimum").value
+        runtime.logic.resign_identity(team_uuid)
+
+        refused = runtime.logic.dissolve_trusteeship(team_uuid, "identity")
+        written = runtime.logic.append_governance_record(team_uuid, {
+            "type": "team_trustee_state",
+            "trust": "identity",
+            "holder_actor_uuid": "",
+            "previous_state_uuid": runtime.logic.trustee_projection(
+                runtime.session.protocol.index[team_uuid], "identity",
+            )["current_state_uuid"],
+            "cause": "dissolution",
+            "acted_by": runtime.session.identity.uuid,
+            "acted_at": "2026-08-19T10:00:00Z",
+            "authority_basis_uuid": runtime.logic.trustee_projection(
+                runtime.session.protocol.index[team_uuid], "trust",
+            )["current_state_uuid"],
+            "signals": "",
+            "consideration": "",
+            "expectation": "",
+        })
+
+        self.assertEqual(refused.status, "error")
+        self.assertEqual(written.status, "error")
+        self.assertIn("cannot be dissolved", written.reason)
+        self.assertIn("identity", runtime.logic.established_trusts(
+            runtime.session.protocol.index[team_uuid],
+        ))
+
+    def test_a_dissolved_seat_holds_nobody_until_it_is_established_again(self):
+        """Dissolved is not vacant. Nothing may be written into the seat,
+        and taking it up again continues its own chain rather than starting
+        a second one beside it."""
+        runtime = self.runtime(9671)
+        member = self.runtime(9672)
+        team_uuid = runtime.logic.create_team("Taken up again").value
+        connect(runtime, member, team_uuid)
+        member.logic.accept_team_invitation(
+            member.session.protocol.index[team_uuid],
+        )
+        sync(runtime, member)
+        runtime.logic.resign_trusteeship(team_uuid, "trust")
+        runtime.logic.dissolve_trusteeship(team_uuid, "trust")
+
+        settled = runtime.logic.settle_trusteeship(
+            team_uuid, "trust", member.session.identity.uuid,
+        )
+        established = runtime.logic.establish_trusteeship(team_uuid, "trust")
+
+        team = runtime.session.protocol.index[team_uuid]
+        self.assertEqual(settled.status, "error")
+        self.assertEqual(established.status, "ok", established.reason)
+        self.assertEqual(
+            runtime.logic.trustee_projection(team, "trust")["state"], "vacant",
+        )
+        # One chain, not two: a second root would read as a contest.
+        roots = [
+            state for state in runtime.logic.governance_records(
+                team, "team_trustee_state",
+            )
+            if state.data.get("trust") == "trust"
+            and not state.data.get("previous_state_uuid")
+        ]
+        self.assertEqual(len(roots), 1)
+
+    def test_establishing_a_seat_does_not_move_an_earlier_settlement(self):
+        """The replay case. A settlement written while Identity facilitated
+        Focus is judged by the seat its basis names, so establishing Trust
+        afterwards cannot turn an adopted record unauthorized - which is
+        what deriving the facilitator at assessment time would have done."""
+        runtime = self.runtime(9673)
+        member = self.runtime(9674)
+        team_uuid = runtime.logic.create_team("Replayed").value
+        connect(runtime, member, team_uuid)
+        member.logic.accept_team_invitation(
+            member.session.protocol.index[team_uuid],
+        )
+        sync(runtime, member)
+        runtime.logic.resign_trusteeship(team_uuid, "trust")
+        runtime.logic.dissolve_trusteeship(team_uuid, "trust")
+        runtime.logic.establish_trusteeship(team_uuid, "focus")
+        settled = runtime.logic.settle_trusteeship(
+            team_uuid, "focus", member.session.identity.uuid,
+        )
+        team = runtime.session.protocol.index[team_uuid]
+        settlement = runtime.session.protocol.index[
+            runtime.logic.trustee_projection(team, "focus")["current_state_uuid"]
+        ]
+
+        # Trust comes back, so the rule now names it for Focus.
+        runtime.logic.establish_trusteeship(team_uuid, "trust")
+        team = runtime.session.protocol.index[team_uuid]
+        reassessed = runtime.logic.assess_governance_record(
+            team, settlement, verification="valid",
+        )
+
+        self.assertEqual(settled.status, "ok", settled.reason)
+        self.assertEqual(runtime.logic.facilitating_trust(team, "focus"), "trust")
+        self.assertEqual(reassessed["status"], "authorized", reassessed["reason"])
+
+    def test_the_rule_names_one_facilitator_and_the_check_accepts_two(self):
+        """Where a team has Trust, Trust is who establishes a third seat -
+        that is the rule, and `establish_trusteeship` follows it, so Identity
+        is not offered the act. The check behind it is wider on purpose: a
+        record naming Identity is still adopted, because judging it against
+        the rule of the moment would unauthorize it the day Trust was
+        dissolved. So Identity writing one anyway is visible rather than
+        prevented, and two roots are a contest like any other."""
+        runtime = self.runtime(9675)
+        member = self.runtime(9676)
+        team_uuid = runtime.logic.create_team("Both at once").value
+        connect(runtime, member, team_uuid)
+        member.logic.accept_team_invitation(
+            member.session.protocol.index[team_uuid],
+        )
+        sync(runtime, member)
+        runtime.logic.resign_trusteeship(team_uuid, "trust")
+        runtime.logic.settle_trusteeship(
+            team_uuid, "trust", member.session.identity.uuid,
+        )
+        sync(runtime, member)
+        team = runtime.session.protocol.index[team_uuid]
+
+        offered = runtime.logic.establish_trusteeship(team_uuid, "focus")
+        by_hand = runtime.logic.append_governance_record(team_uuid, {
+            "type": "team_trustee_state",
+            "trust": "focus",
+            "holder_actor_uuid": "",
+            "previous_state_uuid": "",
+            "cause": "establishment",
+            "acted_by": runtime.session.identity.uuid,
+            "acted_at": "2026-08-19T10:00:00Z",
+            "authority_basis_uuid": runtime.logic.trustee_projection(
+                team, "identity",
+            )["current_state_uuid"],
+            "signals": "",
+            "consideration": "",
+            "expectation": "",
+        })
+        theirs = member.logic.establish_trusteeship(team_uuid, "focus")
+        sync(runtime, member)
+
+        # Identity is not offered it...
+        self.assertEqual(offered.status, "error")
+        self.assertIn("only Trust", offered.reason)
+        # ...and is not stopped from writing it either.
+        self.assertEqual(by_hand.status, "ok", by_hand.reason)
+        self.assertEqual(theirs.status, "ok", theirs.reason)
+        projection = runtime.logic.trustee_projection(
+            runtime.session.protocol.index[team_uuid], "focus",
+        )
+        self.assertEqual(projection["state"], "contested")
+        self.assertEqual(len(projection["contenders"]), 2)
+
+    def a_team_of_two(self, host, guest, title):
+        """A team the guest is really on, which is what "the members
+        facilitate" needs: standing, not just a connection."""
+        team_uuid = host.logic.create_team(title).value
+        connect(host, guest, team_uuid)
+        guest.logic.accept_team_invitation(
+            guest.session.protocol.index[team_uuid],
+        )
+        sync(host, guest)
+        type_uuid = self.a_membership_type(host, team_uuid)
+        invitation = host.logic.open_membership_invitation(
+            team_uuid, type_uuid, self.FAR_FUTURE,
+        )
+        self.adopt_membership_terms(host, guest, team_uuid, type_uuid)
+        application = guest.logic.apply_for_membership(
+            team_uuid, invitation.value.uuid, agreement_accepted=True,
+            acceptance_text="Accepted.",
+        )
+        sync(host, guest)
+        host.logic.issue_membership_badge(team_uuid, application.value.uuid)
+        sync(host, guest)
+        return team_uuid
+
+    def test_the_members_facilitate_identity_where_there_is_no_trust(self):
+        """A team that has dissolved Trust has not put Identity beyond
+        reach. The members are who is left to decide it, which is where a
+        trusteeship's authority came from in the first place."""
+        runtime = self.runtime(9677)
+        member = self.runtime(9678)
+        team_uuid = self.a_team_of_two(runtime, member, "Members deciding")
+        runtime.logic.resign_trusteeship(team_uuid, "trust")
+        runtime.logic.dissolve_trusteeship(team_uuid, "trust")
+        runtime.logic.resign_identity(team_uuid)
+        sync(runtime, member)
+
+        settled = member.logic.settle_trusteeship(
+            team_uuid, "identity", member.session.identity.uuid,
+            signals="Nobody left to facilitate it but us",
+        )
+        sync(runtime, member)
+
+        self.assertEqual(runtime.logic.facilitating_trust(
+            runtime.session.protocol.index[team_uuid], "identity",
+        ), "")
+        self.assertEqual(settled.status, "ok", settled.reason)
+        projection = runtime.logic.trustee_projection(
+            runtime.session.protocol.index[team_uuid], "identity",
+        )
+        self.assertEqual(projection["state"], "held")
+        self.assertEqual(
+            projection["holder_actor_uuid"], member.session.identity.uuid,
+        )
+        # The basis is the member's own standing, not a seat.
+        settlement = runtime.session.protocol.index[
+            projection["current_state_uuid"]
+        ]
+        basis = runtime.session.protocol.index[
+            settlement.data["authority_basis_uuid"]
+        ]
+        self.assertEqual(basis.data["type"], "team_membership")
+
+    def test_the_identity_holder_is_not_among_those_who_decide_it(self):
+        """The one exception to the members deciding. An incumbent who
+        could facilitate their own seat would be settling their own
+        succession, which is the handover this model refuses."""
+        runtime = self.runtime(9679)
+        member = self.runtime(9680)
+        team_uuid = self.a_team_of_two(runtime, member, "Not your own")
+        runtime.logic.resign_trusteeship(team_uuid, "trust")
+        runtime.logic.dissolve_trusteeship(team_uuid, "trust")
+        sync(runtime, member)
+
+        # The founder still holds Identity, so they are the one member who
+        # cannot decide it.
+        mine = runtime.logic.settle_trusteeship(
+            team_uuid, "identity", member.session.identity.uuid,
+        )
+        started = runtime.logic.start_trustee_election(team_uuid, "identity")
+
+        self.assertEqual(mine.status, "error")
+        self.assertIn("Member other than", mine.reason)
+        self.assertEqual(started.status, "error")
+        self.assertIn("does not facilitate", started.reason)
+        # Anybody else on the team may, which is what makes the holder
+        # replaceable rather than permanent.
+        team = member.session.protocol.index[team_uuid]
+        self.assertTrue(member.logic.facilitating_basis_for_actor(
+            team, "identity", member.session.identity.uuid,
+        ))
+
+    def test_a_membership_basis_is_refused_while_trust_stands(self):
+        """The members facilitate where no trusteeship does, and only
+        there. With Trust established, standing is not authority over
+        Identity - Trust is."""
+        runtime = self.runtime(9681)
+        member = self.runtime(9682)
+        team_uuid = self.a_team_of_two(runtime, member, "Trust stands")
+        runtime.logic.resign_identity(team_uuid)
+        sync(runtime, member)
+        team = member.session.protocol.index[team_uuid]
+
+        refused = member.logic.append_governance_record(team_uuid, {
+            "type": "team_trustee_state",
+            "trust": "identity",
+            "holder_actor_uuid": member.session.identity.uuid,
+            "previous_state_uuid": member.logic.trustee_projection(
+                team, "identity",
+            )["current_state_uuid"],
+            "cause": "resolution",
+            "acted_by": member.session.identity.uuid,
+            "acted_at": "2026-08-19T10:00:00Z",
+            "authority_basis_uuid": member.logic.membership_projection(
+                team, member.session.identity.uuid,
+            )["current_uuid"],
+            "signals": "",
+            "consideration": "",
+            "expectation": "",
+        })
+
+        self.assertEqual(refused.status, "error")
+        self.assertIn("does not facilitate", refused.reason)
+
+    def test_the_offered_order_covers_every_seat_in_the_vocabulary(self):
+        """One list drives what is offered and shown, so a seat added to
+        the vocabulary and not to the order would be unreachable."""
+        self.assertEqual(set(TeamLogic.TRUST_ORDER), TeamLogic.TRUSTS)
+        self.assertEqual(len(TeamLogic.TRUST_ORDER), len(TeamLogic.TRUSTS))
+        session = Session("local")
+        logic = TeamLogic(session)
+        team_uuid = logic.create_team("Offerable").value
+
+        self.assertEqual(
+            logic.establishable_trusts(session.protocol.index[team_uuid]),
+            ["focus", "market", "equity"],
+        )
+
     def test_holding_a_trusteeship_is_not_being_on_the_team(self):
         """A trustee is elected out of the members, so the seat never stands
         in for membership. Somebody whose membership ended while they still
@@ -1091,7 +1570,7 @@ class TeamLogicTests(unittest.TestCase):
 
         class Facades:
             def find(self, application_id, facade_api_version):
-                if (application_id, facade_api_version) == ("flow", 1):
+                if (application_id, facade_api_version) == ("flow", 2):
                     return flow_facade
                 return None
 
@@ -1162,7 +1641,7 @@ class TeamLogicTests(unittest.TestCase):
 
         class Facades:
             def find(self, application_id, facade_api_version):
-                if (application_id, facade_api_version) == ("flow", 1):
+                if (application_id, facade_api_version) == ("flow", 2):
                     return flow_facade
                 return None
 
@@ -1366,12 +1845,11 @@ class TeamLogicTests(unittest.TestCase):
 
         self.assertEqual(APPLICATION_MANIFEST.application_id, "team")
         self.assertEqual(payload["team"]["uuid"], team_uuid)
-        sections = [
-            child for child in payload["team"]["children"]
-            if child["data"].get("type") == "team_section"
-        ]
+        sections = self.serialized(payload["team"], "team_section")
         self.assertEqual(sections[0]["uuid"], section_uuid)
-        self.assertEqual(sections[0]["children"][0]["uuid"], clause_uuid)
+        self.assertEqual(
+            self.serialized(sections[0], "team_clause")[0]["uuid"], clause_uuid,
+        )
 
     def test_acceptance_is_a_separate_hashed_timestamped_item(self):
         runtime = self.runtime(9458)
@@ -1379,10 +1857,7 @@ class TeamLogicTests(unittest.TestCase):
         self.a_role(runtime, team_uuid)
         team = runtime.session.protocol.index[team_uuid]
         role = runtime.logic.roles(team)[0]
-        decisions = [
-            child for child in role.live_children()
-            if child.data.get("type") == "team_role_decision"
-        ]
+        decisions = runtime.logic._held(role, "answers")
 
         self.assertEqual(len(decisions), 1)
         decision = decisions[0].data
@@ -1402,12 +1877,25 @@ class TeamLogicTests(unittest.TestCase):
         serialized = runtime.logic.document_payload(
             team_uuid,
         )["team"]["children"]
-        role_view = next(
+        roles_view = next(
             child for child in serialized
+            if child["data"].get("name") == "roles"
+        )
+        role_view = next(
+            child for child in roles_view["children"]
             if child["data"].get("type") == "team_role"
         )
+
+        def types_under(item):
+            for child in item.get("children") or []:
+                yield child["data"].get("type")
+                yield from types_under(child)
+
         self.assertEqual(
-            {child["data"].get("type") for child in role_view["children"]},
+            {
+                node_type for node_type in types_under(role_view)
+                if node_type != "team_container"
+            },
             set(),
         )
 
@@ -1417,10 +1905,7 @@ class TeamLogicTests(unittest.TestCase):
         self.a_role(runtime, team_uuid)
         team = runtime.session.protocol.index[team_uuid]
         role = runtime.logic.roles(team)[0]
-        original = next(
-            child for child in role.live_children()
-            if child.data.get("type") == "team_role_decision"
-        )
+        original = runtime.logic._held(role, "answers")[0]
 
         result = runtime.logic.decide_role(
             role.uuid, "refused", "2035-01-01T00:00:00Z",
@@ -1428,10 +1913,7 @@ class TeamLogicTests(unittest.TestCase):
 
         self.assertEqual(result.status, "ok")
         role = runtime.session.protocol.index[role.uuid]
-        decisions = [
-            child for child in role.live_children()
-            if child.data.get("type") == "team_role_decision"
-        ]
+        decisions = runtime.logic._held(role, "answers")
         # Answering again continues the chain. The first answer stays where
         # it was made, so when somebody took a role and when they stepped
         # out of it are both readable; the end of the chain is what counts.
@@ -1461,21 +1943,25 @@ class TeamLogicTests(unittest.TestCase):
             ),
         )
 
-    def test_content_change_makes_acceptance_outdated_until_renewed(self):
+    def test_role_content_change_makes_that_roles_acceptance_outdated(self):
+        """A role is taken by its own record and reads none of the
+        Agreement's body: renaming it, bumping its version, and adding
+        sections and clauses never touch a role decision. Editing the
+        role's own accountabilities does, because that is the work
+        changing, not the general document. Role-taking is not a
+        debatable element."""
         runtime = self.runtime(9464)
         team_uuid = runtime.logic.create_team("Charter").value
-        self.a_role(runtime, team_uuid)
+        role_uuid = self.a_role(runtime, team_uuid)
         runtime.logic.rename_agreement(team_uuid, "Team Agreement")
         runtime.logic.set_agreement_version(team_uuid, "1")
         section_uuid = runtime.logic.create_section(
             team_uuid, "Purpose",
         ).value
+        runtime.logic.create_clause(section_uuid, "Serve the members.")
 
-        self.assertEqual(
-            self.own_standing(runtime, team_uuid), "outdated",
-        )
-
-        self.accept_roles(runtime, team_uuid)
+        # Taken before the Agreement even existed, and still stands: none of
+        # the above is part of what this role's own acceptance covers.
         self.assertEqual(
             self.own_standing(runtime, team_uuid), "accepted",
         )
@@ -1486,9 +1972,14 @@ class TeamLogicTests(unittest.TestCase):
             own.data["reference_hash"],
             runtime.logic.role_reference_hash(team, role),
         )
-        runtime.logic.create_clause(section_uuid, "Serve the members.")
+
+        runtime.logic.create_role_item(role_uuid, "accountability", "Keep the books.")
         self.assertEqual(
             self.own_standing(runtime, team_uuid), "outdated",
+        )
+        runtime.logic.decide_role(role_uuid, "accepted")
+        self.assertEqual(
+            self.own_standing(runtime, team_uuid), "accepted",
         )
 
     def test_every_ancestor_requires_a_current_acceptance(self):
@@ -1868,11 +2359,10 @@ class TeamLogicTests(unittest.TestCase):
             "error",
         )
 
-    def test_transition_priority_comes_from_session_not_per_application(self):
+    def test_transition_grouping_comes_from_session_not_per_application(self):
         # Applications grouping transition events per node had each copied
-        # Session's ranking, and the copies drifted, so the same conflict
-        # could surface as divergence in one application and something milder
-        # in another.
+        # Session's ranking, and the copies drifted. Core now owns the whole
+        # grouping operation, including ranking and multi-peer choice merging.
         #
         # Only this application is checked here. Core ships these tests, and a
         # Core test that imports S-Initiative cannot run for anyone who installed
@@ -1883,9 +2373,8 @@ class TeamLogicTests(unittest.TestCase):
         from s_team import logic as team_logic
 
         source = Path(team_logic.__file__).read_text(encoding="utf-8")
-        self.assertRegex(
-            source, r"Session\.(TRANSITION_PRIORITY|STAGE_PRIORITY|transition_rank)",
-        )
+        self.assertIn("self.session.group_transition_events(", source)
+        self.assertNotIn("def transition_by_node", source)
         self.assertNotIn('"divergence": 5', source)
         self.assertNotIn('"divergence": 6', source)
 
@@ -1917,13 +2406,285 @@ class TeamLogicTests(unittest.TestCase):
         )
 
         payload = runtime.logic.document_payload()
-        section = next(
-            child for child in payload["team"]["children"]
-            if child["data"].get("type") == "team_section"
-        )
+        section = self.serialized(payload["team"], "team_section")[0]
         self.assertEqual(payload["team"]["data"]["title"], "Service terms")
         self.assertEqual(section["data"]["title"], "Scope")
-        self.assertEqual(section["children"][0]["data"]["text"], "First draft.")
+        self.assertEqual(
+            self.serialized(section, "team_clause")[0]["data"]["text"],
+            "First draft.",
+        )
+
+    def test_an_observation_belongs_to_the_decision_it_sits_under(self):
+        """Which decision it observes is where it is, not a uuid it carries."""
+        runtime = self.runtime(9441)
+        team_uuid = runtime.logic.create_team("Cooperative").value
+        recorded = runtime.logic.record_trustee_action(
+            team_uuid, "identity", "membership",
+            value="The membership is opened",
+            signals="Capacity is available",
+        )
+        self.assertEqual(recorded.status, "ok", recorded.reason)
+        action_uuid = recorded.value.uuid
+
+        first = runtime.logic.append_trustee_reality(
+            team_uuid, action_uuid, "Two people applied.",
+        )
+        second = runtime.logic.append_trustee_reality(
+            team_uuid, action_uuid, "One of them withdrew.",
+        )
+
+        self.assertEqual(first.status, "ok", first.reason)
+        self.assertEqual(second.status, "ok", second.reason)
+        index = runtime.session.protocol.index
+        self.assertEqual(index[first.value.uuid].parent_uuid, action_uuid)
+        self.assertEqual(index[second.value.uuid].parent_uuid, action_uuid)
+        # Divergent observations are both kept: a set union, not a list one
+        # side of which would have to win.
+        team = index[team_uuid]
+        realities = runtime.logic.governance_records(
+            team, "team_trustee_reality",
+        )
+        self.assertEqual(
+            [node.data["reality"] for node in realities],
+            ["Two people applied.", "One of them withdrew."],
+        )
+        self.assertNotIn("action_uuid", realities[0].data)
+
+    def test_actors_are_read_from_the_records_not_kept_as_a_list(self):
+        """An Actor list would be a third copy of what two chains already say."""
+        runtime = self.runtime(9439)
+        team_uuid = runtime.logic.create_team("Cooperative").value
+        runtime.logic.rename_agreement(team_uuid, "Terms")
+        runtime.logic.set_agreement_version(team_uuid, "1")
+        runtime.logic.create_section(team_uuid, "Scope")
+        role_uuid = runtime.logic.create_role(team_uuid, "Treasurer").value
+        runtime.logic.decide_role(role_uuid, "accepted")
+        runtime.logic.accept_agreement(team_uuid, "I accept.")
+        team = runtime.session.protocol.index[team_uuid]
+        mine = runtime.session.identity.uuid
+
+        actors = runtime.logic.actors(team)
+
+        self.assertEqual([actor["uuid"] for actor in actors], [mine])
+        self.assertEqual(actors[0]["kind"], "person")
+        self.assertEqual(actors[0]["membership"], "member")
+        self.assertTrue(actors[0]["is_self"])
+
+    def test_a_seated_team_is_an_actor_like_a_person(self):
+        runtime = self.runtime(9440)
+        parent_uuid = runtime.logic.create_team("Cooperative").value
+        role_uuid = runtime.logic.create_role(parent_uuid, "Finance").value
+        child_uuid = runtime.logic.create_subteam(
+            parent_uuid, "Finance circle",
+        ).value
+        runtime.logic.seat_team(role_uuid, child_uuid)
+        parent = runtime.session.protocol.index[parent_uuid]
+
+        actors = runtime.logic.actors(parent)
+        teams = [actor for actor in actors if actor["kind"] == "team"]
+
+        self.assertEqual([actor["uuid"] for actor in teams], [child_uuid])
+        self.assertEqual(teams[0]["name"], "Finance circle")
+
+    def test_a_peers_rename_is_offered_where_the_name_is_read(self):
+        """A changed node used to show only in the divergence list."""
+        left, right = self.runtime(9442), self.runtime(9443)
+        team_uuid = left.logic.create_team("Cooperative").value
+        left.logic.rename_agreement(team_uuid, "Terms")
+        left.logic.set_agreement_version(team_uuid, "1")
+        self.assertEqual(connect(left, right, team_uuid)["status"], "ok")
+        right.logic.accept_team_invitation(
+            right.session.protocol.index[team_uuid],
+        )
+        sync(left, right)
+        agreement_uuid = left.logic.agreement(
+            left.session.protocol.index[team_uuid], create=False,
+        ).uuid
+        self.adopt(right, left, agreement_uuid)
+
+        left.logic.rename_agreement(team_uuid, "Terms of trade")
+        sync(left, right)
+
+        # Held, not taken: the team defaults to hold, so a rename waits.
+        held = right.logic.agreement(
+            right.session.protocol.index[team_uuid], create=False,
+        )
+        self.assertEqual(held.data["name"], "Terms")
+        # ...but the page is now told what is being proposed, and for which
+        # node, so it can show it beside the name rather than only in the
+        # divergence list.
+        payload = right.logic.document_payload(team_uuid)
+        proposed = payload["proposed_changes"].get(agreement_uuid)
+        self.assertIsNotNone(proposed, payload["proposed_changes"])
+        self.assertEqual(proposed["node"]["data"]["name"], "Terms of trade")
+
+        # Adopting it settles the proposal.
+        self.adopt(right, left, agreement_uuid)
+        payload = right.logic.document_payload(team_uuid)
+        self.assertNotIn(agreement_uuid, payload["proposed_changes"])
+        self.assertEqual(
+            right.logic.agreement(
+                right.session.protocol.index[team_uuid], create=False,
+            ).data["name"],
+            "Terms of trade",
+        )
+
+    def test_accepting_the_agreement_again_clears_the_membership_badge(self):
+        """Accepting had nowhere to show: the badge read the admission."""
+        runtime = self.runtime(9446)
+        team_uuid = runtime.logic.create_team("Cooperative").value
+        runtime.logic.rename_agreement(team_uuid, "Terms")
+        runtime.logic.set_agreement_version(team_uuid, "1")
+        runtime.logic.create_section(team_uuid, "Scope")
+        mine = runtime.session.identity.uuid
+
+        # A new version is what makes an admission stale.
+        runtime.logic.set_agreement_version(team_uuid, "2")
+        team = runtime.session.protocol.index[team_uuid]
+        self.assertEqual(runtime.logic.membership_status(team, mine), "outdated")
+
+        self.assertEqual(
+            runtime.logic.accept_agreement(team_uuid, "Read and accepted.").status,
+            "ok",
+        )
+
+        team = runtime.session.protocol.index[team_uuid]
+        self.assertEqual(runtime.logic.membership_status(team, mine), "accepted")
+        # And editing it again puts them back where they were.
+        runtime.logic.create_section(team_uuid, "Scope two")
+        team = runtime.session.protocol.index[team_uuid]
+        self.assertEqual(runtime.logic.membership_status(team, mine), "outdated")
+
+    def test_acceptance_waits_until_the_agreed_copy_is_aligned_locally(self):
+        left, right = self.runtime(9447), self.runtime(9448)
+        team_uuid = left.logic.create_team("Aligned consent").value
+        left.logic.rename_agreement(team_uuid, "Terms")
+        left.logic.set_agreement_version(team_uuid, "1")
+        self.assertEqual(connect(left, right, team_uuid)["status"], "ok")
+        right.logic.accept_team_invitation(
+            right.session.protocol.index[team_uuid],
+        )
+        sync(left, right)
+        agreement_uuid = left.logic.agreement(
+            left.session.protocol.index[team_uuid], create=False,
+        ).uuid
+        self.adopt(right, left, agreement_uuid)
+
+        left.logic.rename_agreement(team_uuid, "Revised terms")
+        sync(left, right)
+
+        payload = right.logic.document_payload(team_uuid)
+        self.assertEqual(payload["membership"]["agreement"]["state"], "agreed")
+        self.assertFalse(payload["membership"]["my_agreement_current"])
+        blocked = right.logic.accept_agreement(team_uuid, "Too soon.")
+        self.assertEqual(blocked.status, "error")
+        self.assertIn("align", blocked.reason)
+
+        self.adopt(right, left, agreement_uuid)
+        self.assertTrue(
+            right.logic.document_payload(team_uuid)["membership"]
+            ["my_agreement_current"],
+        )
+        self.assertEqual(
+            right.logic.accept_agreement(team_uuid, "Now accepted.").status,
+            "ok",
+        )
+
+    def test_an_acceptance_names_the_text_it_accepted(self):
+        """A badge that named only a version label would not be falsifiable."""
+        runtime = self.runtime(9436)
+        team_uuid = runtime.logic.create_team("Cooperative").value
+        runtime.logic.rename_agreement(team_uuid, "Terms")
+        runtime.logic.set_agreement_version(team_uuid, "1")
+        runtime.logic.create_section(team_uuid, "Scope")
+        team = runtime.session.protocol.index[team_uuid]
+        mine = runtime.session.identity.uuid
+
+        self.assertEqual(
+            runtime.logic.acceptance_projection(team, mine)["state"], "absent",
+        )
+        self.assertEqual(
+            runtime.logic.accept_agreement(team_uuid, "I accept.").status, "ok",
+        )
+
+        team = runtime.session.protocol.index[team_uuid]
+        accepted = runtime.logic.acceptance_projection(team, mine)
+        self.assertEqual(accepted["state"], "current")
+        self.assertEqual(
+            accepted["agreement_uuid"],
+            runtime.logic.agreement(team, create=False).uuid,
+        )
+        self.assertEqual(
+            accepted["reference_hash"], runtime.logic.team_reference_hash(team),
+        )
+
+        # Editing the text it named leaves the acceptance behind, which is
+        # the whole point of naming the text rather than a version label.
+        runtime.logic.create_section(team_uuid, "Scope two")
+        team = runtime.session.protocol.index[team_uuid]
+        self.assertEqual(
+            runtime.logic.acceptance_projection(team, mine)["state"], "outdated",
+        )
+
+    def test_re_accepting_continues_the_chain_rather_than_replacing_it(self):
+        runtime = self.runtime(9437)
+        team_uuid = runtime.logic.create_team("Cooperative").value
+        runtime.logic.rename_agreement(team_uuid, "Terms")
+        runtime.logic.set_agreement_version(team_uuid, "1")
+        runtime.logic.create_section(team_uuid, "Scope")
+        mine = runtime.session.identity.uuid
+        runtime.logic.accept_agreement(team_uuid, "First.")
+        runtime.logic.create_section(team_uuid, "Scope two")
+
+        self.assertEqual(
+            runtime.logic.accept_agreement(team_uuid, "Second.").status, "ok",
+        )
+
+        team = runtime.session.protocol.index[team_uuid]
+        records = runtime.logic.governance_records(team, "team_acceptance")
+        self.assertEqual(len(records), 2)
+        head = runtime.logic.acceptance_projection(team, mine)
+        self.assertEqual(head["text"], "Second.")
+        self.assertEqual(head["state"], "current")
+        roots = [
+            record for record in records
+            if not record.data.get("previous_acceptance_uuid")
+        ]
+        self.assertEqual(len(roots), 1)
+
+    def test_an_acceptance_of_another_teams_agreement_is_refused(self):
+        runtime = self.runtime(9438)
+        team_uuid = runtime.logic.create_team("Ours").value
+        other_uuid = runtime.logic.create_team("Theirs").value
+        for uuid in (team_uuid, other_uuid):
+            runtime.logic.rename_agreement(uuid, "Terms")
+            runtime.logic.set_agreement_version(uuid, "1")
+            runtime.logic.create_section(uuid, "Scope")
+        team = runtime.session.protocol.index[team_uuid]
+        other = runtime.session.protocol.index[other_uuid]
+
+        assessment = runtime.logic.assess_governance_record(
+            team,
+            ProtocolNode(
+                {
+                    "type": "team_acceptance",
+                    "actor_uuid": runtime.session.identity.uuid,
+                    "agreement_uuid": runtime.logic.agreement(
+                        other, create=False,
+                    ).uuid,
+                    "reference_hash": runtime.logic.team_reference_hash(team),
+                    "text": "",
+                    "previous_acceptance_uuid": "",
+                    "accepted_at": "2026-08-16T10:00:00Z",
+                },
+                parent_uuid=runtime.logic._container(team, "acceptances").uuid,
+                revision_origin=runtime.session.identity.data["identity_key"],
+            ),
+            verification="valid",
+        )
+
+        self.assertEqual(assessment["status"], "invalid")
+        self.assertIn("this Team's Agreement", assessment["reason"])
 
     def test_the_agreement_is_named_apart_from_the_team(self):
         # One field used to serve both, so renaming the body silently
@@ -1954,16 +2715,13 @@ class TeamLogicTests(unittest.TestCase):
         )
         payload = runtime.logic.document_payload()
         self.assertEqual(payload["team"]["data"]["title"], "Treasury")
-        self.assertEqual(
-            payload["team"]["data"]["agreement_title"], "Terms of trade",
-        )
-        self.assertEqual(
-            payload["team"]["data"]["agreement_version"], "2026.1",
-        )
+        agreement = self.serialized(payload["team"], "team_agreement")[0]
+        self.assertEqual(agreement["data"]["name"], "Terms of trade")
+        self.assertEqual(agreement["data"]["version"], "2026.1")
         team = runtime.session.protocol.index[team_uuid]
         self.assertEqual(
             runtime.logic.agreement_projection(team)["state"],
-            "consolidated",
+            "agreed",
         )
 
         self.assertEqual(
@@ -1981,12 +2739,9 @@ class TeamLogicTests(unittest.TestCase):
         copy_uuid = runtime.logic.clone_team(team_uuid, "Finance copy").value
         payload = runtime.logic.document_payload(copy_uuid)
         self.assertEqual(payload["team"]["data"]["title"], "Finance copy")
-        self.assertEqual(
-            payload["team"]["data"]["agreement_title"], "Terms of trade",
-        )
-        self.assertEqual(
-            payload["team"]["data"]["agreement_version"], "2026.1",
-        )
+        agreement = self.serialized(payload["team"], "team_agreement")[0]
+        self.assertEqual(agreement["data"]["name"], "Terms of trade")
+        self.assertEqual(agreement["data"]["version"], "2026.1")
 
     def test_renaming_rejects_blank_titles_and_unknown_nodes(self):
         runtime = self.runtime(9404)
@@ -2009,9 +2764,8 @@ class TeamLogicTests(unittest.TestCase):
         def section_titles():
             payload = runtime.logic.document_payload(team_uuid)
             live = [
-                s for s in payload["team"]["children"]
+                s for s in self.serialized(payload["team"], "team_section")
                 if not s["deleted"]
-                and s["data"].get("type") == "team_section"
             ]
             ordered = sorted(live, key=lambda s: s["data"].get("order", 0))
             return [s["data"]["title"] for s in ordered]
@@ -2029,8 +2783,14 @@ class TeamLogicTests(unittest.TestCase):
 
         def clause_texts():
             payload = runtime.logic.document_payload(team_uuid)
-            section = next(s for s in payload["team"]["children"] if s["uuid"] == first)
-            live = [c for c in section["children"] if not c["deleted"]]
+            section = next(
+                s for s in self.serialized(payload["team"], "team_section")
+                if s["uuid"] == first
+            )
+            live = [
+                c for c in self.serialized(section, "team_clause")
+                if not c["deleted"]
+            ]
             ordered = sorted(live, key=lambda c: c["data"].get("order", 0))
             return [c["data"]["text"] for c in ordered]
 
@@ -2091,11 +2851,10 @@ class TeamLogicTests(unittest.TestCase):
         self.assertEqual(runtime.logic.delete_section(removed_uuid).status, "ok")
 
         payload = runtime.logic.document_payload()
-        sections = payload["team"]["children"]
+        sections = self.serialized(payload["team"], "team_section")
         live = [
             item for item in sections
             if not item["deleted"]
-            and item["data"].get("type") == "team_section"
         ]
         self.assertEqual([item["uuid"] for item in live], [kept_uuid])
         # Deleting a container prunes its descendants out of the index rather
@@ -2112,11 +2871,11 @@ class TeamLogicTests(unittest.TestCase):
         self.assertEqual(runtime.logic.delete_clause(first_uuid).status, "ok")
 
         payload = runtime.logic.document_payload()
-        clauses = next(
-            child for child in payload["team"]["children"]
-            if child["data"].get("type") == "team_section"
-        )["children"]
-        live = [item["uuid"] for item in clauses if not item["deleted"]]
+        section = self.serialized(payload["team"], "team_section")[0]
+        live = [
+            item["uuid"] for item in self.serialized(section, "team_clause")
+            if not item["deleted"]
+        ]
         self.assertEqual(live, [second_uuid])
 
     def test_document_payload_does_not_expose_channel_management(self):
@@ -2453,7 +3212,7 @@ class TeamLogicTests(unittest.TestCase):
             right.logic.decide_role(role_uuid, "accepted").status, "ok",
         )
 
-    def test_a_role_acceptance_covers_the_document_and_that_role_only(self):
+    def test_a_role_acceptance_covers_that_role_only_never_the_document(self):
         runtime = self.runtime(9506)
         team_uuid = runtime.logic.create_team("Charter").value
         treasurer_uuid = runtime.logic.create_role(
@@ -2483,9 +3242,10 @@ class TeamLogicTests(unittest.TestCase):
         self.assertEqual(status(), "outdated")
         runtime.logic.decide_role(treasurer_uuid, "accepted")
         self.assertEqual(status(), "accepted")
-        # So is the document everybody is agreeing to.
+        # The document everybody is agreeing to is not: role-taking is not a
+        # debatable element, so it reads none of the Agreement's body.
         runtime.logic.create_section(team_uuid, "Terms")
-        self.assertEqual(status(), "outdated")
+        self.assertEqual(status(), "accepted")
 
     def test_a_holder_is_only_accepted_once_seen_from_their_own_replica(self):
         left, right = self.runtime(9507), self.runtime(9508)
@@ -2749,9 +3509,7 @@ class TeamLogicTests(unittest.TestCase):
             return {role["name"]: role["status"] for role in me["roles"]}
 
         self.assertEqual(own_roles()["Treasurer"], "accepted")
-        runtime.logic.rename_agreement(team_uuid, "Team Agreement")
-        runtime.logic.set_agreement_version(team_uuid, "1")
-        runtime.logic.create_section(team_uuid, "Purpose")
+        runtime.logic.create_role_item(role_uuid, "accountability", "Keep the books.")
         self.assertEqual(own_roles()["Treasurer"], "outdated")
         runtime.logic.decide_role(role_uuid, "accepted")
         self.assertEqual(own_roles()["Treasurer"], "accepted")
@@ -2770,20 +3528,26 @@ class TeamLogicTests(unittest.TestCase):
                 runtime.logic.identity_holder(team),
                 runtime.session.identity.uuid,
             )
-            self.assertTrue(runtime.logic.holds_trust(team))
+            self.assertTrue(runtime.logic.holds_trusteeship(team, "trust"))
             self.assertEqual(
-                runtime.logic.trust_holder(team),
+                runtime.logic.trustee_holder(team, "trust"),
                 runtime.session.identity.uuid,
             )
             self.assertTrue(runtime.logic._is_current_member(
                 team, runtime.session.identity.uuid,
             ))
         payload = runtime.logic.document_payload(team_uuid)
-        self.assertEqual(payload["identity"]["state"], "held")
-        self.assertTrue(payload["identity"]["is_self"])
-        self.assertEqual(payload["identity"]["claims"], [])
-        self.assertEqual(payload["trust"]["state"], "held")
-        self.assertTrue(payload["trust"]["is_self"])
+        # One card per seat the team has, in the order they are offered.
+        seats = {seat["trust"]: seat for seat in payload["seats"]}
+        self.assertEqual(
+            [seat["trust"] for seat in payload["seats"]],
+            ["identity", "trust"],
+        )
+        self.assertEqual(seats["identity"]["state"], "held")
+        self.assertTrue(seats["identity"]["is_self"])
+        self.assertEqual(seats["identity"]["claims"], [])
+        self.assertEqual(seats["trust"]["state"], "held")
+        self.assertTrue(seats["trust"]["is_self"])
         legacy = runtime.session.create_child(team_uuid, {
             "type": "team_trustee",
             "trust": "identity",
@@ -2808,10 +3572,6 @@ class TeamLogicTests(unittest.TestCase):
         self.assertNotIn("team_trustee", document_types)
         self.assertNotIn("team_trustee_state", document_types)
         self.assertEqual(acceptance(), "accepted")
-        other = "another-actor-uuid"
-        self.assertEqual(
-            runtime.logic.offer_identity(team_uuid, other).status, "error",
-        )
         self.assertEqual(acceptance(), "accepted")
 
     def test_direct_identity_handover_and_take_are_rejected(self):
@@ -2824,12 +3584,16 @@ class TeamLogicTests(unittest.TestCase):
 
         team = right.session.protocol.index[team_uuid]
         self.assertFalse(right.logic.holds_identity(team))
-        handed = right.logic.offer_identity(
-            team_uuid, right.session.identity.uuid,
-        )
-        self.assertEqual(handed.status, "error")
-        self.assertIn("facilitated decision", handed.reason)
+        # There is no handover to refuse any more: nothing offers one, and
+        # the seat moves by resignation and then a facilitated decision.
+        self.assertFalse(hasattr(right.logic, "offer_identity"))
         self.assertEqual(right.logic.take_identity(team_uuid).status, "error")
+        # Settling it for themself is the shape a handover would take, and
+        # it rests on an authority they do not have.
+        taken = right.logic.settle_trusteeship(
+            team_uuid, "identity", right.session.identity.uuid,
+        )
+        self.assertEqual(taken.status, "error")
         self.assertFalse(right.logic.holds_identity(
             right.session.protocol.index[team_uuid],
         ))
@@ -2843,14 +3607,14 @@ class TeamLogicTests(unittest.TestCase):
         )
         sync(left, right)
 
-        previous_uuid = left.logic.identity_payload(
-            left.session.protocol.index[team_uuid],
+        previous_uuid = left.logic.trusteeship_payload(
+            left.session.protocol.index[team_uuid], "identity",
         )["node_uuid"]
         resigned = left.logic.resign_identity(team_uuid)
         self.assertEqual(resigned.status, "ok")
         sync(left, right)
-        vacancy = right.logic.identity_payload(
-            right.session.protocol.index[team_uuid],
+        vacancy = right.logic.trusteeship_payload(
+            right.session.protocol.index[team_uuid], "identity",
         )
         self.assertEqual(vacancy["state"], "vacant")
         self.assertNotEqual(vacancy["node_uuid"], previous_uuid)
@@ -2865,22 +3629,20 @@ class TeamLogicTests(unittest.TestCase):
         )
         sync(left, right)
 
-        self.assertEqual(
-            left.logic.offer_identity(team_uuid, "third-actor-uuid").status,
-            "error",
-        )
         self.assertEqual(right.logic.take_identity(team_uuid).status, "error")
         sync(left, right)
 
         payload = left.logic.document_payload(team_uuid)
-        node_uuid = payload["identity"]["node_uuid"]
+        identity = next(
+            seat for seat in payload["seats"] if seat["trust"] == "identity"
+        )
+        node_uuid = identity["node_uuid"]
         self.assertNotEqual(
             payload["transition_by_node"].get(node_uuid, {}).get("type"),
             "divergence",
         )
         self.assertEqual(
-            payload["identity"]["holder_actor_uuid"],
-            left.session.identity.uuid,
+            identity["holder_actor_uuid"], left.session.identity.uuid,
         )
 
     def test_identity_writes_obey_the_read_only_guard(self):
@@ -2893,7 +3655,7 @@ class TeamLogicTests(unittest.TestCase):
 
         for result in (
             runtime.logic.take_identity(child_uuid),
-            runtime.logic.offer_identity(child_uuid, "someone"),
+            runtime.logic.establish_trusteeship(child_uuid, "focus"),
         ):
             self.assertEqual(result.status, "error")
             self.assertIn("Read-only", result.reason)
@@ -3102,11 +3864,23 @@ class TeamLogicTests(unittest.TestCase):
         runtime.logic.seat_team(role_uuid, child_uuid)
         role = runtime.session.protocol.index[role_uuid]
         decisions = [
-            node for node in role.live_children()
-            if node.data.get("type") == "team_role_decision"
-            and node.data.get("actor_uuid") == child_uuid
+            node for node in runtime.logic._held(role, "answers")
+            if node.data.get("actor_uuid") == child_uuid
         ]
-        self.assertEqual(len(decisions), 1)
+        # Taken, stepped out of, taken again - three links of one chain, not
+        # three claims on the seat. Stepping out appends a refusal rather
+        # than deleting the answer, so when the seat was held and when it was
+        # given up are both still readable.
+        self.assertEqual(len(decisions), 3)
+        self.assertEqual(
+            [node.data["decision"] for node in decisions],
+            ["accepted", "refused", "accepted"],
+        )
+        roots = [
+            node for node in decisions
+            if not node.data.get("previous_decision_uuid")
+        ]
+        self.assertEqual(len(roots), 1)
         head = runtime.logic._role_decision_for(role, child_uuid)
         self.assertEqual(head.data["decision"], "accepted")
         self.assertEqual(
@@ -3164,9 +3938,6 @@ class TeamLogicTests(unittest.TestCase):
         parent_uuid = host.logic.create_team("Cooperative").value
         child_uuid = host.logic.create_team("Team A").value
         role_uuid = host.logic.create_role(parent_uuid, "Operations").value
-        self.assertEqual(host.logic.offer_identity(
-            child_uuid, guest.session.identity.uuid,
-        ).status, "error")
         self.assertEqual(
             host.logic.seat_team(role_uuid, child_uuid).status, "ok",
         )
@@ -3225,149 +3996,89 @@ class TeamLogicTests(unittest.TestCase):
         # the seat does not take it, and one that took it gives it up.
         self.assertFalse(hasattr(runtime.logic, "decline_seat"))
 
-    # ---- what the team runs -------------------------------------------
-    #
-    # Nothing about an item is recorded on the team, so every one of these
-    # asserts a derivation rather than a stored row. The fake application is
-    # registered with Core the way a real one is, because what answers
-    # "which application owns this topic" is Core's registry and not a
-    # string S-Team keeps.
+    # ---- what the team runs (Core's sovereign_relationship) -------------
 
-    @staticmethod
-    def register_items_application(runtime, application_id="initiative"):
-        """A second application on this session, owning one root type."""
-        topics = []
-
-        def list_topics():
-            return list(topics)
-
-        def accept_topic(subtree):
-            accepted = runtime.session.accept_topic_invitation(subtree)
-            if accepted.status == "ok":
-                mounted = runtime.session.get_node(str(accepted.value))
-                if mounted is not None and all(
-                    item.uuid != mounted.uuid for item in topics
-                ):
-                    topics.append(mounted)
-            return accepted
-
-        runtime.session.register_application(ApplicationRegistration(
-            application_id,
-            frozenset({f"{application_id}_topic"}),
-            list_topics,
-            accept_topic,
-            assignment_scoped=True,
-            mount_invitation=True,
-        ))
-        return topics
-
-    def an_item(self, runtime, topics, name="Roadmap",
-                application_id="initiative"):
-        created = runtime.session.create_child(
-            runtime.session.protocol.root.uuid,
-            {"type": f"{application_id}_topic", "name": name},
-            {},
-        )
-        topics.append(created.value)
-        runtime.session.start_discussion(created.value.uuid)
-        return created.value.uuid
-
-    def test_an_item_is_the_teams_when_it_is_on_the_teams_channel(self):
-        runtime = self.runtime(9801)
-        topics = self.register_items_application(runtime)
-        team_uuid = runtime.logic.create_team("Cooperative").value
-        runtime.session.start_discussion(team_uuid)
-        runtime.mailbox_channel.attach_topics(
-            [team_uuid], {"target_id": runtime.relay_target},
-        )
-        item_uuid = self.an_item(runtime, topics)
-        team = runtime.session.protocol.index[team_uuid]
-
-        # Held here, and not published beside the team: this person's own.
-        self.assertEqual(runtime.logic.team_items(team), [])
-        self.assertEqual(
-            [item["topic_uuid"] for item in runtime.logic.offerable_items(team)],
-            [item_uuid],
-        )
-
-        offered = runtime.logic.offer_team_item(team_uuid, item_uuid)
-
-        self.assertEqual(offered.status, "ok")
-        team = runtime.session.protocol.index[team_uuid]
-        items = runtime.logic.team_items(team)
-        self.assertEqual(len(items), 1)
-        self.assertEqual(items[0]["topic_uuid"], item_uuid)
-        self.assertEqual(items[0]["title"], "Roadmap")
-        self.assertEqual(items[0]["application_id"], "initiative")
-        self.assertTrue(items[0]["active"])
-        # And it is no longer one of this client's unoffered own.
-        self.assertEqual(runtime.logic.offerable_items(team), [])
-
-    def test_a_private_team_has_nowhere_to_publish_an_item(self):
-        # The team never got a channel, so there is nothing to put the work
-        # on - and the item stays this person's until there is.
-        runtime = self.runtime(9802)
-        topics = self.register_items_application(runtime)
-        team_uuid = runtime.logic.create_team("Private").value
-        item_uuid = self.an_item(runtime, topics)
-
-        refused = runtime.logic.offer_team_item(team_uuid, item_uuid)
-
-        self.assertEqual(refused.status, "error")
-        self.assertIn("no channel", refused.reason)
-        team = runtime.session.protocol.index[team_uuid]
-        self.assertEqual(
-            [item["topic_uuid"] for item in runtime.logic.offerable_items(team)],
-            [item_uuid],
-        )
-
-    def test_the_list_carries_the_item_where_the_channel_cannot(self):
-        # The constraint the whole design turns on, asserted so it cannot be
-        # assumed away again. An explicit relay target polls only what this
-        # client has assigned to it plus what it has already consented to
-        # receive (relay_logic.poll_and_apply) - deliberately, so a shared
-        # SFTP root never enumerates unrelated discussions. Publishing an
-        # item beside the team therefore does not make it visible to
-        # anybody: what carries its uuid is the holder saying they have it.
-        left, right = self.runtime(9803), self.runtime(9804)
-        topics = self.register_items_application(left)
-        self.register_items_application(right)
+    def test_a_members_own_connection_settles_on_arrival(self):
+        left, right = self.runtime(9805), self.runtime(9806)
         team_uuid = left.logic.create_team("Cooperative").value
         connect(left, right, team_uuid)
         self.admit(left, right, team_uuid)
-        item_uuid = self.an_item(left, topics)
-        left.logic.offer_team_item(team_uuid, item_uuid)
-        sync(left, right)
-
         team = right.session.protocol.index[team_uuid]
-        items = right.logic.team_items(team)
+        # Simulates what Core's RelationshipService would write - this
+        # application's own authorization is what is under test, not
+        # Core's mechanics, which s-core/tests/test_relationships.py
+        # already covers.
+        created = right.session.create_child(team.uuid, {
+            "type": RELATIONSHIP_TYPE,
+            "topic_uuid": "elsewhere",
+            "application_id": "flow",
+            "title": "Onboarding",
+            "actor_uuid": right.session.identity.uuid,
+        }, {})
+        self.assertEqual(created.status, "ok")
+        sync(right, left)
 
-        # Published, and on the same target as the team - and still not
-        # something the other client's relay would ever look at.
-        self.assertIn(item_uuid, left.relay.relay_topic_uuids())
-        self.assertIn(item_uuid, left.relay.storage.list_topics())
-        self.assertNotIn(
-            item_uuid,
-            right.session.peer_topic_uuids(f"relay:{left.relay.identity}"),
+        held = left.session.get_cached_peer_subtree(
+            right.peer_addr, created.value.uuid,
         )
-        # The list reached them, so the item is offered: a name, and nothing
-        # else, until they take it up.
-        self.assertEqual(len(items), 1)
-        self.assertEqual(items[0]["topic_uuid"], item_uuid)
-        self.assertEqual(items[0]["title"], "Roadmap")
-        self.assertFalse(items[0]["active"])
-        self.assertIsNone(right.session.get_node(item_uuid))
-        # And consent is their own act.
-        connected = right.logic.connect_team_item(team_uuid, item_uuid)
-        self.assertEqual(connected.status, "ok", connected.reason)
+        self.assertIsNotNone(held)
         self.assertEqual(
-            right.relay_manager.target_for_topic(item_uuid),
-            right.relay_manager.target_for_topic(team_uuid),
+            left.logic._resolve_held_node(team_uuid, held, right.peer_addr),
+            "adopt",
         )
-        sync(left, right)
+
+    def test_a_non_members_connection_is_refused(self):
+        left, outsider = self.runtime(9807), self.runtime(9808)
+        team_uuid = left.logic.create_team("Cooperative").value
+        connect(left, outsider, team_uuid)
+        outsider.logic.accept_team_invitation(
+            outsider.session.protocol.index[team_uuid],
+        )
+        sync(left, outsider)
+        team = outsider.session.protocol.index[team_uuid]
+        forged = outsider.session.create_child(team.uuid, {
+            "type": RELATIONSHIP_TYPE,
+            "topic_uuid": "elsewhere",
+            "application_id": "flow",
+            "title": "Onboarding",
+            "actor_uuid": outsider.session.identity.uuid,
+        }, {})
+        self.assertEqual(forged.status, "ok")
+        sync(outsider, left)
+
+        held = left.session.get_cached_peer_subtree(
+            outsider.peer_addr, forged.value.uuid,
+        )
+        self.assertIsNotNone(held)
+        self.assertEqual(
+            left.logic._resolve_held_node(
+                team_uuid, held, outsider.peer_addr,
+            ),
+            "refuse",
+        )
+
+    def test_removing_a_connected_election_is_remembered_as_declined(self):
+        runtime = self.runtime(9809)
+        team_uuid = runtime.logic.create_team("Cooperative").value
+        team = runtime.session.protocol.index[team_uuid]
+        runtime.logic.append_governance_record(team_uuid, {
+            "type": "team_trustee_election",
+            "trust": "identity",
+            "process_uuid": "election-1",
+            "triggered_by": runtime.session.identity.uuid,
+            "triggered_at": runtime.logic._now(),
+        })
+
+        runtime.logic._on_relationship_removed(team, "election-1")
+
         self.assertIn(
-            item_uuid, left.session.peer_topic_sets[right.peer_addr],
+            "election-1", runtime.logic._declined_elections(team_uuid),
         )
+        # An ordinary connection, unrelated to any election, leaves nothing
+        # to remember - there is no automatic adopter to guard against.
+        before = runtime.logic._declined_elections(team_uuid)
+        runtime.logic._on_relationship_removed(team, "not-an-election")
+        self.assertEqual(runtime.logic._declined_elections(team_uuid), before)
 
     def test_membership_acceptance_requires_requirement_answer_and_conditional_consent(self):
         runtime = self.runtime(9815)
@@ -3525,6 +4236,53 @@ class TeamLogicTests(unittest.TestCase):
             "Identity's Membership Info",
         )
 
+    def test_changed_membership_terms_wait_for_the_current_holder(self):
+        identity, member = self.runtime(9836), self.runtime(9837)
+        team_uuid = identity.logic.create_team("Membership consent").value
+        connect(identity, member, team_uuid)
+        self.admit(identity, member, team_uuid)
+        identity_team = identity.session.protocol.index[team_uuid]
+        type_uuid = identity.logic.membership_types(identity_team)[0].uuid
+        before = member.session.protocol.index[type_uuid].data["requirements"]
+
+        identity.logic.set_membership_requirements(
+            type_uuid, "Terms chosen by Identity",
+        )
+        sync(identity, member)
+
+        self.assertEqual(
+            member.session.protocol.index[type_uuid].data["requirements"],
+            before,
+        )
+        transition = member.session.group_transition_events(
+            member.logic.transition_events(team_uuid),
+        )[type_uuid]
+        self.assertEqual(transition["stage"], "awaiting_me")
+        self.assertEqual(transition["reaction"], "adopt")
+
+        adopted = member.logic.accept_peer_node(
+            identity.peer_addr, type_uuid,
+        )
+        self.assertEqual(adopted.status, "ok", adopted.reason)
+        self.assertEqual(
+            member.session.protocol.index[type_uuid].data["requirements"],
+            "Terms chosen by Identity",
+        )
+
+        identity.logic.set_membership_requirements(
+            type_uuid, "Terms changed again",
+        )
+        sync(identity, member)
+        relinquished = member.logic.leave_team(team_uuid)
+        self.assertEqual(relinquished.status, "ok", relinquished.reason)
+        self.assertEqual(
+            member.logic.membership_projection(
+                member.session.protocol.index[team_uuid],
+                member.session.identity.uuid,
+            )["state"],
+            "former",
+        )
+
     def test_identity_agreement_disagreement_blocks_membership_opening(self):
         first, second = self.runtime(9824), self.runtime(9825)
         team_uuid = first.logic.create_team("Agreement consensus").value
@@ -3560,140 +4318,6 @@ class TeamLogicTests(unittest.TestCase):
         )
         self.assertEqual(opened.status, "error")
         self.assertIn("align", opened.reason)
-
-    def test_an_item_stops_being_offered_when_the_last_holder_drops_it(self):
-        # What "the team runs this" means: at least one member has it. The
-        # creator's own list is the only thing saying so, so when they say
-        # otherwise there is nothing left to offer.
-        left, right = self.runtime(9809), self.runtime(9810)
-        topics = self.register_items_application(left)
-        self.register_items_application(right)
-        team_uuid = left.logic.create_team("Cooperative").value
-        connect(left, right, team_uuid)
-        self.admit(left, right, team_uuid)
-        item_uuid = self.an_item(left, topics)
-        left.logic.offer_team_item(team_uuid, item_uuid)
-        sync(left, right)
-
-        self.assertEqual(
-            len(right.logic.team_items(
-                right.session.protocol.index[team_uuid],
-            )),
-            1,
-        )
-
-        # Deleted from the Cockpit rather than from the team page: the list
-        # is recomputed from what is really here, so it catches up either
-        # way.
-        left.session.delete(item_uuid)
-        topics.clear()
-        left.logic.reconcile_governance_updates()
-        sync(left, right)
-
-        self.assertEqual(
-            right.logic.team_items(
-                right.session.protocol.index[team_uuid],
-            ),
-            [],
-        )
-
-    def test_only_a_member_runs_the_teams_work(self):
-        left, right = self.runtime(9805), self.runtime(9806)
-        topics = self.register_items_application(left)
-        self.register_items_application(right)
-        team_uuid = left.logic.create_team("Cooperative").value
-        connect(left, right, team_uuid)
-        right.logic.accept_team_invitation(
-            right.session.protocol.index[team_uuid],
-        )
-        item_uuid = self.an_item(left, topics)
-        left.logic.offer_team_item(team_uuid, item_uuid)
-        sync(left, right)
-
-        # On the topic, not on the team. They read what it runs, because
-        # the lists are on the topic and being able to read it is what
-        # being on it means - and they take nothing up and add nothing.
-        team = right.session.protocol.index[team_uuid]
-        self.assertEqual(
-            [item["title"] for item in right.logic.team_items(team)],
-            ["Roadmap"],
-        )
-        for refused in (
-            right.logic.connect_team_item(team_uuid, item_uuid),
-            right.logic.offer_team_item(team_uuid, item_uuid),
-            right.logic.create_team_item(team_uuid, "initiative", "Mine"),
-        ):
-            self.assertEqual(refused.status, "error")
-            self.assertIn("Member", refused.reason)
-
-    def test_making_an_item_asks_its_own_application_and_publishes_it(self):
-        # S-Team knows how to ask for one and where its page is, and
-        # nothing else about it.
-        runtime = self.runtime(9807)
-        topics = self.register_items_application(runtime)
-        made = {}
-
-        class InitiativeFacade:
-            def boards(self):
-                return list(topics)
-
-            def create_board(self, name):
-                made["name"] = name
-                return SessionResult(
-                    "ok",
-                    value=TeamLogicTests.an_item(
-                        TeamLogicTests(), runtime, topics, name,
-                    ),
-                )
-
-            def delete_board(self, board_uuid):
-                made["deleted"] = board_uuid
-                return SessionResult("ok", value=board_uuid)
-
-        class Facades:
-            def find(self, application_id, facade_api_version):
-                if (application_id, facade_api_version) == ("initiative", 1):
-                    return InitiativeFacade()
-                return None
-
-        runtime.logic.facades = Facades()
-        team_uuid = runtime.logic.create_team("Cooperative").value
-        runtime.session.start_discussion(team_uuid)
-        runtime.mailbox_channel.attach_topics(
-            [team_uuid], {"target_id": runtime.relay_target},
-        )
-
-        created = runtime.logic.create_team_item(
-            team_uuid, "initiative", "Roadmap",
-        )
-
-        self.assertEqual(created.status, "ok")
-        self.assertEqual(made["name"], "Roadmap")
-        team = runtime.session.protocol.index[team_uuid]
-        items = runtime.logic.team_items(team)
-        self.assertEqual([item["title"] for item in items], ["Roadmap"])
-        self.assertEqual(items[0]["href"], f"/apps/initiative?board={created.value}")
-        # Only the kinds actually loaded here can be made.
-        self.assertEqual(
-            [kind["application_id"] for kind in runtime.logic.item_kinds()],
-            ["initiative"],
-        )
-        # Removing is that application's own delete, and nothing else.
-        removed = runtime.logic.remove_team_item(team_uuid, created.value)
-        self.assertEqual(removed.status, "ok")
-        self.assertEqual(made["deleted"], created.value)
-
-    def test_an_application_this_client_does_not_run_cannot_be_asked(self):
-        runtime = self.runtime(9808)
-        team_uuid = runtime.logic.create_team("Cooperative").value
-
-        refused = runtime.logic.create_team_item(
-            team_uuid, "initiative", "Roadmap",
-        )
-
-        self.assertEqual(refused.status, "error")
-        self.assertIn("not available on this client", refused.reason)
-        self.assertEqual(runtime.logic.item_kinds(), [])
 
     def test_a_team_that_could_take_a_seat_is_offered_it_on_its_own_page(self):
         """A team that qualifies gets no row on the other team's page. The
@@ -3791,7 +4415,7 @@ class TeamLogicTests(unittest.TestCase):
         self.assertNotIn(copied_section.uuid, {section_uuid})
         # Nobody is in it: no Identity, no offers, no answers, no seats.
         self.assertEqual(runtime.logic.identity_holder(copy), "")
-        self.assertEqual(runtime.logic.trust_holder(copy), "")
+        self.assertEqual(runtime.logic.trustee_holder(copy, "trust"), "")
         self.assertEqual(
             runtime.logic.governance_records(copy, "team_trustee_state"),
             [],
@@ -3819,7 +4443,7 @@ class TeamLogicTests(unittest.TestCase):
             copy, host.session.identity.uuid,
         ))
         self.assertTrue(host.logic.holds_identity(copy))
-        self.assertTrue(host.logic.holds_trust(copy))
+        self.assertTrue(host.logic.holds_trusteeship(copy, "trust"))
         # Accepting a role you already hold Identity in adds no second actor.
         host.logic.decide_role(role, "accepted")
         copy = host.session.protocol.index[copy_uuid]
@@ -4019,9 +4643,11 @@ class TeamLogicTests(unittest.TestCase):
         """Bring the Agreement and acceptance sentence to the joining side."""
         sync(host, guest)
         host_team = host.session.protocol.index[team_uuid]
+        agreement = host.logic.agreement(host_team, create=False)
         for node in [
             host_team,
             host.session.protocol.index[type_uuid],
+            *([agreement] if agreement else []),
             *host.logic.sections(host_team),
         ]:
             local = guest.session.get_node(node.uuid)
@@ -4063,6 +4689,20 @@ class TeamLogicTests(unittest.TestCase):
         self.assertEqual(issued.status, "ok", issued.reason)
         sync(host, guest)
         return issued
+
+    @classmethod
+    def serialized(cls, node, node_type):
+        """Every node of one type in a serialized subtree, at any depth.
+
+        Content sits in containers now, so its depth in the payload is a
+        detail of where it lives rather than something a test asserts.
+        """
+        found = []
+        for child in node.get("children") or []:
+            if child["data"].get("type") == node_type:
+                found.append(child)
+            found.extend(cls.serialized(child, node_type))
+        return found
 
     def a_role(self, runtime, team_uuid, name="Contributor"):
         """A role, taken. A team ships with none: membership is not one."""
@@ -4210,11 +4850,11 @@ class TeamLogicTests(unittest.TestCase):
         team = session.protocol.index[team_uuid]
         self.assertTrue(logic.holds_identity(team))
 
-        node_uuid = logic.identity_payload(team)["node_uuid"]
+        node_uuid = logic.trusteeship_payload(team, "identity")["node_uuid"]
         self.assertEqual(logic.resign_identity(team_uuid).status, "ok")
 
         team = session.protocol.index[team_uuid]
-        payload = logic.identity_payload(team)
+        payload = logic.trusteeship_payload(team, "identity")
         self.assertEqual(payload["state"], "vacant")
         self.assertNotEqual(payload["node_uuid"], node_uuid)
         self.assertFalse(logic.holds_identity(team))
@@ -4267,6 +4907,7 @@ class TeamLogicTests(unittest.TestCase):
             "acted_by": actor_uuid,
             "acted_at": "2026-08-04T10:01:00+00:00",
             "authority_basis_uuid": basis_uuid,
+            "value": "The membership is opened",
             "signals": "Capacity is available",
             "consideration": "The membership may be taken up by several",
             "expectation": "The pool answers for itself",
@@ -4319,7 +4960,7 @@ class TeamLogicTests(unittest.TestCase):
             team, nested, verification="valid",
         )
         self.assertEqual(assessment["status"], "invalid")
-        self.assertIn("direct children", assessment["reason"])
+        self.assertIn("container", assessment["reason"])
 
     def test_only_authorized_governance_auto_adopts(self):
         left, right = self.runtime(9621), self.runtime(9622)
@@ -4352,7 +4993,9 @@ class TeamLogicTests(unittest.TestCase):
         genesis_uuid = self.governance_basis(left, team_uuid)
 
         unauthorized = right.session.create_child(
-            team_uuid,
+            right.logic._container(
+                right.session.protocol.index[team_uuid], "actions",
+            ).uuid,
             self.governance_action(right, genesis_uuid),
             {},
         )
@@ -4574,12 +5217,11 @@ class TeamLogicTests(unittest.TestCase):
         # which is the only replica that can vouch for it - and that is what
         # lets the holding come back rather than being re-answered.
         self.assertTrue(any(
-            child.data.get("type") == "team_role_decision"
-            and child.data.get("actor_uuid") == who
+            child.data.get("actor_uuid") == who
             and child.data.get("decision") == "accepted"
-            for child in member.logic._node(
-                role_uuid, "team_role",
-            ).live_children()
+            for child in member.logic._held(
+                member.logic._node(role_uuid, "team_role"), "answers",
+            )
         ))
         self.assertEqual(
             len(identity.logic.membership_records(team, who)), before,

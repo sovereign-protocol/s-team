@@ -104,6 +104,25 @@ marked with a key and carrying no accountabilities or domains yet. It used to
 be a line off to one side, which said in layout that it was a different kind
 of thing — and left it the one holding on the page with no way out of it.
 
+**[DONE] One card per trusteeship the team has**, in vocabulary order —
+Identity, Trust, Focus, Market, Equity — read from the payload's `seats`
+rather than drawn by name. Two calls stood here while there were two seats,
+which made the set of trusteeships something the page knew rather than
+something the team said.
+
+Under the cards, and not on any of them, an **Add trusteeship** control
+offering the seats this team could have and this Actor could decide — it is
+about the set, not about a seat. **Dissolve** sits on a card, because that
+one is about a seat: offered only where it stands empty, and never on
+Identity. Both are the payload's answer (`can_establish`, `can_dissolve`)
+rather than the page working out who may do what.
+
+**The page holds no copy of the facilitation rule.** Which seat decides
+another arrives as each seat's `facilitator_trust`. It used to be
+`trust === "identity" ? "trust" : "identity"` in three places, which was the
+rule written a second time, in a language that could not be tested against
+the records.
+
 ### 4.3 Holder status
 
 Four, and every one of them is something the holder said. A **membership**
@@ -230,9 +249,14 @@ pool shows no badges at all — not even the ones they answered for before they
 left or were removed. Their answers are untouched and come back with them; the
 line just stops claiming they hold something.
 
-**Two places act.** _Your member line_ comes first: a held badge is a control, click to
-step out. **Refuse is not an action here** — the choice is holding or not
-holding. Identity is one of those badges, and steps out the same way (§2.2).
+**Two places act, and stepping out is a third.** _Your member line_ comes
+first: a held badge is a control, click to open that role's own card in
+Roles — not to step out on the spot, which one stray click on a crowded line
+used to be all it took to do. Stepping out is a button on the card itself,
+beside your own badge under "Held by", the same place a trusteeship's
+already was. **Refuse is not an action here** — the choice is holding or not
+holding. Identity is one of those badges, and opens and steps out the same
+way (§2.2).
 
 _The team-name heading_ carries the other controls, because a Team is an Actor
 and the roles it holds in other teams are roles. Same badges, answered by
@@ -380,7 +404,7 @@ inherit this for free.
 **Constraint that follows:** no editable surface may live outside
 `#document` — or, if one must, it has to be built once rather than per
 render. `renderOrganization` (`tree.replaceChildren()`) and
-`setTopicSelector` both run _before_ the guard, unconditionally. This is why
+`setTopicName` both run _before_ the guard, unconditionally. This is why
 the ordered parent list and its reorder control live on the team's own page
 and not in the organization tree (§4.6), and why the new-team composer
 (§4.7) is constructed once and re-attached rather than rebuilt: a rebuild on

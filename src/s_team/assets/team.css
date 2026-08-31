@@ -15,7 +15,7 @@
   --text: #ede9e3;
   --text-muted: #a39c8e;
   --hover: rgba(255, 255, 255, 0.06);
-  --proposal: #60a5fa;
+  --accent: #60a5fa;
   --delete: #e08a67;
 }
 
@@ -32,7 +32,7 @@
   --text: #1f1c17;
   --text-muted: #6e675c;
   --hover: rgba(0, 0, 0, 0.05);
-  --proposal: #1d4ed8;
+  --accent: #1d4ed8;
   --delete: #9a3412;
 }
 body { margin: 0; font: 15px system-ui, sans-serif; background: var(--page); color: var(--text); }
@@ -170,7 +170,7 @@ button, select { padding: 8px 11px; border-radius: 6px; border: 1px solid var(--
    the eye finds the same thing in the same place all the way down. */
 .element-row {
   display: grid;
-  grid-template-columns: 14px 1fr auto;
+  grid-template-columns: 22px 1fr auto;
   align-items: baseline;
   gap: 8px;
   border-radius: 6px;
@@ -217,42 +217,14 @@ h2.element-label { margin: 0 0 4px; }
    own rule already does the separating. */
 #document > .element-row + .ui-disclosure { border-top: 0; }
 
-/* The lamp carries the explanation, so hovering the status tells you what is
-   unsettled without opening anything. These four are the reserved status
-   colours (U2) and are unchanged by the repaint - they never sat on the
-   page background, only on transparent, so they needed no recalibration. */
 .status-lamp {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
+  width: 22px;
+  height: 22px;
   align-self: center;
   justify-self: center;
-  background: transparent;
-  border: 1px solid var(--line);
-  cursor: help;
-}
-.status-lamp[data-status="divergence"] { background: #dc2626; border-color: #dc2626; }
-.status-lamp[data-status="in_flight"] { background: #f59e0b; border-color: #f59e0b; }
-.status-lamp[data-status="peer_made_changes"],
-.status-lamp[data-status="local_missing_node"] { background: #2563eb; border-color: #2563eb; }
-.status-lamp[data-status="local_made_changes"],
-.status-lamp[data-status="peer_missing_node"] { background: #9ca3af; border-color: #9ca3af; }
-
-.element-row[data-status="divergence"] { background: rgba(220, 38, 38, 0.15); }
-.element-row[data-status="in_flight"] { background: rgba(245, 158, 11, 0.15); }
-.element-row.is-proposed {
-  border: 1px dashed rgba(37, 99, 235, 0.55);
-  background: rgba(37, 99, 235, 0.12);
 }
 
 .element-actions { display: inline-flex; align-items: center; gap: 6px; }
-.proposal-badge {
-  color: var(--proposal);
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
 .acceptance-panel { margin: 0 0 6px; padding: 3px 4px 8px; }
 .section-intro { margin: 0 4px 7px 22px; color: var(--text-muted); font-size: 11px; }
 .acceptance-body {
@@ -269,7 +241,7 @@ h2.element-label { margin: 0 0 4px; }
   font-size: 11px;
 }
 .team-link {
-  color: var(--proposal);
+  color: var(--accent);
   cursor: pointer;
   text-decoration: underline;
   text-decoration-color: transparent;
@@ -301,13 +273,13 @@ h2.element-label { margin: 0 0 4px; }
 }
 .element-composer-row {
   display: grid;
-  grid-template-columns: 14px minmax(0, 1fr) auto;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   padding: 2px 4px;
 }
 .element-row.has-reorder {
-  grid-template-columns: auto 14px minmax(0, 1fr) auto;
+  grid-template-columns: auto 22px minmax(0, 1fr) auto;
 }
 /* Keep each part in its semantic column. A reorder handle is hidden while a
    list has only one item; relying on grid auto-placement then shifted the
@@ -322,27 +294,6 @@ h2.element-label { margin: 0 0 4px; }
   grid-column: 2 / -1;
   width: 100%;
   max-width: none;
-}
-/* Reacting is the only way out of a divergence, so it is never hidden behind
-   hover - it simply does not exist while there is nothing to react to.
-   It used to be a dark chip standing out from a light page; on a dark page
-   the same standing-out needs the opposite value, so it borrows the shared
-   teal every application uses for its one emphasized action instead of
-   inventing a second accent colour. */
-.element-react {
-  background: var(--teal, #0f7a64);
-  border: 1px solid var(--teal, #0f7a64);
-  color: #ffffff;
-  font-weight: 600;
-}
-/* Core's control fades to a soft tint on hover, which is right for a quiet
-   outline button and wrong for a filled one - it would look disabled. A
-   filled button darkens instead. */
-.element-react:hover,
-.element-react:focus-visible {
-  background: #0b6855;
-  border-color: #0b6855;
-  color: #ffffff;
 }
 .element-delete {
   background: none;
@@ -398,7 +349,7 @@ h2.element-label { margin: 0 0 4px; }
 .participant.is-team .role-chip:not(:disabled) { cursor: pointer; }
 .participant.is-self .role-chip:not(:disabled):hover,
 .participant.is-team .role-chip:not(:disabled):hover {
-  border-color: var(--proposal);
+  border-color: var(--accent);
   color: var(--text);
 }
 .role-chip:disabled { cursor: default; }
@@ -422,7 +373,7 @@ h2.element-label { margin: 0 0 4px; }
    nothing else, because being on a team is not something a team does. */
 .participant.is-subteam .role-chip:not(:disabled) { cursor: pointer; }
 .participant.is-subteam .role-chip:not(:disabled):hover {
-  border-color: var(--proposal);
+  border-color: var(--accent);
   color: var(--text);
 }
 
@@ -449,9 +400,14 @@ h2.element-label { margin: 0 0 4px; }
   border-radius: 8px;
   background: var(--hover);
 }
-.role-card.is-proposed {
-  border: 1px dashed rgba(37, 99, 235, 0.55);
-  background: rgba(37, 99, 235, 0.12);
+/* Where a click on your own role badge lands, so it reads as arriving
+   somewhere rather than as the section merely being open already. */
+.highlight-flash {
+  animation: highlight-flash-anim 1.5s ease;
+}
+@keyframes highlight-flash-anim {
+  0%, 100% { outline: 2px solid transparent; }
+  20% { outline: 2px solid var(--teal); }
 }
 /* Identity is a role and reads as one. The key is the only thing marking it
    apart, because the difference is cardinality, not privilege. */
@@ -521,7 +477,7 @@ h2.element-label { margin: 0 0 4px; }
 .holder-badge[data-outside-parent="true"] { opacity: 0.55; }
 .holder-badge[data-status="refused"] .holder-name { text-decoration: line-through; }
 .holder-badge.team-link { cursor: pointer; }
-.holder-badge.team-link:hover { border-color: var(--proposal); }
+.holder-badge.team-link:hover { border-color: var(--accent); }
 /* Stepping out is destructive and rare, so it waits for a hover the way
    Delete does - and stays reachable by keyboard, which is why focus-within
    shows it too. */
@@ -539,59 +495,6 @@ h2.element-label { margin: 0 0 4px; }
 .holder-badge:focus-within .holder-action { opacity: 0.75; }
 .holder-action:hover { opacity: 1; }
 .role-answer-prompt { flex: 1; min-width: 0; }
-
-/* What the team runs. A row is something you hold and can open; an offer is
-   a name in a pulldown until you take it up, because that is all anybody
-   has of somebody else's copy. */
-.items-panel { margin: 0 4px 6px 22px; }
-.items-controls {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 10px;
-}
-.items-controls button { padding: 4px 8px; font-size: 12px; }
-.items-picker {
-  max-width: min(260px, 100%);
-}
-.item-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 8px;
-  margin-bottom: 6px;
-  border-radius: 8px;
-  background: var(--hover);
-  font-size: 13px;
-}
-.item-open {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text);
-  font-weight: 600;
-}
-.item-label {
-  color: var(--text-muted);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  white-space: nowrap;
-}
-.item-remove {
-  padding: 3px 8px;
-  font-size: 11px;
-  color: var(--text-muted);
-}
-.item-remove:hover { color: var(--text); }
-.items-empty { margin: 4px 0; color: var(--text-muted); font-size: 13px; }
-#newItemForm { min-width: min(420px, 80vw); }
-#newItemForm label { display: grid; gap: 4px; margin: 10px 0; }
-#newItemForm input,
-#newItemForm select { box-sizing: border-box; width: 100%; }
 
 /* What the team supports, directly above the actors who are on it - no rule
    between them, because it is the same subject stated twice over: first what
@@ -671,6 +574,11 @@ h2.element-label { margin: 0 0 4px; }
   color: var(--danger, #a33);
   font-size: 12px;
 }
+.membership-terms-notice {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
 .membership-row-actions {
   display: flex;
   align-items: center;
@@ -679,6 +587,7 @@ h2.element-label { margin: 0 0 4px; }
   margin-top: 10px;
 }
 .membership-row-actions button { padding: 4px 8px; font-size: 12px; }
+.membership-row-actions .membership-relinquish { color: var(--danger, #a33); }
 .membership-expiry { padding: 3px 6px; font-size: 12px; }
 .membership-delete { margin-left: auto; }
 .membership-history { margin-top: 8px; color: var(--text-muted); }
@@ -691,6 +600,17 @@ h2.element-label { margin: 0 0 4px; }
 
 .election-start-group { display: inline-flex; gap: 4px; }
 .facilitator-control { max-width: 150px; }
+/* Which trusteeships a team has is its own decision, so adding one sits
+   under the cards rather than on any of them - it is about the set, not
+   about a seat. */
+.trusteeship-add-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 12px;
+}
+.trusteeship-add-control { max-width: 150px; }
+.trusteeship-add { padding: 4px 8px; font-size: 12px; }
 /* Everything done to a trusteeship, on the trusteeship's own card: stand
    for it, elect somebody, settle it, act in it. The election itself is a
    flow, read where the flows are. */
@@ -825,6 +745,12 @@ h2.element-label { margin: 0 0 4px; }
   gap: 6px;
   min-width: 0;
 }
+/* Shares the label's cell, so it aligns to the text rather than to the row -
+   `baseline` would hang an svg off the bottom of the line box. */
+.element-heading > .element-glyph {
+  align-self: center;
+  flex: none;
+}
 .element-toggle {
   border: none;
   padding: 0 3px;
@@ -849,6 +775,11 @@ h2.element-label { margin: 0 0 4px; }
   gap: 10px;
   margin-bottom: 6px;
 }
+/* The agreement is a row like any other element now, so it fills the width
+   its dot and reaction are laid out against. */
+.agreement-head-row {
+  width: 100%;
+}
 .agreement-title {
   margin: 0;
   min-width: 0;
@@ -860,16 +791,47 @@ h2.element-label { margin: 0 0 4px; }
   color: var(--text-muted);
   font-size: 13px;
 }
-.agreement-state {
-  padding: 1px 7px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
+/* A name and a number beside each other say nothing about which is which.
+   The label is the smallest thing that does, and it sits with its field
+   rather than above it, so the row stays one line. */
+.field-label {
+  margin-right: 4px;
   color: var(--text-muted);
   font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
+.agreement-field { display: inline-flex; align-items: baseline; }
+/* A peer's alternate name or version, beside the one this client holds. */
+
+/* Every fact-about-something on this page is one tag, so a state, an alternate
+   and a marker in the tree are the same shape, weight and colour. What each
+   says is in its words, not in a style of its own. */
+.agreement-state,
+.agreement-alternative,
+.state-badge {
+  display: inline-flex;
+  align-items: center;
+  box-sizing: border-box;
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+.agreement-alternative,
+.state-badge { border-style: dashed; }
 .agreement-state.is-disputed,
 .agreement-state.is-invalid,
-.agreement-state.is-unavailable { color: var(--danger, #a33); }
+.agreement-state.is-unavailable,
+.agreement-state.is-no_identity {
+  border-color: var(--stage-conflict-fill);
+  color: var(--stage-conflict-text);
+}
 .agreement-head .ui-add-control { margin: 0; }
 .agreement-head .ui-add-trigger {
   background: none;
@@ -879,19 +841,11 @@ h2.element-label { margin: 0 0 4px; }
 /* A team nobody is in is worth marking in the tree, where it sits
    among teams people rely on. Nowhere else: on its own page the
    Identity line and every role already say the same thing. */
-.state-badge {
-  padding: 1px 8px;
-  border-radius: 999px;
-  border: 1px dashed var(--line);
-  color: var(--text-muted);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  white-space: nowrap;
-}
+
 /* In the tree the row is a name and a count, so an extra fact takes its own
    line underneath - the same shape as the other markers there. */
 .organization-row .state-badge {
   grid-column: 1 / -1;
   justify-self: start;
 }
+

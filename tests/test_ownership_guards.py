@@ -67,7 +67,7 @@ class AgreementOwnershipControllerTests(unittest.TestCase):
     def test_react_rejects_a_peer_only_team_node_under_a_foreign_topic(self):
         peer = Session("peer")
         foreign_topic = peer.create_child(
-            peer.root_uuid(), {"type": "kanban_board", "name": "foreign"}, {},
+            peer.root_uuid(), {"type": "initiative", "name": "foreign"}, {},
         ).value
         self.session.adopt_subtree(
             peer.get_node(foreign_topic.uuid), self.session.root_uuid(),
